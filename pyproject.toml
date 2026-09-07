@@ -1,0 +1,33 @@
+[project]
+name = "deepalm"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "ryanma9629", email = "ryanma9629@gmail.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "matplotlib>=3.11.1",
+    "numpy>=2.4.6",
+    "pandas>=3.0.5",
+    "pyyaml>=6.0.3",
+    "scikit-learn>=1.9.0",
+    "scipy>=1.17.1",
+    "torch>=2.14.0",
+    "tqdm>=4.70.0",
+]
+
+[project.scripts]
+deepalm = "deepalm:main"
+
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.16.6",
+]
