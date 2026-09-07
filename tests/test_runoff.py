@@ -135,6 +135,28 @@ def test_zero_actions_match_passive_runoff_and_nonzero_actions_reach_terminal_eq
     assert action_values.grad.abs().sum().item() > 0
 
 
+@pytest.mark.skipif(
+    not torch.backends.mps.is_available(), reason="requires an available MPS device"
+)
+def test_float32_mps_rollout_accepts_machine_precision_reconciliation(
+    canonical_inputs: tuple[object, object, MarketScenarioModel],
+) -> None:
+    snapshot, historical, _ = canonical_inputs
+    discounts = np.broadcast_to(
+        historical.initial_curve.discount_factors, (1, 3, 180)
+    ).copy()
+
+    result = ALMSimulator().rollout(
+        snapshot,
+        SimpleNamespace(discount_factors=discounts),
+        device="mps",
+        dtype=torch.float32,
+    )
+
+    assert torch.isfinite(result.cash).all()
+    assert torch.isfinite(result.equity).all()
+
+
 def test_active_rollout_gradient_matches_central_difference(
     canonical_inputs: tuple[object, object, MarketScenarioModel],
 ) -> None:

@@ -24,6 +24,10 @@ _Avoid_: Silent fix, improved version
 论文中的四类无互换 TreasuryPolicy：等期限分配 benchmark、固定期限分配 benchmark、按决策日期分配 benchmark，以及共享参数的多期模型。
 _Avoid_: bme, bmc, bmd, mm
 
+**TreasuryPolicy 决策状态**:
+某一 Treasury 决策日期可交易的投资与融资名义梯子及其在有限决策期限中的位置；它是策略决定本期无互换交易动作所依据的状态。
+_Avoid_: 完整资产负债表快照, 通用状态
+
 **期限结构（Term Structure）**:
 某一估值日、同一组月度期限上的连续复利即期利率、贴现因子和离散远期利率，它们是同一条利率曲线的三种一致表示。
 _Avoid_: 三条独立曲线

@@ -60,7 +60,9 @@ class ResourceMonitor:
         self._clock = clock
         self._started_at = clock()
         self._rss_reader = rss_reader or _process_rss_bytes
-        self._accelerator_reader = accelerator_reader or _accelerator_allocated_bytes(device)
+        self._accelerator_reader = accelerator_reader or _accelerator_allocated_bytes(
+            device
+        )
 
     def snapshot(self) -> ResourceSnapshot:
         return ResourceSnapshot(
@@ -127,4 +129,6 @@ def _process_rss_bytes() -> int | None:
 def _accelerator_allocated_bytes(device: str) -> Callable[[], int | None]:
     if device == "cuda":
         return lambda: int(torch.cuda.memory_allocated())
+    if device == "mps" and torch.backends.mps.is_available():
+        return lambda: int(torch.mps.driver_allocated_memory())
     return lambda: None

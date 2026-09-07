@@ -24,6 +24,7 @@ from deepalm.loans import (
     apply_loan_transition,
 )
 from deepalm.objective import ObjectiveParameters, ObjectiveResult, evaluate_objective
+from deepalm.policies import TreasuryPolicy, TreasuryPolicyState
 from deepalm.reference_bank import ReferenceBankProvider, ReferenceBankSnapshot
 from deepalm.runner import OperationalRunError
 from deepalm.term_structures import MarketScenarioBatch
@@ -63,6 +64,7 @@ class PassiveRunoffResult:
     cash_penalties: torch.Tensor | None = None
     dividends: torch.Tensor | None = None
     treasury_cash_settlements: torch.Tensor | None = None
+    treasury_actions: torch.Tensor | None = None
     initial_constraint_values: torch.Tensor | None = None
     initial_constraint_violations: torch.Tensor | None = None
     constraint_values: torch.Tensor | None = None
@@ -100,6 +102,7 @@ class ALMSimulator:
         include_deposit_dynamics: bool = False,
         deposit_configuration: DepositConfiguration = DEFAULT_DEPOSIT_CONFIGURATION,
         actions: torch.Tensor | None = None,
+        policy: TreasuryPolicy | None = None,
         include_constraints: bool = False,
         objective_parameters: ObjectiveParameters | None = None,
     ) -> PassiveRunoffResult:
@@ -113,9 +116,14 @@ class ALMSimulator:
         _require_positive_finite("discount_factors", discounts)
         if objective_parameters is not None:
             include_constraints = True
+        if actions is not None and policy is not None:
+            raise RunoffSimulationError("Provide either actions or policy, not both")
         action_schedule = _action_schedule(actions, paths, transitions, device, dtype)
+        has_treasury_actions = action_schedule is not None or policy is not None
         spots = (
-            _spot_tensor(market, device=device, dtype=dtype, expected_shape=discounts.shape)
+            _spot_tensor(
+                market, device=device, dtype=dtype, expected_shape=discounts.shape
+            )
             if include_loan_dynamics or include_deposit_dynamics
             else None
         )
@@ -156,22 +164,66 @@ class ALMSimulator:
             if include_loan_dynamics
             else None
         )
-        deposit_growth = torch.empty((paths, transitions), device=device, dtype=dtype) if include_deposit_dynamics else None
-        costs = torch.empty((paths, transitions), device=device, dtype=dtype) if include_deposit_dynamics else None
-        penalties = torch.empty((paths, transitions), device=device, dtype=dtype) if include_deposit_dynamics else None
-        dividends = torch.zeros((paths, transitions), device=device, dtype=dtype) if include_deposit_dynamics else None
-        treasury_cash = torch.zeros((paths, transitions), device=device, dtype=dtype) if action_schedule is not None else None
-        constraint_steps: list[ConstraintValues] | None = [] if include_constraints else None
+        deposit_growth = (
+            torch.empty((paths, transitions), device=device, dtype=dtype)
+            if include_deposit_dynamics
+            else None
+        )
+        costs = (
+            torch.empty((paths, transitions), device=device, dtype=dtype)
+            if include_deposit_dynamics
+            else None
+        )
+        penalties = (
+            torch.empty((paths, transitions), device=device, dtype=dtype)
+            if include_deposit_dynamics
+            else None
+        )
+        dividends = (
+            torch.zeros((paths, transitions), device=device, dtype=dtype)
+            if include_deposit_dynamics
+            else None
+        )
+        treasury_cash = (
+            torch.zeros((paths, transitions), device=device, dtype=dtype)
+            if has_treasury_actions
+            else None
+        )
+        executed_actions: list[torch.Tensor] | None = (
+            [] if has_treasury_actions else None
+        )
+        constraint_steps: list[ConstraintValues] | None = (
+            [] if include_constraints else None
+        )
 
         cash[:, 0] = snapshot.cash
         initial_constraints = (
-            evaluate_constraints(_constraint_state(cash[:, 0], ladders, discounts[:, 0]))
+            evaluate_constraints(
+                _constraint_state(cash[:, 0], ladders, discounts[:, 0])
+            )
             if include_constraints
             else None
         )
-        if action_schedule is not None:
-            ladders["investments"], ladders["funding"], treasury_cash[:, 0] = apply_treasury_action(ladders["investments"], ladders["funding"], discounts[:, 0], _treasury_action_at(action_schedule, 0))
+        initial_action = _policy_action_at(
+            action_schedule,
+            policy,
+            ladders,
+            time=0,
+            transitions=transitions,
+        )
+        if initial_action is not None:
+            assert treasury_cash is not None
+            assert executed_actions is not None
+            ladders["investments"], ladders["funding"], treasury_cash[:, 0] = (
+                apply_treasury_action(
+                    ladders["investments"],
+                    ladders["funding"],
+                    discounts[:, 0],
+                    initial_action,
+                )
+            )
             cash[:, 0] += treasury_cash[:, 0]
+            executed_actions.append(initial_action.concatenated)
         self._revalue_state(ladders, discounts[:, 0], values, 0)
         self._record_balance_sheet(cash, assets, liabilities, equity, values, 0)
         self._validate_state(cash, assets, liabilities, equity, accounting_error, 0)
@@ -183,9 +235,7 @@ class ALMSimulator:
             constraint_steps.append(current_constraints)
 
         for transition in range(transitions):
-            asset_cash_movement = sum(
-                ladders[name][:, 0] for name in _ASSET_LADDERS
-            )
+            asset_cash_movement = sum(ladders[name][:, 0] for name in _ASSET_LADDERS)
             liability_cash_movement = sum(
                 ladders[name][:, 0] for name in _LIABILITY_LADDERS
             )
@@ -240,29 +290,82 @@ class ALMSimulator:
             if include_deposit_dynamics:
                 assert spots is not None
                 history = torch.stack(
-                    [spots[:, max(0, transition - offset), 5] for offset in (0, 1, 2)], dim=1
+                    [spots[:, max(0, transition - offset), 5] for offset in (0, 1, 2)],
+                    dim=1,
                 )
                 rates = deposit_rates(history, spots[:, transition + 1, 5])
-                nmd_growth = ladders["non_maturity_deposits"].sum(dim=1) * deposit_configuration.non_maturity_growth / 12.0
-                td_growth = ladders["term_deposits"].sum(dim=1) * deposit_configuration.term_growth / 12.0
-                nmd_matured, td_matured = ladders["non_maturity_deposits"][:, 0], ladders["term_deposits"][:, 0]
-                nmd_interest = monthly_deposit_interest(rates.non_maturity) * ladders["non_maturity_deposits"].sum(dim=1)
-                td_interest = monthly_deposit_interest(rates.term) * ladders["term_deposits"].sum(dim=1)
-                ladders["non_maturity_deposits"] = torch.nn.functional.pad(ladders["non_maturity_deposits"][:, 1:], (0, 1)) + allocate_deposit_tranches(nmd_matured + nmd_growth + nmd_interest, deposit_configuration.reference_terms_months, deposit_configuration.non_maturity_weights)
-                ladders["term_deposits"] = torch.nn.functional.pad(ladders["term_deposits"][:, 1:], (0, 1)) + allocate_deposit_tranches(td_matured + td_growth + td_interest, deposit_configuration.reference_terms_months, deposit_configuration.term_weights)
+                nmd_growth = (
+                    ladders["non_maturity_deposits"].sum(dim=1)
+                    * deposit_configuration.non_maturity_growth
+                    / 12.0
+                )
+                td_growth = (
+                    ladders["term_deposits"].sum(dim=1)
+                    * deposit_configuration.term_growth
+                    / 12.0
+                )
+                nmd_matured, td_matured = (
+                    ladders["non_maturity_deposits"][:, 0],
+                    ladders["term_deposits"][:, 0],
+                )
+                nmd_interest = monthly_deposit_interest(rates.non_maturity) * ladders[
+                    "non_maturity_deposits"
+                ].sum(dim=1)
+                td_interest = monthly_deposit_interest(rates.term) * ladders[
+                    "term_deposits"
+                ].sum(dim=1)
+                ladders["non_maturity_deposits"] = torch.nn.functional.pad(
+                    ladders["non_maturity_deposits"][:, 1:], (0, 1)
+                ) + allocate_deposit_tranches(
+                    nmd_matured + nmd_growth + nmd_interest,
+                    deposit_configuration.reference_terms_months,
+                    deposit_configuration.non_maturity_weights,
+                )
+                ladders["term_deposits"] = torch.nn.functional.pad(
+                    ladders["term_deposits"][:, 1:], (0, 1)
+                ) + allocate_deposit_tranches(
+                    td_matured + td_growth + td_interest,
+                    deposit_configuration.reference_terms_months,
+                    deposit_configuration.term_weights,
+                )
                 deposit_growth[:, transition] = nmd_growth + td_growth
-                costs[:, transition] = operating_cost(personnel_cost=snapshot.personnel_cost_mchf, material_cost=snapshot.material_cost_mchf, completed_years=transition // 12, configuration=deposit_configuration)
-                reserves = deposit_configuration.reserve_ratio * (values["non_maturity_deposits"][:, transition] + values["term_deposits"][:, transition])
-                penalties[:, transition] = cash_penalty(cash[:, transition], reserves, discounts[:, transition, 0])
-                cash_movement = cash_movement + deposit_growth[:, transition] - costs[:, transition] - penalties[:, transition]
-                reconstructed_cash_movement = reconstructed_cash_movement + deposit_growth[:, transition] - costs[:, transition] - penalties[:, transition]
-            cash[:, transition + 1] = (
-                cash[:, transition] + cash_movement
-            )
+                costs[:, transition] = operating_cost(
+                    personnel_cost=snapshot.personnel_cost_mchf,
+                    material_cost=snapshot.material_cost_mchf,
+                    completed_years=transition // 12,
+                    configuration=deposit_configuration,
+                )
+                reserves = deposit_configuration.reserve_ratio * (
+                    values["non_maturity_deposits"][:, transition]
+                    + values["term_deposits"][:, transition]
+                )
+                penalties[:, transition] = cash_penalty(
+                    cash[:, transition], reserves, discounts[:, transition, 0]
+                )
+                cash_movement = (
+                    cash_movement
+                    + deposit_growth[:, transition]
+                    - costs[:, transition]
+                    - penalties[:, transition]
+                )
+                reconstructed_cash_movement = (
+                    reconstructed_cash_movement
+                    + deposit_growth[:, transition]
+                    - costs[:, transition]
+                    - penalties[:, transition]
+                )
+            cash[:, transition + 1] = cash[:, transition] + cash_movement
             ladders = {
                 name: (
                     ladder
-                    if (include_loan_dynamics and name in {"mortgages", "enterprise_loans"}) or (include_deposit_dynamics and name in {"non_maturity_deposits", "term_deposits"})
+                    if (
+                        include_loan_dynamics
+                        and name in {"mortgages", "enterprise_loans"}
+                    )
+                    or (
+                        include_deposit_dynamics
+                        and name in {"non_maturity_deposits", "term_deposits"}
+                    )
                     else torch.nn.functional.pad(ladder[:, 1:], (0, 1))
                 )
                 for name, ladder in ladders.items()
@@ -274,7 +377,20 @@ class ALMSimulator:
                 cash, assets, liabilities, equity, values, transition + 1
             )
             action_settlement = torch.zeros_like(cash[:, transition])
-            if action_schedule is not None and transition + 1 < transitions:
+            next_action = (
+                _policy_action_at(
+                    action_schedule,
+                    policy,
+                    ladders,
+                    time=transition + 1,
+                    transitions=transitions,
+                )
+                if transition + 1 < transitions
+                else None
+            )
+            if next_action is not None:
+                assert treasury_cash is not None
+                assert executed_actions is not None
                 (
                     ladders["investments"],
                     ladders["funding"],
@@ -283,10 +399,11 @@ class ALMSimulator:
                     ladders["investments"],
                     ladders["funding"],
                     discounts[:, transition + 1],
-                    _treasury_action_at(action_schedule, transition + 1),
+                    next_action,
                 )
                 action_settlement = treasury_cash[:, transition + 1]
                 cash[:, transition + 1] += action_settlement
+                executed_actions.append(next_action.concatenated)
                 self._revalue_state(
                     ladders, discounts[:, transition + 1], values, transition + 1
                 )
@@ -308,11 +425,22 @@ class ALMSimulator:
                 )
                 constraint_steps.append(current_constraints)
             dividend = torch.zeros_like(cash[:, transition])
-            if include_deposit_dynamics and (transition + 1) % 12 == 0 and transition + 1 < transitions:
-                dividends[:, transition] = torch.clamp_min(equity[:, transition + 1] - equity[:, transition + 1 - 12], 0.0) * deposit_configuration.dividend_share
+            if (
+                include_deposit_dynamics
+                and (transition + 1) % 12 == 0
+                and transition + 1 < transitions
+            ):
+                dividends[:, transition] = (
+                    torch.clamp_min(
+                        equity[:, transition + 1] - equity[:, transition + 1 - 12], 0.0
+                    )
+                    * deposit_configuration.dividend_share
+                )
                 dividend = dividends[:, transition]
                 cash[:, transition + 1] -= dividend
-                self._record_balance_sheet(cash, assets, liabilities, equity, values, transition + 1)
+                self._record_balance_sheet(
+                    cash, assets, liabilities, equity, values, transition + 1
+                )
             cash_reconciliation_error[:, transition + 1] = (
                 cash[:, transition + 1]
                 - cash[:, transition]
@@ -379,11 +507,18 @@ class ALMSimulator:
             cash_penalties=penalties,
             dividends=dividends,
             treasury_cash_settlements=treasury_cash,
+            treasury_actions=(
+                torch.stack(executed_actions, dim=1)
+                if executed_actions is not None
+                else None
+            ),
             initial_constraint_values=(
                 initial_constraints.values if initial_constraints is not None else None
             ),
             initial_constraint_violations=(
-                initial_constraints.violations if initial_constraints is not None else None
+                initial_constraints.violations
+                if initial_constraints is not None
+                else None
             ),
             constraint_values=constraint_values,
             constraint_violations=constraint_violations,
@@ -413,9 +548,7 @@ class ALMSimulator:
         assets[:, time] = cash[:, time] + sum(
             values[name][:, time] for name in _ASSET_LADDERS
         )
-        liabilities[:, time] = sum(
-            values[name][:, time] for name in _LIABILITY_LADDERS
-        )
+        liabilities[:, time] = sum(values[name][:, time] for name in _LIABILITY_LADDERS)
         equity[:, time] = assets[:, time] - liabilities[:, time]
 
     @staticmethod
@@ -494,6 +627,28 @@ def _treasury_action_at(schedule: torch.Tensor, time: int) -> TreasuryAction:
     return TreasuryAction(schedule[:, time, :13], schedule[:, time, 13:])
 
 
+def _policy_action_at(
+    schedule: torch.Tensor | None,
+    policy: TreasuryPolicy | None,
+    ladders: Mapping[str, torch.Tensor],
+    *,
+    time: int,
+    transitions: int,
+) -> TreasuryAction | None:
+    if schedule is not None:
+        return _treasury_action_at(schedule, time)
+    if policy is None:
+        return None
+    return policy(
+        TreasuryPolicyState(
+            investments=ladders["investments"],
+            funding=ladders["funding"],
+            time=time,
+            transitions=transitions,
+        )
+    )
+
+
 def _constraint_state(
     cash: torch.Tensor,
     ladders: Mapping[str, torch.Tensor],
@@ -524,11 +679,18 @@ def _spot_tensor(
         raise RunoffSimulationError(
             "Loan dynamics require market spot_rates[paths, states, 180]"
         ) from error
-    spots = raw.to(device=device, dtype=dtype) if isinstance(raw, torch.Tensor) else torch.tensor(raw, device=device, dtype=dtype)
+    spots = (
+        raw.to(device=device, dtype=dtype)
+        if isinstance(raw, torch.Tensor)
+        else torch.tensor(raw, device=device, dtype=dtype)
+    )
     if spots.shape != expected_shape:
         raise RunoffSimulationError(
             "Market spot_rates must match discount_factors shape for loan dynamics",
-            diagnostics={"spot_shape": tuple(spots.shape), "discount_shape": tuple(expected_shape)},
+            diagnostics={
+                "spot_shape": tuple(spots.shape),
+                "discount_shape": tuple(expected_shape),
+            },
         )
     _require_finite("spot_rates", spots, time=0)
     return spots
@@ -566,9 +728,7 @@ def _require_finite(name: str, values: torch.Tensor, *, time: int) -> None:
         )
 
 
-def _validate_accounting(
-    error: torch.Tensor, assets: torch.Tensor, time: int
-) -> None:
+def _validate_accounting(error: torch.Tensor, assets: torch.Tensor, time: int) -> None:
     _validate_tolerance("accounting", error, assets, time)
 
 
@@ -581,7 +741,13 @@ def _validate_cash_reconciliation(
 def _validate_tolerance(
     component: str, error: torch.Tensor, assets: torch.Tensor, time: int
 ) -> None:
-    tolerance = torch.maximum(torch.full_like(assets, 1e-6), assets.abs() * 1e-10)
+    if assets.dtype in {torch.float16, torch.bfloat16, torch.float32}:
+        absolute_tolerance, relative_tolerance = 1e-3, 1e-5
+    else:
+        absolute_tolerance, relative_tolerance = 1e-6, 1e-10
+    tolerance = torch.maximum(
+        torch.full_like(assets, absolute_tolerance), assets.abs() * relative_tolerance
+    )
     failed = error.abs() > tolerance
     if failed.any():
         path = int(failed.nonzero()[0].item())
