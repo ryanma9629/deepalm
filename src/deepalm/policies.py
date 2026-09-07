@@ -83,3 +83,42 @@ class BMEqualPolicy(TreasuryPolicy):
             investments=investment_scale.unsqueeze(1).expand(-1, 13) / 13.0,
             funding=funding_scale.unsqueeze(1).expand(-1, 16) / 16.0,
         )
+
+
+class BMConstantPolicy(TreasuryPolicy):
+    """BM^C benchmark: learned fixed maturity distributions and scales."""
+
+    def __init__(
+        self,
+        *,
+        investment_adjustment: float = 0.0,
+        funding_adjustment: float = 0.0,
+        device: torch.device | str | None = None,
+        dtype: torch.dtype | None = None,
+    ) -> None:
+        super().__init__()
+        options: dict[str, torch.device | str | torch.dtype] = {}
+        if device is not None:
+            options["device"] = device
+        if dtype is not None:
+            options["dtype"] = dtype
+        self.investment_scale_adjustment = nn.Parameter(
+            torch.tensor(investment_adjustment, **options)
+        )
+        self.funding_scale_adjustment = nn.Parameter(
+            torch.tensor(funding_adjustment, **options)
+        )
+        self.investment_distribution_logits = nn.Parameter(torch.zeros(13, **options))
+        self.funding_distribution_logits = nn.Parameter(torch.zeros(16, **options))
+
+    def forward(self, state: TreasuryPolicyState) -> TreasuryAction:
+        investment_scale = torch.relu(
+            state.investments[:, 0] + self.investment_scale_adjustment
+        )
+        funding_scale = torch.relu(state.funding[:, 0] + self.funding_scale_adjustment)
+        return TreasuryAction(
+            investments=investment_scale.unsqueeze(1)
+            * torch.softmax(self.investment_distribution_logits, dim=0),
+            funding=funding_scale.unsqueeze(1)
+            * torch.softmax(self.funding_distribution_logits, dim=0),
+        )

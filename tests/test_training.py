@@ -7,12 +7,13 @@ import torch
 
 from deepalm.config import (
     ExperimentConfiguration,
+    PolicyConfiguration,
     RunScaleConfiguration,
     resolve_configuration,
 )
 from deepalm.reference_bank import ReferenceBankProvider
 from deepalm.term_structures import MarketScenarioModel
-from deepalm.training import BMETrainer
+from deepalm.training import BMConstantTrainer, BMETrainer
 
 SOURCE = (
     Path(__file__).resolve().parents[1]
@@ -145,3 +146,33 @@ def test_bme_device_validation_records_cpu_and_available_mps(tmp_path: Path) -> 
         assert records[1].checkpoint_path is not None
     else:
         assert records[1].status == "not-run"
+
+
+def test_constant_benchmark_uses_the_shared_trainer_for_both_horizons(
+    tmp_path: Path,
+) -> None:
+    configuration = replace(
+        _configuration(tmp_path),
+        experiment=ExperimentConfiguration(horizons_years=(5, 15), include_swaps=False),
+        policy=PolicyConfiguration(names=("BM^C",)),
+    )
+    model = MarketScenarioModel()
+    historical = model.load_historical_term_structures(SOURCE)
+    calibration = model.calibrate_hjm_pca(historical)
+    snapshot = ReferenceBankProvider().build_canonical(historical)
+
+    results = BMConstantTrainer(
+        configuration,
+        snapshot=snapshot,
+        historical=historical,
+        calibration=calibration,
+    ).fit_all()
+    checkpoint = torch.load(results[0].checkpoint_path, weights_only=False)
+
+    assert [result.resource_profile.horizon_years for result in results] == [5, 15]
+    assert all(result.optimizer_updates == 1 for result in results)
+    assert checkpoint["policy"] == "BM^C"
+    action_record = checkpoint["selection_history"][0]["action_record"]
+    assert len(action_record["investment_maturity_totals"]) == 13
+    assert len(action_record["funding_maturity_totals"]) == 16
+    assert action_record["minimum_action"] >= 0.0

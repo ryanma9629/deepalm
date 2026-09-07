@@ -1,4 +1,4 @@
-"""Bounded local training for the BM^E treasury benchmark."""
+"""Bounded local training for no-swap treasury benchmarks."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from deepalm.objective import (
     evaluation_objective_parameters,
     sample_training_objective_parameters,
 )
-from deepalm.policies import BMEqualPolicy
+from deepalm.policies import BMConstantPolicy, BMEqualPolicy, TreasuryPolicy
 from deepalm.reference_bank import ReferenceBankSnapshot
 from deepalm.resources import ResourceMonitor, ResourceSnapshot
 from deepalm.runoff import ALMSimulator
@@ -37,10 +37,14 @@ from deepalm.term_structures import (
 _BASE_LEARNING_RATE = 5e-4
 _MAX_LEARNING_RATE = 5e-3
 _GRADIENT_CLIP_NORM = 0.2
+_POLICY_TYPES: dict[str, type[TreasuryPolicy]] = {
+    "BM^E": BMEqualPolicy,
+    "BM^C": BMConstantPolicy,
+}
 
 
 class TrainingError(RuntimeError):
-    """Raised when a bounded BM^E training job cannot be completed safely."""
+    """Raised when a bounded treasury benchmark job cannot complete safely."""
 
     def __init__(
         self, message: str, *, diagnostics: dict[str, object] | None = None
@@ -56,6 +60,17 @@ class SelectionRecord:
     epoch: int
     total_loss: float
     penalty_loss: float
+    action_record: SelectionActionRecord
+
+
+@dataclass(frozen=True)
+class SelectionActionRecord:
+    """Aggregated no-swap actions observed on one fixed selection evaluation."""
+
+    investment_maturity_totals: tuple[float, ...]
+    funding_maturity_totals: tuple[float, ...]
+    minimum_action: float
+    maximum_action: float
 
 
 @dataclass(frozen=True)
@@ -78,10 +93,10 @@ class ResourceProfile:
 
 
 @dataclass(frozen=True)
-class BMETrainingResult:
-    """Selected BM^E policy and the evidence produced by its local training."""
+class BenchmarkTrainingResult:
+    """Selected benchmark policy and the evidence produced by local training."""
 
-    policy: BMEqualPolicy
+    policy: TreasuryPolicy
     checkpoint_path: Path
     selected_epoch: int
     selection_history: tuple[SelectionRecord, ...]
@@ -103,8 +118,8 @@ class DeviceValidationRecord:
     checkpoint_path: Path | None
 
 
-class BMETrainer:
-    """Train, select, restore, and document one BM^E policy/horizon job."""
+class BenchmarkTrainer:
+    """Train, select, restore, and document one no-swap benchmark/horizon job."""
 
     def __init__(
         self,
@@ -113,10 +128,13 @@ class BMETrainer:
         snapshot: ReferenceBankSnapshot,
         historical: HistoricalTermStructures,
         calibration: HjmPcaCalibration,
+        policy_name: str,
         simulator: ALMSimulator | None = None,
         market_model: MarketScenarioModel | None = None,
         resource_monitor: ResourceMonitor | None = None,
     ) -> None:
+        if policy_name not in _POLICY_TYPES:
+            raise TrainingError(f"Unsupported benchmark policy: {policy_name}")
         self._configuration = configuration
         self._snapshot = snapshot
         self._historical = historical
@@ -133,16 +151,19 @@ class BMETrainer:
             ),
             device=configuration.optimization.device,
         )
+        self._policy_name = policy_name
 
-    def fit(self, *, horizon_years: int) -> BMETrainingResult:
-        """Run all configured local BM^E updates and reload the best selection state."""
+    def fit(self, *, horizon_years: int) -> BenchmarkTrainingResult:
+        """Run all configured local updates and reload the best selection state."""
 
         if horizon_years not in self._configuration.experiment.horizons_years:
             raise TrainingError(
                 "Requested horizon is not enabled by the resolved experiment"
             )
-        if "BM^E" not in self._configuration.policy.names:
-            raise TrainingError("Resolved policy configuration does not include BM^E")
+        if self._policy_name not in self._configuration.policy.names:
+            raise TrainingError(
+                f"Resolved policy configuration does not include {self._policy_name}"
+            )
 
         scale = self._configuration.run_scale
         updates_per_epoch = _ceil_division(
@@ -150,10 +171,14 @@ class BMETrainer:
         )
         torch.manual_seed(
             _derived_seed(
-                self._configuration.seeds["model_initialization"], "BM^E", horizon_years
+                self._configuration.seeds["model_initialization"],
+                self._policy_name,
+                horizon_years,
             )
         )
-        policy = BMEqualPolicy(device=self._device, dtype=self._dtype)
+        policy = _POLICY_TYPES[self._policy_name](
+            device=self._device, dtype=self._dtype
+        )
         optimizer = torch.optim.RAdam(
             policy.parameters(), lr=_BASE_LEARNING_RATE, weight_decay=0.0
         )
@@ -166,9 +191,12 @@ class BMETrainer:
             cycle_momentum=False,
         )
         timing = _TimingAccumulator()
-        peaks: list[ResourceSnapshot] = [self._monitor.check("before-bme-warmup")]
+        policy_tag = _policy_tag(self._policy_name)
+        peaks: list[ResourceSnapshot] = [
+            self._monitor.check(f"before-{policy_tag}-warmup")
+        ]
         timing.warmup_seconds = _warmup_device(self._device)
-        peaks.append(self._monitor.check("after-bme-warmup"))
+        peaks.append(self._monitor.check(f"after-{policy_tag}-warmup"))
 
         best: tuple[float, float] | None = None
         best_epoch = 0
@@ -192,6 +220,7 @@ class BMETrainer:
                     seed=_derived_seed(
                         _job_seed(
                             self._configuration.seeds["objective_parameters"],
+                            self._policy_name,
                             horizon_years,
                         ),
                         epoch,
@@ -219,12 +248,12 @@ class BMETrainer:
                 )
                 if outcome.objective is None:
                     raise TrainingError(
-                        "BM^E rollout did not return the training objective"
+                        f"{self._policy_name} rollout did not return the training objective"
                     )
                 loss = outcome.objective.total.mean()
                 if not torch.isfinite(loss):
                     raise TrainingError(
-                        "BM^E training loss is non-finite",
+                        f"{self._policy_name} training loss is non-finite",
                         diagnostics={
                             "horizon_years": horizon_years,
                             "epoch": epoch,
@@ -243,7 +272,7 @@ class BMETrainer:
                     or clipped_norm.item() > _GRADIENT_CLIP_NORM + 1e-5
                 ):
                     raise TrainingError(
-                        "BM^E gradient clipping did not produce a finite bound",
+                        f"{self._policy_name} gradient clipping did not produce a finite bound",
                         diagnostics={
                             "horizon_years": horizon_years,
                             "epoch": epoch,
@@ -264,7 +293,7 @@ class BMETrainer:
                     for old, new in zip(before, policy.parameters(), strict=True)
                 ):
                     raise TrainingError(
-                        "BM^E optimizer step did not update either scale",
+                        f"{self._policy_name} optimizer step did not update policy parameters",
                         diagnostics={
                             "horizon_years": horizon_years,
                             "epoch": epoch,
@@ -274,7 +303,9 @@ class BMETrainer:
                     )
                 updates += 1
                 peaks.append(
-                    self._monitor.check(f"after-bme-{horizon_years}y-update-{updates}")
+                    self._monitor.check(
+                        f"after-{_policy_tag(self._policy_name)}-{horizon_years}y-update-{updates}"
+                    )
                 )
 
             selection = self._select(
@@ -293,11 +324,15 @@ class BMETrainer:
                     for name, value in policy.state_dict().items()
                 }
             peaks.append(
-                self._monitor.check(f"after-bme-{horizon_years}y-selection-{epoch}")
+                self._monitor.check(
+                    f"after-{_policy_tag(self._policy_name)}-{horizon_years}y-selection-{epoch}"
+                )
             )
 
         if best_state is None or best is None:
-            raise TrainingError("BM^E training did not produce a selectable checkpoint")
+            raise TrainingError(
+                f"{self._policy_name} training did not produce a selectable checkpoint"
+            )
         policy.load_state_dict(best_state)
         profile = _resource_profile(
             horizon_years=horizon_years,
@@ -312,6 +347,7 @@ class BMETrainer:
             _checkpoint_contents(
                 configuration=self._configuration,
                 policy=policy,
+                policy_name=self._policy_name,
                 horizon_years=horizon_years,
                 selected_epoch=best_epoch,
                 selection_history=history,
@@ -343,7 +379,7 @@ class BMETrainer:
             timing=timing,
             snapshots=peaks,
         )
-        return BMETrainingResult(
+        return BenchmarkTrainingResult(
             policy=policy,
             checkpoint_path=checkpoint_path,
             selected_epoch=best_epoch,
@@ -354,8 +390,8 @@ class BMETrainer:
             resource_profile=profile,
         )
 
-    def fit_all(self) -> tuple[BMETrainingResult, ...]:
-        """Train the configured BM^E policy once for every resolved horizon."""
+    def fit_all(self) -> tuple[BenchmarkTrainingResult, ...]:
+        """Train the configured benchmark once for every resolved horizon."""
 
         return tuple(
             self.fit(horizon_years=horizon_years)
@@ -381,11 +417,12 @@ class BMETrainer:
                     )
                 )
                 continue
-            result = BMETrainer(
+            result = BenchmarkTrainer(
                 _device_validation_configuration(self._configuration, device),
                 snapshot=self._snapshot,
                 historical=self._historical,
                 calibration=self._calibration,
+                policy_name=self._policy_name,
                 simulator=self._simulator,
                 market_model=self._market_model,
             ).fit(horizon_years=horizon_years)
@@ -424,7 +461,9 @@ class BMETrainer:
             horizon_years=horizon_years,
             paths=paths,
             seed=_job_seed(
-                self._configuration.seeds["market_scenarios"], horizon_years
+                self._configuration.seeds["market_scenarios"],
+                self._policy_name,
+                horizon_years,
             ),
             split="training",
             epoch=epoch,
@@ -435,7 +474,7 @@ class BMETrainer:
 
     def _select(
         self,
-        policy: BMEqualPolicy,
+        policy: TreasuryPolicy,
         *,
         epoch: int,
         horizon_years: int,
@@ -443,6 +482,10 @@ class BMETrainer:
     ) -> SelectionRecord:
         total_losses: list[torch.Tensor] = []
         penalty_losses: list[torch.Tensor] = []
+        investment_maturity_totals = torch.zeros(13, dtype=torch.float64)
+        funding_maturity_totals = torch.zeros(16, dtype=torch.float64)
+        minimum_action = float("inf")
+        maximum_action = float("-inf")
         with torch.no_grad():
             for start in range(
                 0,
@@ -461,7 +504,9 @@ class BMETrainer:
                     horizon_years=horizon_years,
                     paths=paths,
                     seed=_job_seed(
-                        self._configuration.seeds["market_scenarios"], horizon_years
+                        self._configuration.seeds["market_scenarios"],
+                        self._policy_name,
+                        horizon_years,
                     ),
                     split="selection",
                     epoch=0,
@@ -487,27 +532,94 @@ class BMETrainer:
                 )
                 if outcome.objective is None:
                     raise TrainingError(
-                        "BM^E selection rollout did not return an objective"
+                        f"{self._policy_name} selection rollout did not return an objective"
+                    )
+                if outcome.treasury_actions is None:
+                    raise TrainingError(
+                        f"{self._policy_name} selection rollout did not record actions"
                     )
                 total_losses.append(outcome.objective.total.detach().cpu())
                 penalty_losses.append(outcome.objective.penalty.detach().cpu())
+                actions = outcome.treasury_actions.detach().cpu()
+                investment_maturity_totals += actions[:, :, :13].sum(dim=(0, 1))
+                funding_maturity_totals += actions[:, :, 13:].sum(dim=(0, 1))
+                minimum_action = min(minimum_action, float(actions.min()))
+                maximum_action = max(maximum_action, float(actions.max()))
                 _synchronize_device(self._device)
                 timing.selection_seconds += time.perf_counter() - evaluation_started
         return SelectionRecord(
             epoch=epoch,
             total_loss=float(torch.cat(total_losses).mean()),
             penalty_loss=float(torch.cat(penalty_losses).mean()),
+            action_record=SelectionActionRecord(
+                investment_maturity_totals=tuple(investment_maturity_totals.tolist()),
+                funding_maturity_totals=tuple(funding_maturity_totals.tolist()),
+                minimum_action=minimum_action,
+                maximum_action=maximum_action,
+            ),
         )
 
     def _checkpoint_path(self, horizon_years: int) -> Path:
         return (
             self._configuration.output.directory
             / self._configuration.output.run_name
-            / f"BM_E_{horizon_years}y.pt"
+            / f"{_policy_tag(self._policy_name)}_{horizon_years}y.pt"
         )
 
     def _resource_profile_path(self, horizon_years: int) -> Path:
         return self._checkpoint_path(horizon_years).with_suffix(".profile.json")
+
+
+class BMETrainer(BenchmarkTrainer):
+    """BM^E adapter for the shared benchmark-training interface."""
+
+    def __init__(
+        self,
+        configuration: ResolvedRunConfiguration,
+        *,
+        snapshot: ReferenceBankSnapshot,
+        historical: HistoricalTermStructures,
+        calibration: HjmPcaCalibration,
+        simulator: ALMSimulator | None = None,
+        market_model: MarketScenarioModel | None = None,
+        resource_monitor: ResourceMonitor | None = None,
+    ) -> None:
+        super().__init__(
+            configuration,
+            snapshot=snapshot,
+            historical=historical,
+            calibration=calibration,
+            policy_name="BM^E",
+            simulator=simulator,
+            market_model=market_model,
+            resource_monitor=resource_monitor,
+        )
+
+
+class BMConstantTrainer(BenchmarkTrainer):
+    """BM^C adapter for the shared benchmark-training interface."""
+
+    def __init__(
+        self,
+        configuration: ResolvedRunConfiguration,
+        *,
+        snapshot: ReferenceBankSnapshot,
+        historical: HistoricalTermStructures,
+        calibration: HjmPcaCalibration,
+        simulator: ALMSimulator | None = None,
+        market_model: MarketScenarioModel | None = None,
+        resource_monitor: ResourceMonitor | None = None,
+    ) -> None:
+        super().__init__(
+            configuration,
+            snapshot=snapshot,
+            historical=historical,
+            calibration=calibration,
+            policy_name="BM^C",
+            simulator=simulator,
+            market_model=market_model,
+            resource_monitor=resource_monitor,
+        )
 
 
 @dataclass
@@ -540,7 +652,8 @@ def _training_objective_parameters(
 def _checkpoint_contents(
     *,
     configuration: ResolvedRunConfiguration,
-    policy: BMEqualPolicy,
+    policy: TreasuryPolicy,
+    policy_name: str,
     horizon_years: int,
     selected_epoch: int,
     selection_history: list[SelectionRecord],
@@ -558,7 +671,7 @@ def _checkpoint_contents(
     configuration_data = configuration.to_dict()
     return {
         "format_version": 1,
-        "policy": "BM^E",
+        "policy": policy_name,
         "horizon_years": horizon_years,
         "selected_epoch": selected_epoch,
         "selection_history": [asdict(record) for record in selection_history],
@@ -595,7 +708,7 @@ def _checkpoint_contents(
                 "split": "training",
                 "base_seed": configuration.seeds["market_scenarios"],
                 "job_seed": _job_seed(
-                    configuration.seeds["market_scenarios"], horizon_years
+                    configuration.seeds["market_scenarios"], policy_name, horizon_years
                 ),
                 "epoch": "1..epochs",
                 "global_path_indices": "0..training_paths_per_epoch-1",
@@ -604,7 +717,7 @@ def _checkpoint_contents(
                 "split": "selection",
                 "base_seed": configuration.seeds["market_scenarios"],
                 "job_seed": _job_seed(
-                    configuration.seeds["market_scenarios"], horizon_years
+                    configuration.seeds["market_scenarios"], policy_name, horizon_years
                 ),
                 "epoch": 0,
                 "global_path_indices": "0..selection_paths-1",
@@ -612,21 +725,25 @@ def _checkpoint_contents(
             "objective_parameters": {
                 "base_seed": configuration.seeds["objective_parameters"],
                 "job_seed": _job_seed(
-                    configuration.seeds["objective_parameters"], horizon_years
+                    configuration.seeds["objective_parameters"],
+                    policy_name,
+                    horizon_years,
                 ),
                 "derivation": "policy|horizon|epoch|batch_start",
             },
             "model_initialization": {
                 "base_seed": configuration.seeds["model_initialization"],
                 "job_seed": _job_seed(
-                    configuration.seeds["model_initialization"], horizon_years
+                    configuration.seeds["model_initialization"],
+                    policy_name,
+                    horizon_years,
                 ),
-                "policy": "BM^E deterministic-zero-scales",
+                "policy": f"{policy_name} deterministic-initial-parameters",
             },
             "data_loader_order": {
                 "base_seed": configuration.seeds["data_loader_order"],
                 "job_seed": _job_seed(
-                    configuration.seeds["data_loader_order"], horizon_years
+                    configuration.seeds["data_loader_order"], policy_name, horizon_years
                 ),
                 "ordering": "ascending global path index",
             },
@@ -669,14 +786,14 @@ def _resource_profile(
     )
 
 
-def _gradient_norm(policy: BMEqualPolicy) -> torch.Tensor:
+def _gradient_norm(policy: TreasuryPolicy) -> torch.Tensor:
     gradients = [
         parameter.grad.reshape(-1)
         for parameter in policy.parameters()
         if parameter.grad is not None
     ]
     if not gradients:
-        raise TrainingError("BM^E policy has no gradients to clip")
+        raise TrainingError("Benchmark policy has no gradients to clip")
     return torch.linalg.vector_norm(torch.cat(gradients))
 
 
@@ -749,8 +866,12 @@ def _derived_seed(base_seed: int, *parts: object) -> int:
     return int.from_bytes(hashlib.sha256(encoded).digest()[:8], "little")
 
 
-def _job_seed(base_seed: int, horizon_years: int) -> int:
-    return _derived_seed(base_seed, "BM^E", horizon_years)
+def _job_seed(base_seed: int, policy_name: str, horizon_years: int) -> int:
+    return _derived_seed(base_seed, policy_name, horizon_years)
+
+
+def _policy_tag(policy_name: str) -> str:
+    return policy_name.replace("^", "_")
 
 
 def _json_identity(value: dict[str, object]) -> str:
