@@ -21,6 +21,7 @@ Produce an implementation-ready decision set for a Python and PyTorch methodolog
 ## Decisions so far
 
 - [Inventory the paper's disclosed inputs and proprietary gaps](issues/01-inventory-disclosed-inputs-and-private-gaps.md): Public inputs support methodological reproduction, while proprietary cash-flow ladders, scale, product allocations, spreads, and cost bases must be replaced transparently in the Reference Bank.
+- [Resolve SNB, Svensson, and HJM-PCA numerical conventions](issues/02-resolve-term-structure-conventions.md): SNB units and the high-level HJM-PCA pipeline are recoverable, but several numerical conventions are undisclosed and the paper's `lambda * q` factor conflicts with the standard `sqrt(lambda) * q` covariance factor.
 - [Catalogue no-swap benchmarks, experiments, and validation claims](issues/03-catalog-no-swap-experiments.md): The reproduction must cover BM^E, BM^C, BM^D, and MM at 5-year and 15-year horizons plus MM(15y|5y), using published aggregate results as directional landmarks rather than exact targets.
 
 ## Not yet specified
