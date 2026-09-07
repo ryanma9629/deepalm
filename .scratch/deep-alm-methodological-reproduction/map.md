@@ -1,7 +1,7 @@
 # Plan the Deep ALM methodological reproduction
 
 Type: wayfinder:map
-Status: open
+Status: resolved
 
 ## Destination
 
@@ -25,16 +25,14 @@ Produce an implementation-ready decision set for a Python and PyTorch methodolog
 - [Catalogue no-swap benchmarks, experiments, and validation claims](issues/03-catalog-no-swap-experiments.md): The reproduction must cover BM^E, BM^C, BM^D, and MM at 5-year and 15-year horizons plus MM(15y|5y), using published aggregate results as directional landmarks rather than exact targets.
 - [Define the Reference Bank construction policy](issues/04-define-reference-bank-policy.md): Use one 10,000 mCHF paper-anchored canonical bank for both horizons, generated from transparent seasoned product templates behind a replaceable snapshot contract, with fail-fast financial checks and named one-factor sensitivities.
 - [Choose the Paper and Corrected convention boundary](issues/05-set-convention-boundary.md): Default to Corrected and reserve Paper for paired fidelity analysis; only PCA loading scale and loan monthly-interest annualization branch, while clear errata are fixed in both and undisclosed numerical choices remain explicit shared defaults.
+- [Define methodological reproduction acceptance thresholds](issues/06-set-acceptance-thresholds.md): Separate quick development validation from paper-scale methodological reproduction, with hard financial and gradient gates, sampling-aware HJM and paired-policy statistics, quantitative horizon-behavior checks, and complete reproducibility evidence.
 
-## Not yet specified
+## Ready for specification
 
-- The interfaces and tensor representations for balance-sheet state and monthly cash-flow ladders.
-- The module seams and the boundary of PyTorch-differentiable computation.
-- Concrete parameter values and runtime targets for quick and paper-scale profiles.
-- The training, validation, random-seed, and checkpoint-selection protocol.
-- The set of figures and result tables produced by the analysis layer.
-- The concrete file schema and calibration rules for Reference Bank data.
-- The layering of automated tests and financial reconciliation checks.
+- Collapse the linked decisions into concrete Python interfaces, tensor shapes, YAML schemas, package modules, CLI commands, artifact paths, and test modules with `/to-spec`.
+- Preserve the `ReferenceBankSnapshot` seam and make the differentiable ALM transition boundary explicit in that specification.
+- Use the fixed quick and paper-scale sample/epoch settings from the acceptance decision. Measure wall-clock performance on the user's Apple Silicon machine during implementation and treat it as an engineering benchmark, not a methodological pass/fail gate.
+- After the specification is approved, use `/to-tickets` to split implementation into blocker-aware tracer-bullet tickets; do not implement directly from this map.
 
 ## Out of scope
 

@@ -1,7 +1,7 @@
 # Define methodological reproduction acceptance thresholds
 
 Type: grilling
-Status: claimed
+Status: resolved
 Blocked by: 01, 02, 03, 04, 05
 
 ## Question
@@ -52,3 +52,11 @@ Using the established data inventory, convention choices, and no-swap experiment
 - Every result directory must contain the resolved YAML, convention/run/custom identity, Git and dependency versions, device/dtype, hashes of the CSV, source PDF, and Reference Bank snapshot, weekly dates and calibration artifacts, every seed, checkpoint history, final metrics, and a machine-readable acceptance result. CPU scenario generation is bitwise reproducible; MPS training is statistically rather than weight-bit reproducible.
 - Layer automated verification into unit, property/integration, gradient, quick end-to-end, and slow paper-scale acceptance suites. Ordinary pytest does not launch paper-scale training.
 - Generate a unified acceptance report with pass/fail/not-applicable, observed values, thresholds, and evidence paths. Any required hard, statistical, or core directional gate failure blocks the `methodologically-reproduced` label. Never omit adverse seeds or test paths; retain `development-validated` or report reproduction failure honestly.
+
+## Answer
+
+Acceptance has two levels. A full quick run is `development-validated`; only the complete paper-scale Corrected matrix may earn `methodologically-reproduced`. The Corrected matrix contains BM^E, BM^C, BM^D, and MM at both horizons plus MM(15y|5y); the required paired Paper matrix contains BM^D and MM at both horizons. Training, checkpoint-selection, and the locked 1,600-path test set are isolated. Corrected MM is trained with three seeds per horizon, and core behavior must hold in at least two.
+
+Hard gates cover float64 curve/HJM identities, Reference Bank present values, per-path per-time balance-sheet and cash reconciliation, nonnegative and correctly shaped cash flows, exact constraint fixtures, finite differentiable execution, finite-difference agreement, stop-gradient boundaries, and gradient clipping. Statistical gates require at least 90% explained variance in three PCA components, bounded cubic-fit error, a 50,000-shock HJM covariance check within 5%, and paired bootstrap evidence that MM improves core loss, penalty, and return measures over BM^D.
+
+Behavior gates require rare regulatory-constraint breaches, EYR as the most frequent breach, lower normalized action turnover for the long-horizon policy, and reduced terminal concentration for MM(15y|5y). They do not falsely require every equity dispersion or tail-risk statistic to improve. Required evidence includes no-swap Tables 1-5, Figures 3 and 5-17, a diagnostic Figure 4 Hull-White comparator, complete manifests and hashes, layered automated tests, and a machine-readable acceptance report. Any required failure blocks the methodological-reproduction label and no adverse seed or test path may be omitted.
