@@ -8,6 +8,7 @@ from types import MappingProxyType
 
 import torch
 
+from deepalm.constraints import ConstraintState, ConstraintValues, evaluate_constraints
 from deepalm.deposits import (
     DEFAULT_DEPOSIT_CONFIGURATION,
     DepositConfiguration,
@@ -22,6 +23,7 @@ from deepalm.loans import (
     LoanConfiguration,
     apply_loan_transition,
 )
+from deepalm.objective import ObjectiveParameters, ObjectiveResult, evaluate_objective
 from deepalm.reference_bank import ReferenceBankProvider, ReferenceBankSnapshot
 from deepalm.runner import OperationalRunError
 from deepalm.term_structures import MarketScenarioBatch
@@ -61,6 +63,12 @@ class PassiveRunoffResult:
     cash_penalties: torch.Tensor | None = None
     dividends: torch.Tensor | None = None
     treasury_cash_settlements: torch.Tensor | None = None
+    initial_constraint_values: torch.Tensor | None = None
+    initial_constraint_violations: torch.Tensor | None = None
+    constraint_values: torch.Tensor | None = None
+    constraint_violations: torch.Tensor | None = None
+    constraint_annual_mask: torch.Tensor | None = None
+    objective: ObjectiveResult | None = None
 
     @property
     def paths(self) -> int:
@@ -92,6 +100,8 @@ class ALMSimulator:
         include_deposit_dynamics: bool = False,
         deposit_configuration: DepositConfiguration = DEFAULT_DEPOSIT_CONFIGURATION,
         actions: torch.Tensor | None = None,
+        include_constraints: bool = False,
+        objective_parameters: ObjectiveParameters | None = None,
     ) -> PassiveRunoffResult:
         """Return all action-free states implied by a market discount-path batch."""
 
@@ -101,6 +111,8 @@ class ALMSimulator:
         transitions = states - 1
         _validate_horizon(market, transitions)
         _require_positive_finite("discount_factors", discounts)
+        if objective_parameters is not None:
+            include_constraints = True
         action_schedule = _action_schedule(actions, paths, transitions, device, dtype)
         spots = (
             _spot_tensor(market, device=device, dtype=dtype, expected_shape=discounts.shape)
@@ -149,14 +161,26 @@ class ALMSimulator:
         penalties = torch.empty((paths, transitions), device=device, dtype=dtype) if include_deposit_dynamics else None
         dividends = torch.zeros((paths, transitions), device=device, dtype=dtype) if include_deposit_dynamics else None
         treasury_cash = torch.zeros((paths, transitions), device=device, dtype=dtype) if action_schedule is not None else None
+        constraint_steps: list[ConstraintValues] | None = [] if include_constraints else None
 
         cash[:, 0] = snapshot.cash
+        initial_constraints = (
+            evaluate_constraints(_constraint_state(cash[:, 0], ladders, discounts[:, 0]))
+            if include_constraints
+            else None
+        )
         if action_schedule is not None:
             ladders["investments"], ladders["funding"], treasury_cash[:, 0] = apply_treasury_action(ladders["investments"], ladders["funding"], discounts[:, 0], _treasury_action_at(action_schedule, 0))
             cash[:, 0] += treasury_cash[:, 0]
         self._revalue_state(ladders, discounts[:, 0], values, 0)
         self._record_balance_sheet(cash, assets, liabilities, equity, values, 0)
         self._validate_state(cash, assets, liabilities, equity, accounting_error, 0)
+        if include_constraints:
+            assert constraint_steps is not None
+            current_constraints = evaluate_constraints(
+                _constraint_state(cash[:, 0], ladders, discounts[:, 0])
+            )
+            constraint_steps.append(current_constraints)
 
         for transition in range(transitions):
             asset_cash_movement = sum(
@@ -269,6 +293,20 @@ class ALMSimulator:
                 self._record_balance_sheet(
                     cash, assets, liabilities, equity, values, transition + 1
                 )
+            if include_constraints and transition + 1 < transitions:
+                assert constraint_steps is not None
+                annual_close = (transition + 1) % 12 == 0
+                current_constraints = evaluate_constraints(
+                    _constraint_state(
+                        cash[:, transition + 1],
+                        ladders,
+                        discounts[:, transition + 1],
+                    ),
+                    previous_annual_equity=(
+                        equity[:, transition + 1 - 12].clone() if annual_close else None
+                    ),
+                )
+                constraint_steps.append(current_constraints)
             dividend = torch.zeros_like(cash[:, transition])
             if include_deposit_dynamics and (transition + 1) % 12 == 0 and transition + 1 < transitions:
                 dividends[:, transition] = torch.clamp_min(equity[:, transition + 1] - equity[:, transition + 1 - 12], 0.0) * deposit_configuration.dividend_share
@@ -296,6 +334,34 @@ class ALMSimulator:
                 transition + 1,
             )
 
+        constraint_values = (
+            torch.stack([step.values for step in constraint_steps], dim=1)
+            if constraint_steps is not None
+            else None
+        )
+        constraint_violations = (
+            torch.stack([step.violations for step in constraint_steps], dim=1)
+            if constraint_steps is not None
+            else None
+        )
+        constraint_annual_mask = (
+            torch.stack([step.annual_mask for step in constraint_steps], dim=1)
+            if constraint_steps is not None
+            else None
+        )
+        if objective_parameters is not None:
+            assert constraint_violations is not None
+        objective = (
+            evaluate_objective(
+                torch.full_like(equity[:, 0], snapshot.equity),
+                equity[:, -1],
+                horizon_years=transitions // 12,
+                violations=constraint_violations,
+                parameters=objective_parameters,
+            )
+            if objective_parameters is not None
+            else None
+        )
         return PassiveRunoffResult(
             cash=cash,
             assets=assets,
@@ -313,6 +379,16 @@ class ALMSimulator:
             cash_penalties=penalties,
             dividends=dividends,
             treasury_cash_settlements=treasury_cash,
+            initial_constraint_values=(
+                initial_constraints.values if initial_constraints is not None else None
+            ),
+            initial_constraint_violations=(
+                initial_constraints.violations if initial_constraints is not None else None
+            ),
+            constraint_values=constraint_values,
+            constraint_violations=constraint_violations,
+            constraint_annual_mask=constraint_annual_mask,
+            objective=objective,
         )
 
     @staticmethod
@@ -416,6 +492,23 @@ def _action_schedule(
 
 def _treasury_action_at(schedule: torch.Tensor, time: int) -> TreasuryAction:
     return TreasuryAction(schedule[:, time, :13], schedule[:, time, 13:])
+
+
+def _constraint_state(
+    cash: torch.Tensor,
+    ladders: Mapping[str, torch.Tensor],
+    discounts: torch.Tensor,
+) -> ConstraintState:
+    return ConstraintState(
+        cash=cash.clone(),
+        investments=ladders["investments"],
+        mortgages=ladders["mortgages"],
+        enterprise_loans=ladders["enterprise_loans"],
+        non_maturity_deposits=ladders["non_maturity_deposits"],
+        term_deposits=ladders["term_deposits"],
+        funding=ladders["funding"],
+        discounts=discounts,
+    )
 
 
 def _spot_tensor(

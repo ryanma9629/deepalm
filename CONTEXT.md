@@ -39,3 +39,29 @@ _Avoid_: 校准窗口
 **标准初始曲线（Canonical Initial Curve）**:
 2022 年 7 月 15 日的期限结构；它是 Reference Bank 的估值起点和市场情景的共同起点。
 _Avoid_: 最新曲线, 任意起始曲线
+
+### Regulatory constraints
+
+**流动性覆盖率（Liquidity Coverage Ratio, LCR）**:
+高质量流动资产相对于 30 日净流出的比率；本复现的约束下限为 105%。
+_Avoid_: 流动性比例, 流动性缓冲
+
+**净稳定资金比率（Net Stable Funding Ratio, NSFR）**:
+可用稳定资金相对于所需稳定资金的比率；本复现的约束下限为 105%。
+_Avoid_: 长期流动性比例
+
+**现金对最低准备金比率（Cash-to-Minimum-Reserve Ratio, CMR）**:
+现金相对于瑞士央行最低准备金的比率；本复现的约束下限为 100%。
+_Avoid_: 准备金覆盖率
+
+**权益/风险加权资产比率（Equity/RWA）**:
+经济权益相对于风险加权资产的资本约束比率；本复现的约束下限为 17%。
+_Avoid_: 杠杆率, 资本率
+
+**利率敏感度（Interest Rate Sensitivity, IRS）**:
+平行上、下移 100 个基点后最差的绝对权益变化，相对于当前权益的比率；本复现的约束上限为 8.5%。
+_Avoid_: 久期, DV01
+
+**超额年度权益回报（Excess Yearly Equity Return, EYR）**:
+年度分红前权益变化扣除 6 mCHF 后，相对于上一年权益的比率；仅在年度关闭时适用，约束下限为 0%。
+_Avoid_: 年收益率, 股东回报
