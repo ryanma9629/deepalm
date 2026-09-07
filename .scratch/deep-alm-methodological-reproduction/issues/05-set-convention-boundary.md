@@ -23,3 +23,9 @@ For each material numerical ambiguity identified in the term-structure research,
 - Reconstruct valid daily curves, select the last valid curve in each `W-FRI` week, difference consecutive selected curves, and estimate a centered sample covariance with divisor `n-1`; multiply it by 52, without interpolating missing weeks or deleting outliers. Persist the selected dates.
 - Scale PCA loadings by `lambda * q` in the Paper profile and by `sqrt(lambda) * q` in the Corrected profile. Report the covariance implied by `V @ V.T` under both.
 - Simulate the annualized HJM diffusion directly on the monthly ALM clock with `dt=1/12`. Use 60/180 transitions and 61/181 states. Keep weekly substep simulation only as a validation tool shared by both profiles.
+
+### Grilling round 3
+
+- Convert SNB beta parameters to decimal rates at ingestion. Use decimal rates and volatilities, years for maturities and time steps, and mCHF for amounts throughout both profiles; percentage and basis-point units exist only at input/output boundaries.
+- Stabilize each PCA eigenvector sign by making its largest-absolute-value element positive. Fit each scaled loading by unweighted cubic least squares with an intercept on normalized tenor `u = x / 15`, without a zero boundary constraint or clipping. Both profiles share the fit procedure but receive their respective scaled loadings.
+- Compute the HJM volatility integral by the paper's trapezoidal rule beginning with the polynomial value at tenor zero, use the paper's forward tenor difference, and scale Gaussian innovations by `sqrt(dt)`. Use the analytic cubic integral only as a numerical validation oracle.
