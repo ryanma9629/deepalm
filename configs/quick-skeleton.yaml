@@ -1,0 +1,38 @@
+source_data:
+  snb_csv: data/snb-data-rendopar-en-all_19880401-20250731.csv
+  paper_pdf: docs/Deep treasury management for banks.pdf
+
+convention:
+  profile: corrected
+
+run_scale:
+  profile: quick
+
+reference_bank:
+  profile: canonical
+  initial_assets:
+    value: 10000
+    unit: mCHF
+
+experiment:
+  horizons_years: [5, 15]
+  include_swaps: false
+
+policy:
+  names: [bme]
+
+optimization:
+  device: auto
+  dtype: float32
+
+seeds:
+  market: 20260907
+  training: 20260908
+  bootstrap: 20260909
+
+output:
+  directory: artifacts
+  run_name: quick-skeleton
+
+acceptance:
+  required_status: development-validated
