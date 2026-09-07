@@ -171,7 +171,7 @@ def resolve_configuration(raw: object) -> ResolvedRunConfiguration:
             f"Missing configuration sections: {', '.join(missing_sections)}"
         )
 
-    return ResolvedRunConfiguration(
+    resolved = ResolvedRunConfiguration(
         source_data=_resolve_source_data(root["source_data"]),
         convention=_resolve_convention(root["convention"]),
         run_scale=_resolve_run_scale(root["run_scale"]),
@@ -183,6 +183,8 @@ def resolve_configuration(raw: object) -> ResolvedRunConfiguration:
         output=_resolve_output(root["output"]),
         acceptance=_resolve_acceptance(root["acceptance"]),
     )
+    _validate_combinations(resolved)
+    return resolved
 
 
 def _resolve_source_data(raw: object) -> SourceDataConfiguration:
@@ -368,6 +370,23 @@ def _resolve_acceptance(raw: object) -> AcceptanceConfiguration:
             "'methodologically-reproduced'"
         )
     return AcceptanceConfiguration(required_status=required_status)
+
+
+def _validate_combinations(configuration: ResolvedRunConfiguration) -> None:
+    if configuration.acceptance.required_status != "methodologically-reproduced":
+        return
+    if configuration.run_scale.profile != "paper_scale":
+        raise ConfigurationError(
+            "methodologically-reproduced requires the paper_scale run profile"
+        )
+    if set(configuration.experiment.horizons_years) != {5, 15}:
+        raise ConfigurationError(
+            "methodologically-reproduced requires both 5-year and 15-year horizons"
+        )
+    if set(configuration.policy.names) != {"BM^E", "BM^C", "BM^D", "MM"}:
+        raise ConfigurationError(
+            "methodologically-reproduced requires BM^E, BM^C, BM^D, and MM"
+        )
 
 
 def _section(

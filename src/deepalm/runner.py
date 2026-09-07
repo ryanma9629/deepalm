@@ -10,7 +10,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -38,6 +39,10 @@ class RunBundle:
     acceptance_status: AcceptanceStatus
     artifact_directory: Path | None
     error: str | None = None
+    artifacts: tuple[Path, ...] = ()
+    metrics: Mapping[str, float] = field(default_factory=dict)
+    checkpoints: tuple[Path, ...] = ()
+    acceptance_evidence: tuple[Path, ...] = ()
 
 
 class ReproductionRunner:
@@ -56,17 +61,22 @@ class ReproductionRunner:
             manifest = _build_manifest(configuration, status, acceptance_status)
             artifact_directory = _write_bundle_atomically(configuration, manifest)
         except (OSError, ValueError) as error:
+            failure_directory = _write_failure_bundle(configuration, error)
             return RunBundle(
                 status=RunStatus.FAILED,
                 acceptance_status=AcceptanceStatus.PENDING,
-                artifact_directory=None,
+                artifact_directory=failure_directory,
                 error=str(error),
+                artifacts=(failure_directory / "manifest.json",)
+                if failure_directory is not None
+                else (),
             )
 
         return RunBundle(
             status=status,
             acceptance_status=acceptance_status,
             artifact_directory=artifact_directory,
+            artifacts=(artifact_directory / "manifest.json",),
         )
 
 
@@ -116,6 +126,48 @@ def _write_bundle_atomically(
         shutil.rmtree(staging_directory, ignore_errors=True)
         raise
     return final_directory
+
+
+def _write_failure_bundle(
+    configuration: ResolvedRunConfiguration, error: Exception
+) -> Path | None:
+    """Best-effort persistence for failures that occur before a completed bundle exists."""
+
+    output_root = configuration.output.directory
+    staging_directory: Path | None = None
+    try:
+        if output_root.exists() and not output_root.is_dir():
+            return None
+        output_root.mkdir(parents=True, exist_ok=True)
+        staging_directory = Path(
+            tempfile.mkdtemp(
+                prefix=f".{configuration.output.run_name}.failed-", dir=output_root
+            )
+        )
+        failure_manifest = {
+            "status": RunStatus.FAILED.value,
+            "acceptance_status": AcceptanceStatus.PENDING.value,
+            "created_at": datetime.now(UTC).isoformat(),
+            "error": str(error),
+            "git_revision": _git_revision(),
+            "runtime": _runtime_identity(configuration),
+            "seed_registry": configuration.seeds,
+            "resolved_configuration": configuration.to_dict(),
+            "resolved_configuration_hash": _configuration_hash(configuration.to_dict()),
+        }
+        (staging_directory / "manifest.json").write_text(
+            json.dumps(failure_manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        failure_directory = output_root / (
+            f"{configuration.output.run_name}.failed-{staging_directory.name.rsplit('-', 1)[-1]}"
+        )
+        os.replace(staging_directory, failure_directory)
+        return failure_directory
+    except OSError:
+        if staging_directory is not None:
+            shutil.rmtree(staging_directory, ignore_errors=True)
+        return None
 
 
 def _sha256(path: Path) -> str:

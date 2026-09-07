@@ -108,6 +108,31 @@ def test_configuration_rejects_invalid_inputs(
         resolve_configuration(invalid)
 
 
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda data: data["acceptance"].update(
+            {"required_status": "methodologically-reproduced"}
+        ),
+        lambda data: (
+            data["run_scale"].update({"profile": "paper_scale"}),
+            data["acceptance"].update(
+                {"required_status": "methodologically-reproduced"}
+            ),
+        ),
+    ],
+)
+def test_configuration_rejects_incompatible_run_combinations(
+    tmp_path: Path, change: object
+) -> None:
+    invalid = configuration_data(tmp_path)
+    assert callable(change)
+    change(invalid)
+
+    with pytest.raises(ConfigurationError, match="methodologically-reproduced"):
+        resolve_configuration(invalid)
+
+
 def test_runner_writes_an_atomic_auditable_bundle(tmp_path: Path) -> None:
     configuration = configuration_data(tmp_path)
     write_source_inputs(configuration)
@@ -182,6 +207,22 @@ def test_runner_reports_operational_failure_without_a_completed_bundle(
     assert "not a directory" in bundle.error
 
 
+def test_runner_preserves_diagnostics_for_a_failed_run(tmp_path: Path) -> None:
+    configuration = configuration_data(tmp_path)
+
+    bundle = ReproductionRunner().run(resolve_configuration(configuration))
+
+    assert bundle.status is RunStatus.FAILED
+    assert bundle.artifact_directory is not None
+    assert bundle.artifact_directory.is_dir()
+    manifest = json.loads((bundle.artifact_directory / "manifest.json").read_text())
+    assert manifest["status"] == "failed"
+    assert manifest["error"]
+    assert bundle.metrics == {}
+    assert bundle.checkpoints == ()
+    assert bundle.acceptance_evidence == ()
+
+
 def test_runner_writes_an_acceptance_failed_bundle(tmp_path: Path) -> None:
     configuration = configuration_data(tmp_path)
     write_source_inputs(configuration)
@@ -212,3 +253,39 @@ def test_cli_returns_a_configuration_exit_code(
 
     assert exit_code == 2
     assert "Unknown configuration sections" in capsys.readouterr().err
+
+
+def test_cli_dispatches_a_successful_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    configuration = configuration_data(tmp_path)
+    write_source_inputs(configuration)
+    configuration_path = tmp_path / "valid.yaml"
+    import yaml
+
+    configuration_path.write_text(yaml.safe_dump(configuration), encoding="utf-8")
+
+    exit_code = main(["run", "--config", str(configuration_path)])
+
+    artifact_directory = Path(capsys.readouterr().out.strip())
+    assert exit_code == 0
+    assert artifact_directory.is_dir()
+
+
+def test_cli_returns_an_operational_exit_code(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    configuration = configuration_data(tmp_path)
+    write_source_inputs(configuration)
+    output_path = tmp_path / "not-a-directory"
+    output_path.write_text("file", encoding="utf-8")
+    configuration["output"] = {"directory": str(output_path), "run_name": "smoke"}
+    configuration_path = tmp_path / "failure.yaml"
+    import yaml
+
+    configuration_path.write_text(yaml.safe_dump(configuration), encoding="utf-8")
+
+    exit_code = main(["run", "--config", str(configuration_path)])
+
+    assert exit_code == 1
+    assert "Operational failure" in capsys.readouterr().err
