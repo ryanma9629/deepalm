@@ -1,7 +1,7 @@
 # Define the Reference Bank construction policy
 
 Type: grilling
-Status: open
+Status: claimed
 Blocked by: 01
 
 ## Question
