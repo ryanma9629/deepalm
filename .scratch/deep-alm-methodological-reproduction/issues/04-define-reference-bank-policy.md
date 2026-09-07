@@ -1,7 +1,7 @@
 # Define the Reference Bank construction policy
 
 Type: grilling
-Status: claimed
+Status: resolved
 Blocked by: 01
 
 ## Question
@@ -37,6 +37,14 @@ Given the disclosed inputs and proprietary gaps, what evidence hierarchy, calibr
 - Evaluate canonical-trained policies first on every sensitivity variant with common market paths and seeds. If a headline conclusion or strategy ordering reverses, retrain that variant with the quick profile to separate policy generalization from an economic structural change.
 - Require synthetic and future real-data loaders to produce the same `ReferenceBankSnapshot` contract, containing initial balances, six 180-month cash-flow ladders, product assumptions, costs, initial-curve date, units, and provenance. The ALM simulator depends only on this contract.
 - Fail Reference Bank construction rather than silently repair it when balance-sheet identity, target present values, nonnegative cash flows, ladder dimensions, duration bounds, or provenance checks fail. Exact numerical tolerances belong to the later acceptance-threshold decision.
+
+## Answer
+
+The reproduction will use one canonical, paper-anchored Reference Bank shared by the 5-year and 15-year experiments. It has initial total assets of 10,000 mCHF and uses the paper's approximate Table 1 shares as exact project targets after scaling template-generated, seasoned product cash flows to their 2022-07-15 economic values. Equity is the residual of assets minus liabilities; construction fails rather than using cash or another balance as a silent plug.
+
+Private portfolio details are replaced by explicit product assumptions: mortgage originations allocate 40% to 10 years and 6% to every other 2-12 year term; enterprise loans split equally across 1-3 months; loan growth preserves the initial 55:20 product mix after replacing maturities; non-maturity and term-deposit reference-term weights are `[40%, 30%, 25%, 5%]` and `[10%, 10%, 50%, 30%]`; legacy investment and funding bonds use equal issuance across their eligible terms. The canonical loan spread is 150 bp, with initial monthly personnel and material costs of 3 and 1 mCHF.
+
+Named one-factor sensitivities cover scale, mortgage and deposit duration, loan spread, and operating cost. They are first evaluated with canonical-trained policies and common market paths; a quick-profile retraining is triggered when a headline conclusion or strategy ordering reverses. Synthetic and future real-bank inputs must implement the same `ReferenceBankSnapshot` contract and preserve complete units, provenance, assumptions, balances, and six 180-month cash-flow ladders.
 
 ### Grilling round 3
 
