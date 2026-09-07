@@ -100,6 +100,19 @@ class MarketScenarioBatch:
     horizon_years: int
     seed: int
     calibration_identity: str
+    round_trip_error: float
+
+
+@dataclass(frozen=True)
+class HjmOneStepDiagnostics:
+    """Fixed-seed statistical evidence for a convention's one-step shock."""
+
+    factor_means: np.ndarray
+    shock_covariance: np.ndarray
+    target_covariance: np.ndarray
+    relative_covariance_error: float
+    paths: int
+    seed: int
 
 
 class MarketScenarioModel:
@@ -308,6 +321,9 @@ class MarketScenarioModel:
             forwards[:, step + 1] = curve[:, :180]
         discount_factors, spot_rates = _curve_representations_from_forwards(forwards)
         _require_finite("HJM output curves", discount_factors, spot_rates)
+        round_trip_error = _scenario_round_trip_error(
+            spot_rates, discount_factors, forwards
+        )
         return MarketScenarioBatch(
             spot_rates=_readonly(spot_rates),
             discount_factors=_readonly(discount_factors),
@@ -317,6 +333,41 @@ class MarketScenarioModel:
             horizon_years=horizon_years,
             seed=seed,
             calibration_identity=calibration.calibration_identity,
+            round_trip_error=round_trip_error,
+        )
+
+    def validate_hjm_one_step(
+        self,
+        calibration: HjmPcaCalibration,
+        *,
+        convention: str,
+        paths: int = 50_000,
+        seed: int,
+    ) -> HjmOneStepDiagnostics:
+        """Measure one monthly HJM shock against its exact fitted-covariance target."""
+
+        if convention not in {"paper", "corrected"}:
+            raise TermStructureError("HJM convention must be paper or corrected")
+        if paths <= 1:
+            raise TermStructureError("At least two one-step paths are required")
+        volatility = calibration.fitted_loadings[convention]
+        factors = np.random.default_rng(seed).standard_normal((paths, 3))
+        shocks = factors @ volatility.T * np.sqrt(1.0 / 12.0)
+        shock_covariance = np.cov(shocks, rowvar=False, ddof=1)
+        target_covariance = volatility @ volatility.T / 12.0
+        relative_error = float(
+            np.linalg.norm(shock_covariance - target_covariance)
+            / np.linalg.norm(target_covariance)
+        )
+        if not np.isfinite(relative_error):
+            raise TermStructureError("HJM one-step diagnostics are non-finite")
+        return HjmOneStepDiagnostics(
+            factor_means=_readonly(factors.mean(axis=0)),
+            shock_covariance=_readonly(shock_covariance),
+            target_covariance=_readonly(target_covariance),
+            relative_covariance_error=relative_error,
+            paths=paths,
+            seed=seed,
         )
 
 
@@ -565,6 +616,19 @@ def _curve_representations_from_forwards(
     tenors = _MONTHLY_TENORS_YEARS[None, None, :]
     spots = -np.log(discounts) / tenors
     return discounts, spots
+
+
+def _scenario_round_trip_error(
+    spot_rates: np.ndarray, discount_factors: np.ndarray, forwards: np.ndarray
+) -> float:
+    rebuilt_discounts = np.exp(-np.cumsum(forwards / 12.0, axis=2))
+    rebuilt_spots = -np.log(rebuilt_discounts) / _MONTHLY_TENORS_YEARS[None, None, :]
+    return float(
+        max(
+            np.max(np.abs(discount_factors - rebuilt_discounts)),
+            np.max(np.abs(spot_rates - rebuilt_spots)),
+        )
+    )
 
 
 def _require_finite(label: str, *values: np.ndarray) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -257,6 +258,7 @@ def test_market_scenario_model_calibrates_and_generates_paired_hjm_paths() -> No
     assert calibration.fitted_loadings["paper"].shape == (180, 3)
     assert five_year.spot_rates.shape == (2, 61, 180)
     assert fifteen_year.spot_rates.shape == (2, 181, 180)
+    assert five_year.round_trip_error <= 1e-10
     assert np.array_equal(five_year.innovations, fifteen_year.innovations[:, :60])
     assert np.array_equal(
         five_year.monthly_forwards, fifteen_year.monthly_forwards[:, :61]
@@ -272,3 +274,26 @@ def test_market_scenario_model_calibrates_and_generates_paired_hjm_paths() -> No
             seed=73,
         ).spot_rates,
     )
+    for convention in ("paper", "corrected"):
+        diagnostics = model.validate_hjm_one_step(
+            calibration, convention=convention, paths=50_000, seed=91
+        )
+        assert np.all(np.abs(diagnostics.factor_means) <= 3.0 / np.sqrt(50_000))
+        assert diagnostics.relative_covariance_error <= 0.05
+
+    invalid_calibration = replace(
+        calibration,
+        cubic_coefficients={
+            **calibration.cubic_coefficients,
+            "corrected": np.full((4, 3), np.inf),
+        },
+    )
+    with pytest.raises(TermStructureError, match="non-finite"):
+        model.generate_hjm_scenarios(
+            historical,
+            invalid_calibration,
+            convention="corrected",
+            horizon_years=5,
+            paths=1,
+            seed=73,
+        )
