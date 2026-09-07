@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
 from deepalm.config import ConfigurationError, load_configuration
+from deepalm.planning import build_execution_plan
 from deepalm.runner import ReproductionRunner, RunStatus
 
 
@@ -20,6 +22,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     run_parser.add_argument(
         "--config", type=Path, required=True, help="YAML run configuration"
     )
+    plan_parser = subparsers.add_parser(
+        "plan", help="show bounded work before any market or training stage runs"
+    )
+    plan_parser.add_argument(
+        "--config", type=Path, required=True, help="YAML run configuration"
+    )
+    preflight_parser = subparsers.add_parser(
+        "preflight", help="run bounded HJM calibration and scenario generation only"
+    )
+    preflight_parser.add_argument(
+        "--config", type=Path, required=True, help="YAML run configuration"
+    )
+    bank_parser = subparsers.add_parser(
+        "bank", help="build the canonical Reference Bank and reviewable Table 1"
+    )
+    bank_parser.add_argument(
+        "--config", type=Path, required=True, help="YAML run configuration"
+    )
     arguments = parser.parse_args(argv)
 
     try:
@@ -28,7 +48,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"Configuration error: {error}", file=sys.stderr)
         return 2
 
-    bundle = ReproductionRunner().run(configuration)
+    if arguments.command == "plan":
+        print(json.dumps(build_execution_plan(configuration).to_dict(), indent=2))
+        return 0
+
+    runner = ReproductionRunner()
+    if arguments.command == "preflight":
+        bundle = runner.preflight_market(configuration)
+    elif arguments.command == "bank":
+        bundle = runner.build_reference_bank(configuration)
+    else:
+        bundle = runner.run(configuration)
     if bundle.status is RunStatus.COMPLETED:
         assert bundle.artifact_directory is not None
         print(bundle.artifact_directory)
@@ -38,6 +68,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             "Run completed but did not meet acceptance requirements.", file=sys.stderr
         )
         return 3
+    if bundle.status is RunStatus.INCOMPLETE:
+        print(f"Run incomplete: {bundle.error}", file=sys.stderr)
+        return 4
 
     print(f"Operational failure: {bundle.error}", file=sys.stderr)
     return 1

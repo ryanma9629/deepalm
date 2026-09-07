@@ -7,7 +7,10 @@ convention:
   profile: corrected
 
 run_scale:
-  profile: quick
+  profile: local_flow
+
+architecture:
+  profile: compact
 
 reference_bank:
   profile: canonical
@@ -20,11 +23,16 @@ experiment:
   include_swaps: false
 
 policy:
-  names: [BM^E]
+  names: [BM^E, BM^C, BM^D, MM]
 
 optimization:
   device: auto
   dtype: float32
+
+resources:
+  wall_clock_budget_seconds: 1800
+  process_rss_limit_bytes: 4294967296
+  accelerator_memory_limit_bytes: 4294967296
 
 seeds:
   market_scenarios: 20260907
@@ -39,4 +47,5 @@ output:
   run_name: quick-skeleton
 
 acceptance:
+  purpose: development-validation
   required_status: development-validated

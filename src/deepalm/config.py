@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import torch
 import yaml
@@ -31,6 +31,16 @@ class RunScaleConfiguration:
     selection_paths: int
     test_paths: int
     batch_size: int
+
+
+@dataclass(frozen=True)
+class ArchitectureConfiguration:
+    profile: str
+    widths: tuple[int, int, int, int]
+    encoder_features: int = 32
+    observation_features: int = 145
+    final_encoding_features: int = 64
+    action_features: int = 29
 
 
 @dataclass(frozen=True)
@@ -64,6 +74,13 @@ class OptimizationConfiguration:
 
 
 @dataclass(frozen=True)
+class ResourceConfiguration:
+    wall_clock_budget_seconds: float
+    process_rss_limit_bytes: int
+    accelerator_memory_limit_bytes: int
+
+
+@dataclass(frozen=True)
 class OutputConfiguration:
     directory: Path
     run_name: str
@@ -71,6 +88,7 @@ class OutputConfiguration:
 
 @dataclass(frozen=True)
 class AcceptanceConfiguration:
+    purpose: str
     required_status: str
 
 
@@ -79,10 +97,12 @@ class ResolvedRunConfiguration:
     source_data: SourceDataConfiguration
     convention: ConventionConfiguration
     run_scale: RunScaleConfiguration
+    architecture: ArchitectureConfiguration
     reference_bank: ReferenceBankConfiguration
     experiment: ExperimentConfiguration
     policy: PolicyConfiguration
     optimization: OptimizationConfiguration
+    resources: ResourceConfiguration
     seeds: dict[str, int]
     output: OutputConfiguration
     acceptance: AcceptanceConfiguration
@@ -91,6 +111,7 @@ class ResolvedRunConfiguration:
         """Return a JSON-ready representation of the resolved configuration."""
 
         result = asdict(self)
+        result["configuration_schema_version"] = _CONFIGURATION_SCHEMA_VERSION
         result["source_data"] = {
             "snb_csv": str(self.source_data.snb_csv),
             "paper_pdf": str(self.source_data.paper_pdf),
@@ -102,6 +123,7 @@ class ResolvedRunConfiguration:
         }
         result["experiment"]["horizons_years"] = list(self.experiment.horizons_years)
         result["policy"]["names"] = list(self.policy.names)
+        result["architecture"]["widths"] = list(self.architecture.widths)
         return result
 
 
@@ -109,10 +131,12 @@ _REQUIRED_SECTIONS = {
     "source_data",
     "convention",
     "run_scale",
+    "architecture",
     "reference_bank",
     "experiment",
     "policy",
     "optimization",
+    "resources",
     "seeds",
     "output",
     "acceptance",
@@ -130,6 +154,13 @@ _CONVENTION_PROFILES = {
 }
 
 _RUN_SCALE_PROFILES = {
+    "local_flow": {
+        "epochs": 2,
+        "training_paths_per_epoch": 32,
+        "selection_paths": 32,
+        "test_paths": 32,
+        "batch_size": 8,
+    },
     "quick": {
         "epochs": 5,
         "training_paths_per_epoch": 256,
@@ -145,6 +176,13 @@ _RUN_SCALE_PROFILES = {
         "batch_size": 32,
     },
 }
+
+_ARCHITECTURE_PROFILES = {
+    "compact": (64, 64, 32, 32),
+    "paper": (512, 512, 256, 128),
+}
+
+_CONFIGURATION_SCHEMA_VERSION = 2
 
 
 def load_configuration(path: Path) -> ResolvedRunConfiguration:
@@ -177,10 +215,12 @@ def resolve_configuration(raw: object) -> ResolvedRunConfiguration:
         source_data=_resolve_source_data(root["source_data"]),
         convention=_resolve_convention(root["convention"]),
         run_scale=_resolve_run_scale(root["run_scale"]),
+        architecture=_resolve_architecture(root["architecture"]),
         reference_bank=_resolve_reference_bank(root["reference_bank"]),
         experiment=_resolve_experiment(root["experiment"]),
         policy=_resolve_policy(root["policy"]),
         optimization=_resolve_optimization(root["optimization"]),
+        resources=_resolve_resources(root["resources"]),
         seeds=_resolve_seeds(root["seeds"]),
         output=_resolve_output(root["output"]),
         acceptance=_resolve_acceptance(root["acceptance"]),
@@ -241,12 +281,84 @@ def _resolve_convention(raw: object) -> ConventionConfiguration:
 
 
 def _resolve_run_scale(raw: object) -> RunScaleConfiguration:
-    section = _section(raw, "run_scale", {"profile"})
+    section = _mapping(raw, "run_scale")
+    allowed = {
+        "profile",
+        "epochs",
+        "training_paths_per_epoch",
+        "selection_paths",
+        "test_paths",
+        "batch_size",
+    }
+    unknown = sorted(set(section) - allowed)
+    if unknown:
+        raise ConfigurationError(
+            f"Unknown configuration keys in run_scale: {', '.join(unknown)}"
+        )
+    if "profile" not in section:
+        raise ConfigurationError("Missing configuration keys in run_scale: profile")
     profile = _string(section["profile"], "run_scale.profile")
+    if profile == "bank_training":
+        required = allowed - {"profile"}
+        missing = sorted(required - set(section))
+        if missing:
+            raise ConfigurationError(
+                "bank_training requires explicit values for: " + ", ".join(missing)
+            )
+        return RunScaleConfiguration(
+            profile=profile,
+            **{
+                name: _positive_integer(section[name], f"run_scale.{name}")
+                for name in required
+            },
+        )
     values = _RUN_SCALE_PROFILES.get(profile)
     if values is None:
-        raise ConfigurationError("run_scale.profile must be 'quick' or 'paper_scale'")
+        raise ConfigurationError(
+            "run_scale.profile must be 'local_flow', 'quick', 'paper_scale', or "
+            "'bank_training'"
+        )
+    overrides = sorted(set(section) - {"profile"})
+    if overrides:
+        raise ConfigurationError(
+            f"run_scale {profile} does not accept overrides: {', '.join(overrides)}"
+        )
     return RunScaleConfiguration(profile=profile, **values)
+
+
+def _resolve_architecture(raw: object) -> ArchitectureConfiguration:
+    section = _mapping(raw, "architecture")
+    allowed = {"profile", "widths"}
+    unknown = sorted(set(section) - allowed)
+    if unknown:
+        raise ConfigurationError(
+            f"Unknown configuration keys in architecture: {', '.join(unknown)}"
+        )
+    profile = _string(section.get("profile"), "architecture.profile")
+    if profile in _ARCHITECTURE_PROFILES:
+        if set(section) != {"profile"}:
+            raise ConfigurationError(
+                f"architecture {profile} does not accept custom widths"
+            )
+        widths = _ARCHITECTURE_PROFILES[profile]
+    elif profile == "custom":
+        if set(section) != {"profile", "widths"}:
+            raise ConfigurationError("architecture custom requires widths")
+        raw_widths = section["widths"]
+        if not isinstance(raw_widths, list) or len(raw_widths) != 4:
+            raise ConfigurationError("architecture.widths must contain four positive integers")
+        widths = cast(
+            tuple[int, int, int, int],
+            tuple(
+                _positive_integer(value, f"architecture.widths[{index}]")
+                for index, value in enumerate(raw_widths)
+            ),
+        )
+    else:
+        raise ConfigurationError(
+            "architecture.profile must be 'compact', 'paper', or 'custom'"
+        )
+    return ArchitectureConfiguration(profile=profile, widths=widths)
 
 
 def _resolve_reference_bank(raw: object) -> ReferenceBankConfiguration:
@@ -315,24 +427,64 @@ def _resolve_policy(raw: object) -> PolicyConfiguration:
 def _resolve_optimization(raw: object) -> OptimizationConfiguration:
     section = _section(raw, "optimization", {"device", "dtype"})
     requested_device = _string(section["device"], "optimization.device")
-    if requested_device not in {"auto", "cpu", "mps"}:
-        raise ConfigurationError("optimization.device must be 'auto', 'cpu', or 'mps'")
+    if requested_device not in {"auto", "cpu", "mps", "cuda"}:
+        raise ConfigurationError(
+            "optimization.device must be 'auto', 'cpu', 'mps', or 'cuda'"
+        )
     if requested_device == "mps" and not torch.backends.mps.is_available():
         raise ConfigurationError(
             "optimization.device is 'mps', but MPS is not available"
         )
-    device = (
-        "mps"
-        if requested_device == "auto" and torch.backends.mps.is_available()
-        else requested_device
-    )
-    if device == "auto":
-        device = "cpu"
+    if requested_device == "cuda" and not torch.cuda.is_available():
+        raise ConfigurationError(
+            "optimization.device is 'cuda', but CUDA is not available"
+        )
+    device = requested_device
+    if requested_device == "auto":
+        if torch.cuda.is_available():
+            device = "cuda"
+        elif torch.backends.mps.is_available():
+            device = "mps"
+        else:
+            device = "cpu"
 
     dtype = _string(section["dtype"], "optimization.dtype")
     if dtype not in {"float32", "float64"}:
         raise ConfigurationError("optimization.dtype must be 'float32' or 'float64'")
+    if device == "mps" and dtype != "float32":
+        raise ConfigurationError("optimization.dtype must be float32 on MPS")
     return OptimizationConfiguration(device=device, dtype=dtype)
+
+
+def _resolve_resources(raw: object) -> ResourceConfiguration:
+    section = _section(
+        raw,
+        "resources",
+        {
+            "wall_clock_budget_seconds",
+            "process_rss_limit_bytes",
+            "accelerator_memory_limit_bytes",
+        },
+    )
+    wall_clock = section["wall_clock_budget_seconds"]
+    if (
+        not isinstance(wall_clock, (int, float))
+        or isinstance(wall_clock, bool)
+        or wall_clock <= 0
+    ):
+        raise ConfigurationError(
+            "resources.wall_clock_budget_seconds must be a positive number"
+        )
+    return ResourceConfiguration(
+        wall_clock_budget_seconds=float(wall_clock),
+        process_rss_limit_bytes=_positive_integer(
+            section["process_rss_limit_bytes"], "resources.process_rss_limit_bytes"
+        ),
+        accelerator_memory_limit_bytes=_positive_integer(
+            section["accelerator_memory_limit_bytes"],
+            "resources.accelerator_memory_limit_bytes",
+        ),
+    )
 
 
 def _resolve_seeds(raw: object) -> dict[str, int]:
@@ -370,19 +522,32 @@ def _resolve_output(raw: object) -> OutputConfiguration:
 
 
 def _resolve_acceptance(raw: object) -> AcceptanceConfiguration:
-    section = _section(raw, "acceptance", {"required_status"})
+    section = _section(raw, "acceptance", {"purpose", "required_status"})
+    purpose = _string(section["purpose"], "acceptance.purpose")
+    if purpose not in {"development-validation", "research", "bank-training"}:
+        raise ConfigurationError(
+            "acceptance.purpose must be 'development-validation', 'research', or "
+            "'bank-training'"
+        )
     required_status = _string(section["required_status"], "acceptance.required_status")
     if required_status not in {"development-validated", "methodologically-reproduced"}:
         raise ConfigurationError(
             "acceptance.required_status must be 'development-validated' or "
             "'methodologically-reproduced'"
         )
-    return AcceptanceConfiguration(required_status=required_status)
+    return AcceptanceConfiguration(purpose=purpose, required_status=required_status)
 
 
 def _validate_combinations(configuration: ResolvedRunConfiguration) -> None:
+    if (
+        configuration.run_scale.profile == "bank_training"
+        and configuration.acceptance.purpose != "bank-training"
+    ):
+        raise ConfigurationError("bank_training requires acceptance purpose bank-training")
     if configuration.acceptance.required_status != "methodologically-reproduced":
         return
+    if configuration.acceptance.purpose != "research":
+        raise ConfigurationError("methodologically-reproduced requires research purpose")
     if (
         configuration.convention.profile != "corrected"
         or configuration.convention.is_custom
@@ -434,4 +599,10 @@ def _mapping(raw: object, name: str) -> Mapping[str, Any]:
 def _string(raw: object, name: str) -> str:
     if not isinstance(raw, str) or not raw:
         raise ConfigurationError(f"{name} must be a non-empty string")
+    return raw
+
+
+def _positive_integer(raw: object, name: str) -> int:
+    if not isinstance(raw, int) or isinstance(raw, bool) or raw <= 0:
+        raise ConfigurationError(f"{name} must be a positive integer")
     return raw

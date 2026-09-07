@@ -8,3 +8,6 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Locally generated audit bundles (the configuration chooses their directory).
+artifacts/

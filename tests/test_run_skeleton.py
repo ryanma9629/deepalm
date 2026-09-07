@@ -3,11 +3,15 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from deepalm.cli import main
 from deepalm.config import ConfigurationError, resolve_configuration
+from deepalm.planning import build_execution_plan
+from deepalm.resources import BudgetExceeded, ResourceMonitor
 from deepalm.runner import AcceptanceStatus, ReproductionRunner, RunStatus
 
 
@@ -19,7 +23,8 @@ def configuration_data(tmp_path: Path) -> dict[str, object]:
             "nss_beta_unit": "percentage_points",
         },
         "convention": {"profile": "corrected"},
-        "run_scale": {"profile": "quick"},
+        "run_scale": {"profile": "local_flow"},
+        "architecture": {"profile": "compact"},
         "reference_bank": {
             "profile": "canonical",
             "initial_assets": {"value": 10_000, "unit": "mCHF"},
@@ -27,6 +32,11 @@ def configuration_data(tmp_path: Path) -> dict[str, object]:
         "experiment": {"horizons_years": [5, 15], "include_swaps": False},
         "policy": {"names": ["BM^E"]},
         "optimization": {"device": "cpu", "dtype": "float64"},
+        "resources": {
+            "wall_clock_budget_seconds": 1800,
+            "process_rss_limit_bytes": 4 * 1024**3,
+            "accelerator_memory_limit_bytes": 4 * 1024**3,
+        },
         "seeds": {
             "market_scenarios": 11,
             "objective_parameters": 12,
@@ -36,7 +46,10 @@ def configuration_data(tmp_path: Path) -> dict[str, object]:
             "sensitivity": 16,
         },
         "output": {"directory": str(tmp_path / "runs"), "run_name": "smoke"},
-        "acceptance": {"required_status": "development-validated"},
+        "acceptance": {
+            "purpose": "development-validation",
+            "required_status": "development-validated",
+        },
     }
 
 
@@ -53,8 +66,10 @@ def test_corrected_profile_resolves_and_override_is_custom(tmp_path: Path) -> No
     assert resolved.convention.pca_loading_scale == "sqrt_eigenvalue"
     assert resolved.convention.loan_interest_annualization == "monthly"
     assert resolved.convention.is_custom is False
-    assert resolved.run_scale.epochs == 5
-    assert resolved.run_scale.training_paths_per_epoch == 256
+    assert resolved.run_scale.epochs == 2
+    assert resolved.run_scale.training_paths_per_epoch == 32
+    assert resolved.architecture.widths == (64, 64, 32, 32)
+    assert resolved.resources.wall_clock_budget_seconds == 1800
 
     overridden = configuration_data(tmp_path)
     overridden["convention"] = {
@@ -67,6 +82,79 @@ def test_corrected_profile_resolves_and_override_is_custom(tmp_path: Path) -> No
     assert custom.convention.is_custom is True
     assert custom.convention.pca_loading_scale == "eigenvalue"
     assert custom.convention.loan_interest_annualization == "monthly"
+
+
+def test_profiles_are_independent_and_local_plan_is_bounded(tmp_path: Path) -> None:
+    configuration = configuration_data(tmp_path)
+    configuration["policy"] = {"names": ["BM^E", "BM^C", "BM^D", "MM"]}
+    resolved = resolve_configuration(configuration)
+
+    plan = build_execution_plan(resolved)
+
+    assert resolved.convention.is_custom is False
+    assert resolved.architecture.profile == "compact"
+    assert plan.primary_training_jobs == 8
+    assert plan.primary_optimizer_updates == 64
+    assert plan.paper_width_optimizer_updates == 2
+    assert plan.mm_truncation_requires_training is False
+    assert {job.horizon_years for job in plan.jobs} == {5, 15}
+    assert all(job.training_paths_per_epoch == 32 for job in plan.jobs)
+    assert all(job.optimizer_updates == 8 for job in plan.jobs)
+
+
+def test_bank_training_requires_explicit_scale_and_bank_purpose(tmp_path: Path) -> None:
+    configuration = configuration_data(tmp_path)
+    configuration["run_scale"] = {"profile": "bank_training"}
+    with pytest.raises(ConfigurationError, match="bank_training"):
+        resolve_configuration(configuration)
+
+    configuration["run_scale"] = {
+        "profile": "bank_training",
+        "epochs": 8,
+        "training_paths_per_epoch": 64,
+        "selection_paths": 32,
+        "test_paths": 32,
+        "batch_size": 8,
+    }
+    with pytest.raises(ConfigurationError, match="bank-training"):
+        resolve_configuration(configuration)
+
+    configuration["acceptance"] = {
+        "purpose": "bank-training",
+        "required_status": "development-validated",
+    }
+    resolved = resolve_configuration(configuration)
+    assert resolved.run_scale.profile == "bank_training"
+    assert resolved.acceptance.purpose == "bank-training"
+
+
+def test_auto_device_is_resolved_once_before_manifest_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configuration = configuration_data(tmp_path)
+    configuration["optimization"] = {"device": "auto", "dtype": "float32"}
+    monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+    monkeypatch.setattr("torch.backends.mps.is_available", lambda: True)
+
+    resolved = resolve_configuration(configuration)
+
+    assert resolved.optimization.device == "cuda"
+    assert resolved.to_dict()["optimization"]["device"] == "cuda"
+
+
+def test_resource_monitor_raises_typed_budget_failure() -> None:
+    clock_values = iter((10.0, 10.5))
+    monitor = ResourceMonitor(
+        wall_clock_budget_seconds=0.25,
+        process_rss_limit_bytes=100,
+        accelerator_memory_limit_bytes=100,
+        clock=lambda: next(clock_values),
+        rss_reader=lambda: None,
+        accelerator_reader=lambda: None,
+    )
+
+    with pytest.raises(BudgetExceeded, match="wall-clock"):
+        monitor.check("after-market-calibration")
 
 
 @pytest.mark.parametrize(
@@ -152,7 +240,10 @@ def test_methodological_reproduction_requires_the_locked_corrected_convention(
     invalid["convention"] = convention
     invalid["run_scale"] = {"profile": "paper_scale"}
     invalid["policy"] = {"names": ["BM^E", "BM^C", "BM^D", "MM"]}
-    invalid["acceptance"] = {"required_status": "methodologically-reproduced"}
+    invalid["acceptance"] = {
+        "purpose": "research",
+        "required_status": "methodologically-reproduced",
+    }
 
     with pytest.raises(ConfigurationError, match="Corrected convention"):
         resolve_configuration(invalid)
@@ -266,6 +357,87 @@ def test_runner_writes_an_acceptance_failed_bundle(tmp_path: Path) -> None:
     assert manifest["acceptance_status"] == "failed"
 
 
+def test_market_preflight_generates_bounded_hjm_batches_and_keeps_acceptance_pending(
+    tmp_path: Path,
+) -> None:
+    configuration = configuration_data(tmp_path)
+    write_source_inputs(configuration)
+    calls: list[dict[str, object]] = []
+
+    class FakeMarketScenarioModel:
+        def load_historical_term_structures(self, *args: object, **kwargs: object) -> object:
+            return SimpleNamespace(source_hash="market-source", round_trip_error=0.0)
+
+        def calibrate_hjm_pca(self, historical: object) -> object:
+            assert historical
+            return SimpleNamespace(
+                calibration_identity="calibration", explained_variance=np.array([0.9, 0.05, 0.03])
+            )
+
+        def generate_hjm_scenarios(self, *args: object, **kwargs: object) -> object:
+            calls.append(dict(kwargs))
+            return SimpleNamespace(
+                split=kwargs["split"],
+                epoch=kwargs["epoch"],
+                global_path_indices=kwargs["global_path_indices"],
+                round_trip_error=0.0,
+            )
+
+    bundle = ReproductionRunner().preflight_market(
+        resolve_configuration(configuration), market_model=FakeMarketScenarioModel()
+    )
+
+    assert bundle.status is RunStatus.COMPLETED
+    assert bundle.acceptance_status is AcceptanceStatus.PENDING
+    assert len(calls) == 8
+    assert all(call["paths"] == 8 for call in calls)
+    manifest = json.loads((bundle.artifact_directory / "manifest.json").read_text())
+    assert manifest["market_preflight"]["completed_stages"] == [
+        "historical-term-structures",
+        "hjm-pca-calibration",
+        "bounded-hjm-scenarios",
+    ]
+    assert manifest["execution_plan"]["estimated_cost_status"] == "unmeasured"
+
+
+def test_market_preflight_preserves_evidence_when_budget_is_exhausted(
+    tmp_path: Path,
+) -> None:
+    configuration = configuration_data(tmp_path)
+    write_source_inputs(configuration)
+    clock_values = iter((0.0, 0.0, 2.0, 2.0))
+    monitor = ResourceMonitor(
+        wall_clock_budget_seconds=1.0,
+        process_rss_limit_bytes=4 * 1024**3,
+        accelerator_memory_limit_bytes=4 * 1024**3,
+        clock=lambda: next(clock_values),
+        rss_reader=lambda: None,
+        accelerator_reader=lambda: None,
+    )
+
+    class FakeMarketScenarioModel:
+        def load_historical_term_structures(self, *args: object, **kwargs: object) -> object:
+            return SimpleNamespace(source_hash="market-source", round_trip_error=0.0)
+
+        def calibrate_hjm_pca(self, historical: object) -> object:
+            raise AssertionError("budget should be checked before calibration")
+
+    bundle = ReproductionRunner().preflight_market(
+        resolve_configuration(configuration),
+        resource_monitor=monitor,
+        market_model=FakeMarketScenarioModel(),
+    )
+
+    assert bundle.status is RunStatus.INCOMPLETE
+    assert bundle.artifact_directory is not None
+    manifest = json.loads((bundle.artifact_directory / "manifest.json").read_text())
+    assert manifest["status"] == "incomplete"
+    assert manifest["diagnostics"]["reason"] == "budget_exhausted"
+    assert manifest["diagnostics"]["market_preflight"]["completed_stages"] == [
+        "historical-term-structures"
+    ]
+
+
 def test_cli_returns_a_configuration_exit_code(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -297,6 +469,24 @@ def test_cli_dispatches_a_successful_run(
     artifact_directory = Path(capsys.readouterr().out.strip())
     assert exit_code == 0
     assert artifact_directory.is_dir()
+
+
+def test_cli_prints_a_plan_without_starting_a_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    configuration_path = tmp_path / "plan.yaml"
+    import yaml
+
+    configuration_path.write_text(
+        yaml.safe_dump(configuration_data(tmp_path)), encoding="utf-8"
+    )
+
+    exit_code = main(["plan", "--config", str(configuration_path)])
+
+    plan = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert plan["run_scale"] == "local_flow"
+    assert plan["primary_optimizer_updates"] == 16
 
 
 def test_cli_returns_an_operational_exit_code(

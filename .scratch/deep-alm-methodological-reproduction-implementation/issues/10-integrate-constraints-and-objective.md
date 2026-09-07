@@ -1,10 +1,16 @@
 # 10: Integrate constraints and the training objective
 
-**What to build:** Make complete bank trajectories trainable by calculating the six paper constraints, terminal target loss, cumulative penalty, and evaluation-only CRRA metric.
+**What to build:** 完整银行轨迹输出六项约束、终值目标损失、累计罚项，以及正确的参数梯度。
 
 **Blocked by:** 07/Model loan growth, interest, and impairment; 08/Model deposits, costs, and dividends; 09/Add active treasury bond actions.
 
 **Status:** ready-for-agent
+
+**Execution scope:** local-delivery
+
+**Specification revision:** 2 (2026-09-07)
+
+本票按规格 Revision 2 实现所列切片；默认只使用有界 local_flow 或更小的确定性验证夹具。完整任务的 development-validated 由 23 根据实际证据判定。
 
 - [ ] LCR, NSFR, CMR, Equity/RWA, IRS, and annual-only EYR match independent formulas at values below, at, and above their bounds.
 - [ ] Parallel plus/minus 100-basis-point revaluation drives IRS and annual close timing drives EYR without introducing hidden balancing values.
@@ -13,3 +19,9 @@
 - [ ] Constraint values and violations are returned with trajectories at their applicable states and the initial values are available to later observations.
 - [ ] Smooth CPU float64 fixtures pass central finite-difference gradient checks and produce a nonzero policy gradient when terminal loss depends on action.
 - [ ] Full five-year and fifteen-year deterministic fixtures retain the required accounting tolerances while calculating losses.
+- [ ] 保留会计容差、约束边界手算、CPU float64 中央差分及非零梯度验收；CRRA 只作评估。
+- [ ] CPU float64 constraint-formula error is at most 1e-10; smooth-fixture gradients satisfy |g_auto - g_fd| <= 1e-6 + 1e-4 |g_fd| and the action-dependent fixture has policy-gradient norm greater than 1e-8.
+
+## Comments
+
+2026-09-07 — 用户确认 Revision 2 增量拆分后发布。保留原约束、损失与独立会计/梯度硬检查，小样本不放宽数值容差。原编号保留；本次只更新待办，不表示本票实现已经完成。

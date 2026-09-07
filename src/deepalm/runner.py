@@ -15,14 +15,18 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
+from typing import Any, Protocol
 
 from deepalm.config import ResolvedRunConfiguration
+from deepalm.planning import build_execution_plan
+from deepalm.resources import BudgetExceeded, ResourceMonitor
 
 
 class RunStatus(StrEnum):
     COMPLETED = "completed"
     ACCEPTANCE_FAILED = "acceptance_failed"
     FAILED = "failed"
+    INCOMPLETE = "incomplete"
 
 
 class AcceptanceStatus(StrEnum):
@@ -39,6 +43,16 @@ class OperationalRunError(RuntimeError):
     ) -> None:
         super().__init__(message)
         self.diagnostics = dict(diagnostics or {})
+
+
+class MarketPreflightModel(Protocol):
+    """Structural contract used by the bounded market preflight stage."""
+
+    def load_historical_term_structures(self, source_path: Path, *, beta_unit: str) -> Any: ...
+
+    def calibrate_hjm_pca(self, historical: Any) -> Any: ...
+
+    def generate_hjm_scenarios(self, historical: Any, calibration: Any, **kwargs: Any) -> Any: ...
 
 
 @dataclass(frozen=True)
@@ -89,6 +103,187 @@ class ReproductionRunner:
             artifacts=(artifact_directory / "manifest.json",),
         )
 
+    def preflight_market(
+        self,
+        configuration: ResolvedRunConfiguration,
+        *,
+        resource_monitor: ResourceMonitor | None = None,
+        market_model: MarketPreflightModel | None = None,
+    ) -> RunBundle:
+        """Run bounded HJM input/calibration/scenario work without training a policy.
+
+        This deliberately produces a pending acceptance bundle: completing a market
+        preflight is evidence for resource planning, not a completed ALM workflow.
+        """
+
+        monitor = resource_monitor or ResourceMonitor(
+            wall_clock_budget_seconds=configuration.resources.wall_clock_budget_seconds,
+            process_rss_limit_bytes=configuration.resources.process_rss_limit_bytes,
+            accelerator_memory_limit_bytes=(
+                configuration.resources.accelerator_memory_limit_bytes
+            ),
+            device=configuration.optimization.device,
+        )
+        completed_stages: list[str] = []
+        scenario_batches: list[dict[str, object]] = []
+        evidence: dict[str, object] = {
+            "completed_stages": completed_stages,
+            "scenario_batches": scenario_batches,
+        }
+        try:
+            if market_model is None:
+                from deepalm.term_structures import MarketScenarioModel
+
+                market_model = MarketScenarioModel()
+            monitor.check("before-market-load")
+            historical = market_model.load_historical_term_structures(
+                configuration.source_data.snb_csv,
+                beta_unit=configuration.source_data.nss_beta_unit,
+            )
+            evidence["historical"] = {
+                "source_hash": historical.source_hash,
+                "round_trip_error": historical.round_trip_error,
+            }
+            completed_stages.append("historical-term-structures")
+            monitor.check("after-market-load")
+            calibration = market_model.calibrate_hjm_pca(historical)
+            evidence["calibration"] = {
+                "identity": calibration.calibration_identity,
+                "explained_variance": calibration.explained_variance.tolist(),
+            }
+            completed_stages.append("hjm-pca-calibration")
+            monitor.check("after-market-calibration")
+
+            for horizon_years in configuration.experiment.horizons_years:
+                for start in range(
+                    0,
+                    configuration.run_scale.training_paths_per_epoch,
+                    configuration.run_scale.batch_size,
+                ):
+                    monitor.check(f"before-hjm-{horizon_years}y-batch-{start}")
+                    paths = min(
+                        configuration.run_scale.batch_size,
+                        configuration.run_scale.training_paths_per_epoch - start,
+                    )
+                    batch = market_model.generate_hjm_scenarios(
+                        historical,
+                        calibration,
+                        convention=configuration.convention.profile,
+                        horizon_years=horizon_years,
+                        paths=paths,
+                        seed=configuration.seeds["market_scenarios"],
+                        split="preflight-training",
+                        epoch=0,
+                        global_path_indices=tuple(range(start, start + paths)),
+                    )
+                    scenario_batches.append(
+                        {
+                            "horizon_years": horizon_years,
+                            "split": batch.split,
+                            "epoch": batch.epoch,
+                            "global_path_indices": list(batch.global_path_indices),
+                            "round_trip_error": batch.round_trip_error,
+                        }
+                    )
+                    monitor.check(f"after-hjm-{horizon_years}y-batch-{start}")
+            completed_stages.append("bounded-hjm-scenarios")
+            evidence["resource_snapshot"] = monitor.snapshot().to_dict()
+            manifest = _build_manifest(
+                configuration, RunStatus.COMPLETED, AcceptanceStatus.PENDING
+            )
+            manifest["market_preflight"] = evidence
+            artifact_directory = _write_bundle_atomically(configuration, manifest)
+            return RunBundle(
+                status=RunStatus.COMPLETED,
+                acceptance_status=AcceptanceStatus.PENDING,
+                artifact_directory=artifact_directory,
+                artifacts=(artifact_directory / "manifest.json",),
+            )
+        except BudgetExceeded as error:
+            error.diagnostics["market_preflight"] = evidence
+            error.diagnostics["resource_snapshot"] = monitor.snapshot().to_dict()
+            failure_directory = _write_failure_bundle(
+                configuration, error, status=RunStatus.INCOMPLETE
+            )
+            return RunBundle(
+                status=RunStatus.INCOMPLETE,
+                acceptance_status=AcceptanceStatus.PENDING,
+                artifact_directory=failure_directory,
+                error=str(error),
+                artifacts=(failure_directory / "manifest.json",)
+                if failure_directory is not None
+                else (),
+            )
+        except (OperationalRunError, OSError, ValueError) as error:
+            failure_directory = _write_failure_bundle(configuration, error)
+            return RunBundle(
+                status=RunStatus.FAILED,
+                acceptance_status=AcceptanceStatus.PENDING,
+                artifact_directory=failure_directory,
+                error=str(error),
+                artifacts=(failure_directory / "manifest.json",)
+                if failure_directory is not None
+                else (),
+            )
+
+    def build_reference_bank(
+        self, configuration: ResolvedRunConfiguration
+    ) -> RunBundle:
+        """Build the canonical, reviewable Reference Bank without policy training."""
+
+        try:
+            from deepalm.reference_bank import ReferenceBankProvider
+            from deepalm.term_structures import MarketScenarioModel
+
+            historical = MarketScenarioModel().load_historical_term_structures(
+                configuration.source_data.snb_csv,
+                beta_unit=configuration.source_data.nss_beta_unit,
+            )
+            provider = ReferenceBankProvider()
+            snapshot = provider.build_canonical(historical)
+            manifest = _build_manifest(
+                configuration, RunStatus.COMPLETED, AcceptanceStatus.PENDING
+            )
+            manifest["reference_bank"] = {
+                "content_hash": snapshot.content_hash,
+                "as_of_date": snapshot.as_of_date,
+                "initial_curve_identity": snapshot.initial_curve_identity,
+                "total_assets_mchf": snapshot.total_assets,
+                "total_liabilities_mchf": snapshot.total_liabilities,
+                "equity_mchf": snapshot.equity,
+                "loan_duration_years": snapshot.loan_duration_years,
+                "deposit_duration_years": snapshot.deposit_duration_years,
+            }
+            artifact_directory = _write_bundle_atomically(
+                configuration,
+                manifest,
+                extra_artifacts={
+                    "reference-bank.json": provider.serialize(snapshot),
+                    "table-1.json": provider.table_one(snapshot),
+                },
+            )
+            return RunBundle(
+                status=RunStatus.COMPLETED,
+                acceptance_status=AcceptanceStatus.PENDING,
+                artifact_directory=artifact_directory,
+                artifacts=(
+                    artifact_directory / "manifest.json",
+                    artifact_directory / "reference-bank.json",
+                    artifact_directory / "table-1.json",
+                ),
+            )
+        except (OperationalRunError, OSError, ValueError) as error:
+            failure_directory = _write_failure_bundle(configuration, error)
+            return RunBundle(
+                status=RunStatus.FAILED,
+                acceptance_status=AcceptanceStatus.PENDING,
+                artifact_directory=failure_directory,
+                error=str(error),
+                artifacts=(failure_directory / "manifest.json",)
+                if failure_directory is not None
+                else (),
+            )
+
 
 def _build_manifest(
     configuration: ResolvedRunConfiguration,
@@ -103,11 +298,15 @@ def _build_manifest(
             "snb_csv": _sha256(configuration.source_data.snb_csv),
             "paper_pdf": _sha256(configuration.source_data.paper_pdf),
         },
+        "execution_plan": build_execution_plan(configuration).to_dict(),
     }
 
 
 def _write_bundle_atomically(
-    configuration: ResolvedRunConfiguration, manifest: dict[str, object]
+    configuration: ResolvedRunConfiguration,
+    manifest: dict[str, object],
+    *,
+    extra_artifacts: Mapping[str, Mapping[str, object]] | None = None,
 ) -> Path:
     output_root = configuration.output.directory
     if output_root.exists() and not output_root.is_dir():
@@ -125,6 +324,13 @@ def _write_bundle_atomically(
         (staging_directory / "manifest.json").write_text(
             json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
+        for name, contents in (extra_artifacts or {}).items():
+            artifact_path = staging_directory / name
+            if artifact_path.parent != staging_directory or artifact_path.name != name:
+                raise ValueError(f"Artifact name must be a file name: {name}")
+            artifact_path.write_text(
+                json.dumps(contents, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
         os.replace(staging_directory, final_directory)
     except OSError:
         shutil.rmtree(staging_directory, ignore_errors=True)
@@ -133,7 +339,10 @@ def _write_bundle_atomically(
 
 
 def _write_failure_bundle(
-    configuration: ResolvedRunConfiguration, error: Exception
+    configuration: ResolvedRunConfiguration,
+    error: Exception,
+    *,
+    status: RunStatus = RunStatus.FAILED,
 ) -> Path | None:
     """Best-effort persistence for failures that occur before a completed bundle exists."""
 
@@ -151,7 +360,7 @@ def _write_failure_bundle(
         input_hashes, input_hash_errors = _available_input_hashes(configuration)
         failure_manifest = {
             **_manifest_metadata(configuration),
-            "status": RunStatus.FAILED.value,
+            "status": status.value,
             "acceptance_status": AcceptanceStatus.PENDING.value,
             "error": str(error),
             "diagnostics": _diagnostics_for(error),
@@ -259,5 +468,7 @@ def _status_for(acceptance_status: AcceptanceStatus) -> RunStatus:
 
 def _diagnostics_for(error: Exception) -> dict[str, object]:
     if isinstance(error, OperationalRunError):
+        return error.diagnostics
+    if isinstance(error, BudgetExceeded):
         return error.diagnostics
     return {}

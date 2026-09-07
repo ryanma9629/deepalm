@@ -3,6 +3,8 @@
 Type: wayfinder:map
 Status: resolved
 
+Scope update (2026-09-07): this map records the original Wayfinder decisions. [Specification revision 2](spec.md) now governs local workflow delivery, compute budgets and bank/GPU portability, superseding the local paper-scale execution and acceptance scope below. Financial decisions remain applicable except for explicitly recorded later user changes. Update implementation tickets from that specification before resuming implementation.
+
 ## Destination
 
 Produce an implementation-ready decision set for a Python and PyTorch methodological reproduction of the no-swap model in *Deep treasury management for banks*, covering both 5-year and 15-year horizons and ready to collapse into a specification with `/to-spec`.

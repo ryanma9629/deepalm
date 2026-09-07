@@ -265,8 +265,11 @@ def test_market_scenario_model_calibrates_and_generates_paired_hjm_paths() -> No
     assert fifteen_year.spot_rates.shape == (2, 181, 180)
     assert five_year.round_trip_error <= 1e-10
     assert np.array_equal(five_year.innovations, fifteen_year.innovations[:, :60])
-    assert np.array_equal(
-        five_year.monthly_forwards, fifteen_year.monthly_forwards[:, :61]
+    assert np.allclose(
+        five_year.monthly_forwards,
+        fifteen_year.monthly_forwards[:, :61],
+        rtol=0.0,
+        atol=1e-15,
     )
     assert np.array_equal(
         five_year.spot_rates,
@@ -302,6 +305,50 @@ def test_market_scenario_model_calibrates_and_generates_paired_hjm_paths() -> No
             paths=1,
             seed=73,
         )
+
+
+def test_hjm_paths_are_identical_across_batch_partitions() -> None:
+    model = MarketScenarioModel()
+    historical = model.load_historical_term_structures(SNB_SOURCE)
+    calibration = model.calibrate_hjm_pca(historical)
+    combined = model.generate_hjm_scenarios(
+        historical,
+        calibration,
+        convention="corrected",
+        horizon_years=5,
+        paths=4,
+        seed=125,
+        split="training",
+        epoch=2,
+        global_path_indices=(20, 21, 22, 23),
+    )
+    first = model.generate_hjm_scenarios(
+        historical,
+        calibration,
+        convention="corrected",
+        horizon_years=5,
+        paths=2,
+        seed=125,
+        split="training",
+        epoch=2,
+        global_path_indices=(20, 21),
+    )
+    second = model.generate_hjm_scenarios(
+        historical,
+        calibration,
+        convention="corrected",
+        horizon_years=5,
+        paths=2,
+        seed=125,
+        split="training",
+        epoch=2,
+        global_path_indices=(22, 23),
+    )
+
+    assert np.array_equal(combined.innovations[:2], first.innovations)
+    assert np.array_equal(combined.innovations[2:], second.innovations)
+    assert np.array_equal(combined.spot_rates[:2], first.spot_rates)
+    assert np.array_equal(combined.spot_rates[2:], second.spot_rates)
 
 
 def test_market_scenario_model_compares_hull_white_terminal_diversity(

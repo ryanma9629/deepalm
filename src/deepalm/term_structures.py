@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 
 from deepalm.runner import OperationalRunError
+from deepalm.scenario_identity import ScenarioIdentity
 
 _PARAMETERS = ("b0", "b1", "b2", "b3", "t1", "t2")
 _CALIBRATION_START = pd.Timestamp("2005-01-01")
@@ -102,6 +103,9 @@ class MarketScenarioBatch:
     seed: int
     calibration_identity: str
     round_trip_error: float
+    split: str = "default"
+    epoch: int = 0
+    global_path_indices: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -303,6 +307,9 @@ class MarketScenarioModel:
         horizon_years: int,
         paths: int,
         seed: int,
+        split: str = "default",
+        epoch: int = 0,
+        global_path_indices: tuple[int, ...] | None = None,
     ) -> MarketScenarioBatch:
         """Generate bitwise-reproducible, unclipped monthly HJM scenarios."""
 
@@ -312,6 +319,17 @@ class MarketScenarioModel:
             raise TermStructureError("HJM horizon must be 5 or 15 years")
         if paths <= 0:
             raise TermStructureError("HJM paths must be positive")
+        if not split:
+            raise TermStructureError("HJM scenario split must be non-empty")
+        if epoch < 0:
+            raise TermStructureError("HJM scenario epoch must be non-negative")
+        indices = global_path_indices or tuple(range(paths))
+        if len(indices) != paths or len(set(indices)) != paths or any(
+            index < 0 for index in indices
+        ):
+            raise TermStructureError(
+                "HJM global path indices must be unique non-negative values matching paths"
+            )
         steps = horizon_years * 12
         extended_tenors = np.arange(1, 181 + steps, dtype=np.float64) / 12.0
         initial_forwards = _nss_monthly_forwards(
@@ -323,10 +341,19 @@ class MarketScenarioModel:
             volatility, _evaluate_cubics(coefficients, np.array([0.0]))[0]
         )
         _require_finite("initial HJM values", initial_forwards, volatility, drift)
-        generator = np.random.default_rng(seed)
-        innovations = generator.standard_normal((paths, 180, 3), dtype=np.float64)[
-            :, :steps
-        ]
+        innovations = np.stack(
+            [
+                np.random.default_rng(
+                    ScenarioIdentity(
+                        split=split,
+                        epoch=epoch,
+                        seed=seed,
+                        global_path_index=index,
+                    ).derived_seed()
+                ).standard_normal((steps, 3), dtype=np.float64)
+                for index in indices
+            ]
+        )
         forwards = np.empty((paths, steps + 1, 180), dtype=np.float64)
         forwards[:, 0] = initial_forwards[:180]
         curve = np.broadcast_to(initial_forwards, (paths, len(initial_forwards))).copy()
@@ -357,6 +384,9 @@ class MarketScenarioModel:
             seed=seed,
             calibration_identity=calibration.calibration_identity,
             round_trip_error=round_trip_error,
+            split=split,
+            epoch=epoch,
+            global_path_indices=indices,
         )
 
     def validate_hjm_one_step(
