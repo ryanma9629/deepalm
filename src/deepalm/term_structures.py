@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -113,6 +114,28 @@ class HjmOneStepDiagnostics:
     relative_covariance_error: float
     paths: int
     seed: int
+
+
+@dataclass(frozen=True)
+class HullWhiteConfiguration:
+    """Explicit, non-paper assumptions for the diagnostic-only comparator."""
+
+    mean_reversion: float
+    volatility: float
+    label: str = "project_choice"
+
+
+@dataclass(frozen=True)
+class TerminalCurveDiversity:
+    """Metadata and dispersion summaries for terminal-curve comparison."""
+
+    horizon_years: int
+    convention: str
+    seed: int
+    sample_size: int
+    units: str
+    hjm_terminal_standard_deviation: np.ndarray
+    hull_white_terminal_standard_deviation: np.ndarray
 
 
 class MarketScenarioModel:
@@ -369,6 +392,150 @@ class MarketScenarioModel:
             paths=paths,
             seed=seed,
         )
+
+    def generate_hull_white_scenarios(
+        self,
+        historical: HistoricalTermStructures,
+        *,
+        horizon_years: int,
+        paths: int,
+        seed: int,
+        configuration: HullWhiteConfiguration,
+    ) -> MarketScenarioBatch:
+        """Generate diagnostic-only extended Vasicek curves from the canonical curve."""
+
+        if horizon_years not in {5, 15}:
+            raise TermStructureError("Hull-White horizon must be 5 or 15 years")
+        if (
+            paths <= 0
+            or configuration.mean_reversion <= 0
+            or configuration.volatility < 0
+        ):
+            raise TermStructureError("Hull-White paths and parameters must be positive")
+        steps = horizon_years * 12
+        dt = 1.0 / 12.0
+        a = configuration.mean_reversion
+        sigma = configuration.volatility
+        innovation = np.random.default_rng(seed).standard_normal((paths, 180, 1))[
+            :, :steps
+        ]
+        factor = np.zeros((paths, steps + 1), dtype=np.float64)
+        standard_deviation = sigma * np.sqrt((1.0 - np.exp(-2.0 * a * dt)) / (2.0 * a))
+        for step in range(steps):
+            factor[:, step + 1] = (
+                np.exp(-a * dt) * factor[:, step]
+                + standard_deviation * innovation[:, step, 0]
+            )
+        tenors = historical.tenors_years
+        b_over_t = -np.expm1(-a * tenors) / (a * tenors)
+        spot_rates = historical.initial_curve.spot_rates[None, None, :] + (
+            factor[:, :, None] * b_over_t[None, None, :]
+        )
+        discount_factors = np.exp(-spot_rates * tenors[None, None, :])
+        monthly_forwards = (
+            -np.diff(
+                np.concatenate(
+                    (
+                        np.zeros((paths, steps + 1, 1), dtype=np.float64),
+                        np.log(discount_factors),
+                    ),
+                    axis=2,
+                ),
+                axis=2,
+            )
+            / dt
+        )
+        _require_finite(
+            "Hull-White output curves", spot_rates, discount_factors, monthly_forwards
+        )
+        return MarketScenarioBatch(
+            spot_rates=_readonly(spot_rates),
+            discount_factors=_readonly(discount_factors),
+            monthly_forwards=_readonly(monthly_forwards),
+            innovations=_readonly(innovation),
+            convention="project-hull-white",
+            horizon_years=horizon_years,
+            seed=seed,
+            calibration_identity=_hull_white_identity(configuration),
+            round_trip_error=_scenario_round_trip_error(
+                spot_rates, discount_factors, monthly_forwards
+            ),
+        )
+
+    def summarize_terminal_curve_diversity(
+        self, hjm: MarketScenarioBatch, hull_white: MarketScenarioBatch
+    ) -> TerminalCurveDiversity:
+        """Describe terminal curve spread without treating Hull-White as a policy model."""
+
+        if hjm.horizon_years != hull_white.horizon_years or len(hjm.spot_rates) != len(
+            hull_white.spot_rates
+        ):
+            raise TermStructureError(
+                "Terminal curve batches must share horizon and sample size"
+            )
+        return TerminalCurveDiversity(
+            horizon_years=hjm.horizon_years,
+            convention=hjm.convention,
+            seed=hjm.seed,
+            sample_size=len(hjm.spot_rates),
+            units="decimal annual rates",
+            hjm_terminal_standard_deviation=_readonly(
+                hjm.spot_rates[:, -1].std(axis=0)
+            ),
+            hull_white_terminal_standard_deviation=_readonly(
+                hull_white.spot_rates[:, -1].std(axis=0)
+            ),
+        )
+
+    def write_terminal_curve_diversity_artifacts(
+        self,
+        directory: Path,
+        diversity: TerminalCurveDiversity,
+        hjm: MarketScenarioBatch,
+        hull_white: MarketScenarioBatch,
+    ) -> tuple[Path, Path]:
+        """Write labeled terminal-curve diversity plot and machine-readable metadata."""
+
+        import matplotlib.pyplot as plt
+
+        directory.mkdir(parents=True, exist_ok=True)
+        plot_path = directory / "terminal-curve-diversity.png"
+        metadata_path = directory / "terminal-curve-diversity.json"
+        tenors = np.arange(1, 181, dtype=np.float64) / 12.0
+        figure, axes = plt.subplots(1, 2, figsize=(12, 4), sharey=True)
+        for axis, batch, title in (
+            (axes[0], hjm, "HJM-PCA"),
+            (axes[1], hull_white, "Hull-White extended Vasicek"),
+        ):
+            axis.plot(tenors, batch.spot_rates[:, -1].T, alpha=0.25)
+            axis.set_title(title)
+            axis.set_xlabel("Tenor (years)")
+        axes[0].set_ylabel("Terminal spot rate (decimal annual)")
+        figure.suptitle(
+            f"Terminal curve diversity | {diversity.horizon_years}y | "
+            f"n={diversity.sample_size} | seed={diversity.seed}"
+        )
+        figure.tight_layout()
+        figure.savefig(plot_path, dpi=150)
+        plt.close(figure)
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "models": ["hjm-pca", "project-hull-white"],
+                    "horizon_years": diversity.horizon_years,
+                    "convention": diversity.convention,
+                    "units": diversity.units,
+                    "seed": diversity.seed,
+                    "sample_size": diversity.sample_size,
+                    "hull_white_calibration_identity": hull_white.calibration_identity,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return plot_path, metadata_path
 
 
 def _load_parameter_table(source_path: Path, *, beta_unit: str) -> pd.DataFrame:
@@ -643,3 +810,11 @@ def _calibration_identity(
     for value in (weekly_dates, covariance, eigenvalues):
         digest.update(np.ascontiguousarray(value).tobytes())
     return digest.hexdigest()
+
+
+def _hull_white_identity(configuration: HullWhiteConfiguration) -> str:
+    payload = (
+        f"{configuration.label}:{configuration.mean_reversion:.17g}:"
+        f"{configuration.volatility:.17g}"
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()

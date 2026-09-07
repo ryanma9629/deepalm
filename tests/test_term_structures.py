@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from deepalm.term_structures import MarketScenarioModel, TermStructureError
+from deepalm.term_structures import (
+    HullWhiteConfiguration,
+    MarketScenarioModel,
+    TermStructureError,
+)
 
 PARAMETERS = ("b0", "b1", "b2", "b3", "t1", "t2")
 SNB_SOURCE = (
@@ -297,3 +302,48 @@ def test_market_scenario_model_calibrates_and_generates_paired_hjm_paths() -> No
             paths=1,
             seed=73,
         )
+
+
+def test_market_scenario_model_compares_hull_white_terminal_diversity(
+    tmp_path: Path,
+) -> None:
+    model = MarketScenarioModel()
+    historical = model.load_historical_term_structures(SNB_SOURCE)
+    calibration = model.calibrate_hjm_pca(historical)
+    hjm = model.generate_hjm_scenarios(
+        historical,
+        calibration,
+        convention="corrected",
+        horizon_years=5,
+        paths=3,
+        seed=103,
+    )
+    hull_white = model.generate_hull_white_scenarios(
+        historical,
+        horizon_years=5,
+        paths=3,
+        seed=103,
+        configuration=HullWhiteConfiguration(mean_reversion=0.2, volatility=0.01),
+    )
+    diversity = model.summarize_terminal_curve_diversity(hjm, hull_white)
+    plot_path, metadata_path = model.write_terminal_curve_diversity_artifacts(
+        tmp_path, diversity, hjm, hull_white
+    )
+
+    assert np.allclose(
+        hull_white.spot_rates[:, 0], historical.initial_curve.spot_rates, atol=1e-12
+    )
+    assert hull_white.spot_rates.shape == (3, 61, 180)
+    assert hull_white.round_trip_error <= 1e-10
+    assert diversity.sample_size == 3
+    assert diversity.units == "decimal annual rates"
+    assert plot_path.is_file()
+    assert json.loads(metadata_path.read_text()) == {
+        "convention": "corrected",
+        "horizon_years": 5,
+        "hull_white_calibration_identity": hull_white.calibration_identity,
+        "models": ["hjm-pca", "project-hull-white"],
+        "sample_size": 3,
+        "seed": 103,
+        "units": "decimal annual rates",
+    }
