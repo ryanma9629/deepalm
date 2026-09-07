@@ -9,6 +9,10 @@ import pytest
 from deepalm.term_structures import MarketScenarioModel, TermStructureError
 
 PARAMETERS = ("b0", "b1", "b2", "b3", "t1", "t2")
+SNB_SOURCE = (
+    Path(__file__).resolve().parents[1]
+    / "data/snb-data-rendopar-en-all_19880401-20250731.csv"
+)
 
 
 def write_snb_export(
@@ -74,6 +78,10 @@ def test_market_scenario_model_reconstructs_calibration_and_initial_curves(
     assert curves.source_hash == hashlib.sha256(source.read_bytes()).hexdigest()
     assert curves.source_beta_unit == "percentage_points"
     assert curves.rate_unit == "decimal"
+    assert np.array_equal(
+        curves.initial_nss_parameters,
+        np.array([0.03, 0.0, 0.0, 0.0, 1.0, 2.0]),
+    )
     assert curves.deposit_reference_history.dates.astype("datetime64[D]").tolist() == [
         np.datetime64("2004-12-31"),
         np.datetime64("2005-01-03"),
@@ -213,3 +221,54 @@ def test_market_scenario_model_rejects_nonblank_invalid_parameter_values(
 
     with pytest.raises(TermStructureError, match="invalid parameter values"):
         MarketScenarioModel().load_historical_term_structures(source)
+
+
+def test_market_scenario_model_calibrates_and_generates_paired_hjm_paths() -> None:
+    model = MarketScenarioModel()
+    historical = model.load_historical_term_structures(SNB_SOURCE)
+    calibration = model.calibrate_hjm_pca(historical)
+    five_year = model.generate_hjm_scenarios(
+        historical,
+        calibration,
+        convention="corrected",
+        horizon_years=5,
+        paths=2,
+        seed=73,
+    )
+    fifteen_year = model.generate_hjm_scenarios(
+        historical,
+        calibration,
+        convention="corrected",
+        horizon_years=15,
+        paths=2,
+        seed=73,
+    )
+
+    assert calibration.weekly_dates.shape[0] == calibration.weekly_forwards.shape[0]
+    assert np.all(np.diff(calibration.weekly_dates) > np.timedelta64(0, "D"))
+    assert np.allclose(
+        calibration.eigenvectors.T @ calibration.eigenvectors, np.eye(180)
+    )
+    assert calibration.explained_variance.sum() >= 0.9
+    assert np.allclose(
+        calibration.scaled_loadings["paper"],
+        calibration.eigenvectors[:, :3] * calibration.eigenvalues[:3],
+    )
+    assert calibration.fitted_loadings["paper"].shape == (180, 3)
+    assert five_year.spot_rates.shape == (2, 61, 180)
+    assert fifteen_year.spot_rates.shape == (2, 181, 180)
+    assert np.array_equal(five_year.innovations, fifteen_year.innovations[:, :60])
+    assert np.array_equal(
+        five_year.monthly_forwards, fifteen_year.monthly_forwards[:, :61]
+    )
+    assert np.array_equal(
+        five_year.spot_rates,
+        model.generate_hjm_scenarios(
+            historical,
+            calibration,
+            convention="corrected",
+            horizon_years=5,
+            paths=2,
+            seed=73,
+        ).spot_rates,
+    )

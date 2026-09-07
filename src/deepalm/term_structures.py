@@ -60,11 +60,46 @@ class HistoricalTermStructures:
     instantaneous_forwards: np.ndarray
     deposit_reference_history: TermStructureHistory
     initial_curve: TermStructureSnapshot
+    initial_nss_parameters: np.ndarray
     source_path: Path
     source_hash: str
     source_beta_unit: str
     rate_unit: str
     round_trip_error: float
+
+
+@dataclass(frozen=True)
+class HjmPcaCalibration:
+    """Auditable weekly-PCA calibration for the monthly HJM model."""
+
+    weekly_dates: np.ndarray
+    weekly_forwards: np.ndarray
+    forward_differences: np.ndarray
+    covariance: np.ndarray
+    eigenvalues: np.ndarray
+    eigenvectors: np.ndarray
+    explained_variance: np.ndarray
+    scaled_loadings: dict[str, np.ndarray]
+    cubic_coefficients: dict[str, np.ndarray]
+    fitted_loadings: dict[str, np.ndarray]
+    implied_covariances: dict[str, np.ndarray]
+    pca_truncation_error: float
+    polynomial_fit_errors: dict[str, np.ndarray]
+    calibration_identity: str
+
+
+@dataclass(frozen=True)
+class MarketScenarioBatch:
+    """Observable monthly market scenarios on the 180-node ALM grid."""
+
+    spot_rates: np.ndarray
+    discount_factors: np.ndarray
+    monthly_forwards: np.ndarray
+    innovations: np.ndarray
+    convention: str
+    horizon_years: int
+    seed: int
+    calibration_identity: str
 
 
 class MarketScenarioModel:
@@ -138,11 +173,150 @@ class MarketScenarioModel:
             instantaneous_forwards=_readonly(instantaneous_forwards),
             deposit_reference_history=deposit_reference_history,
             initial_curve=initial_curve,
+            initial_nss_parameters=_readonly(
+                calibration_table.iloc[index].to_numpy(dtype=np.float64)
+            ),
             source_path=source_path,
             source_hash=_sha256(source_path),
             source_beta_unit=beta_unit,
             rate_unit="decimal",
             round_trip_error=round_trip_error,
+        )
+
+    def calibrate_hjm_pca(
+        self, historical: HistoricalTermStructures
+    ) -> HjmPcaCalibration:
+        """Calibrate three signed weekly PCA factors and their cubic loadings."""
+
+        weekly_dates, weekly_forwards = _friday_ending_weekly_observations(
+            historical.dates, historical.monthly_forwards
+        )
+        differences = np.diff(weekly_forwards, axis=0)
+        if len(differences) < 4:
+            raise TermStructureError("At least five weekly observations are required")
+        covariance = np.cov(differences, rowvar=False, ddof=1) * 52.0
+        eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+        order = np.argsort(eigenvalues)[::-1]
+        eigenvalues = eigenvalues[order]
+        eigenvectors = eigenvectors[:, order]
+        for column in range(eigenvectors.shape[1]):
+            pivot = np.argmax(np.abs(eigenvectors[:, column]))
+            if eigenvectors[pivot, column] < 0:
+                eigenvectors[:, column] *= -1.0
+        retained_values = eigenvalues[:3]
+        retained_vectors = eigenvectors[:, :3]
+        explained_variance = retained_values / eigenvalues.sum()
+        design = np.vander(historical.tenors_years / 15.0, N=4, increasing=True)
+        loadings = {
+            "paper": retained_vectors * retained_values,
+            "corrected": retained_vectors
+            * np.sqrt(np.clip(retained_values, 0.0, None)),
+        }
+        cubic_coefficients: dict[str, np.ndarray] = {}
+        fitted_loadings: dict[str, np.ndarray] = {}
+        polynomial_fit_errors: dict[str, np.ndarray] = {}
+        implied_covariances: dict[str, np.ndarray] = {}
+        for convention, loading in loadings.items():
+            coefficients, _, _, _ = np.linalg.lstsq(design, loading, rcond=None)
+            fitted = design @ coefficients
+            cubic_coefficients[convention] = _readonly(coefficients)
+            fitted_loadings[convention] = _readonly(fitted)
+            polynomial_fit_errors[convention] = _readonly(
+                np.linalg.norm(fitted - loading, axis=0)
+                / np.linalg.norm(loading, axis=0)
+            )
+            implied_covariances[convention] = _readonly(fitted @ fitted.T)
+        retained_covariance = (
+            retained_vectors @ np.diag(retained_values) @ retained_vectors.T
+        )
+        pca_truncation_error = float(
+            np.linalg.norm(covariance - retained_covariance)
+            / np.linalg.norm(covariance)
+        )
+        if explained_variance.sum() < 0.9:
+            raise TermStructureError(
+                "Three PCA components explain less than 90% of variance"
+            )
+        identity = _calibration_identity(weekly_dates, covariance, eigenvalues)
+        return HjmPcaCalibration(
+            weekly_dates=_readonly(weekly_dates),
+            weekly_forwards=_readonly(weekly_forwards),
+            forward_differences=_readonly(differences),
+            covariance=_readonly(covariance),
+            eigenvalues=_readonly(eigenvalues),
+            eigenvectors=_readonly(eigenvectors),
+            explained_variance=_readonly(explained_variance),
+            scaled_loadings={
+                convention: _readonly(loading)
+                for convention, loading in loadings.items()
+            },
+            cubic_coefficients=cubic_coefficients,
+            fitted_loadings=fitted_loadings,
+            implied_covariances=implied_covariances,
+            pca_truncation_error=pca_truncation_error,
+            polynomial_fit_errors=polynomial_fit_errors,
+            calibration_identity=identity,
+        )
+
+    def generate_hjm_scenarios(
+        self,
+        historical: HistoricalTermStructures,
+        calibration: HjmPcaCalibration,
+        *,
+        convention: str,
+        horizon_years: int,
+        paths: int,
+        seed: int,
+    ) -> MarketScenarioBatch:
+        """Generate bitwise-reproducible, unclipped monthly HJM scenarios."""
+
+        if convention not in {"paper", "corrected"}:
+            raise TermStructureError("HJM convention must be paper or corrected")
+        if horizon_years not in {5, 15}:
+            raise TermStructureError("HJM horizon must be 5 or 15 years")
+        if paths <= 0:
+            raise TermStructureError("HJM paths must be positive")
+        steps = horizon_years * 12
+        extended_tenors = np.arange(1, 181 + steps, dtype=np.float64) / 12.0
+        initial_forwards = _nss_monthly_forwards(
+            historical.initial_nss_parameters, extended_tenors
+        )
+        coefficients = calibration.cubic_coefficients[convention]
+        volatility = _evaluate_cubics(coefficients, extended_tenors / 15.0)
+        drift = _hjm_drift(
+            volatility, _evaluate_cubics(coefficients, np.array([0.0]))[0]
+        )
+        _require_finite("initial HJM values", initial_forwards, volatility, drift)
+        generator = np.random.default_rng(seed)
+        innovations = generator.standard_normal((paths, 180, 3), dtype=np.float64)[
+            :, :steps
+        ]
+        forwards = np.empty((paths, steps + 1, 180), dtype=np.float64)
+        forwards[:, 0] = initial_forwards[:180]
+        curve = np.broadcast_to(initial_forwards, (paths, len(initial_forwards))).copy()
+        dt = 1.0 / 12.0
+        for step in range(steps):
+            length = curve.shape[1]
+            shock = innovations[:, step] @ volatility[: length - 1].T * np.sqrt(dt)
+            curve = (
+                curve[:, :-1]
+                + (curve[:, 1:] - curve[:, :-1])
+                + drift[: length - 1] * dt
+                + shock
+            )
+            _require_finite("HJM forward path", curve)
+            forwards[:, step + 1] = curve[:, :180]
+        discount_factors, spot_rates = _curve_representations_from_forwards(forwards)
+        _require_finite("HJM output curves", discount_factors, spot_rates)
+        return MarketScenarioBatch(
+            spot_rates=_readonly(spot_rates),
+            discount_factors=_readonly(discount_factors),
+            monthly_forwards=_readonly(forwards),
+            innovations=_readonly(innovations),
+            convention=convention,
+            horizon_years=horizon_years,
+            seed=seed,
+            calibration_identity=calibration.calibration_identity,
         )
 
 
@@ -337,4 +511,71 @@ def _sha256(path: Path) -> str:
     with path.open("rb") as source:
         for block in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(block)
+    return digest.hexdigest()
+
+
+def _friday_ending_weekly_observations(
+    dates: np.ndarray, forwards: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    frame = pd.DataFrame(forwards, index=pd.DatetimeIndex(dates))
+    selected = frame.resample("W-FRI").last().dropna(how="any")
+    selected_dates = np.array(
+        [frame.loc[:week_end].index[-1] for week_end in selected.index],
+        dtype="datetime64[ns]",
+    )
+    return selected_dates, selected.to_numpy(dtype=np.float64)
+
+
+def _nss_monthly_forwards(parameters: np.ndarray, tenors: np.ndarray) -> np.ndarray:
+    beta0, beta1, beta2, beta3, tau1, tau2 = parameters
+    x1 = tenors / tau1
+    x2 = tenors / tau2
+    loading1 = -np.expm1(-x1) / x1
+    loading2 = -np.expm1(-x2) / x2
+    spots = (
+        beta0
+        + beta1 * loading1
+        + beta2 * (loading1 - np.exp(-x1))
+        + beta3 * (loading2 - np.exp(-x2))
+    )
+    discounts = np.exp(-spots * tenors)
+    return -np.diff(np.concatenate(([0.0], np.log(discounts)))) / (1.0 / 12.0)
+
+
+def _evaluate_cubics(
+    coefficients: np.ndarray, normalized_tenors: np.ndarray
+) -> np.ndarray:
+    design = np.vander(normalized_tenors, N=4, increasing=True)
+    return design @ coefficients
+
+
+def _hjm_drift(volatility: np.ndarray, value_at_zero: np.ndarray) -> np.ndarray:
+    step = 1.0 / 12.0
+    integral = np.cumsum(
+        (np.vstack((value_at_zero, volatility[:-1])) + volatility) * step / 2.0,
+        axis=0,
+    )
+    return np.sum(volatility * integral, axis=1)
+
+
+def _curve_representations_from_forwards(
+    forwards: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    discounts = np.exp(-np.cumsum(forwards / 12.0, axis=2))
+    tenors = _MONTHLY_TENORS_YEARS[None, None, :]
+    spots = -np.log(discounts) / tenors
+    return discounts, spots
+
+
+def _require_finite(label: str, *values: np.ndarray) -> None:
+    if not all(np.isfinite(value).all() for value in values):
+        raise TermStructureError(f"{label} contains non-finite values")
+
+
+def _calibration_identity(
+    weekly_dates: np.ndarray, covariance: np.ndarray, eigenvalues: np.ndarray
+) -> str:
+    digest = hashlib.sha256()
+    for value in (weekly_dates, covariance, eigenvalues):
+        digest.update(np.ascontiguousarray(value).tobytes())
     return digest.hexdigest()
