@@ -24,6 +24,7 @@ Produce an implementation-ready decision set for a Python and PyTorch methodolog
 - [Resolve SNB, Svensson, and HJM-PCA numerical conventions](issues/02-resolve-term-structure-conventions.md): SNB units and the high-level HJM-PCA pipeline are recoverable, but several numerical conventions are undisclosed and the paper's `lambda * q` factor conflicts with the standard `sqrt(lambda) * q` covariance factor.
 - [Catalogue no-swap benchmarks, experiments, and validation claims](issues/03-catalog-no-swap-experiments.md): The reproduction must cover BM^E, BM^C, BM^D, and MM at 5-year and 15-year horizons plus MM(15y|5y), using published aggregate results as directional landmarks rather than exact targets.
 - [Define the Reference Bank construction policy](issues/04-define-reference-bank-policy.md): Use one 10,000 mCHF paper-anchored canonical bank for both horizons, generated from transparent seasoned product templates behind a replaceable snapshot contract, with fail-fast financial checks and named one-factor sensitivities.
+- [Choose the Paper and Corrected convention boundary](issues/05-set-convention-boundary.md): Default to Corrected and reserve Paper for paired fidelity analysis; only PCA loading scale and loan monthly-interest annualization branch, while clear errata are fixed in both and undisclosed numerical choices remain explicit shared defaults.
 
 ## Not yet specified
 

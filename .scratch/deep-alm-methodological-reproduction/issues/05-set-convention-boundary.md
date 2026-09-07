@@ -1,7 +1,7 @@
 # Choose the Paper and Corrected convention boundary
 
 Type: grilling
-Status: claimed
+Status: resolved
 Blocked by: 02
 
 ## Question
@@ -42,3 +42,11 @@ For each material numerical ambiguity identified in the term-structure research,
 - In both profiles, use `rho_SD = 4%` for non-maturity deposits, `rho_SF = 1%` for term deposits, and apply the described default rule to enterprise loans. Record the conflicting symbol and “individual loans” wording as errata without creating alternate state variables.
 - Use state times 0 through H. At time zero, do not roll forward or perform an annual close; make and apply the first decision. At later decision times, roll forward before policy and restructuring, then evaluate constraints. Perform annual closes at months 12, 24, ..., H - 12. After the final decision at H - 1, roll once to H without another decision, restructuring, or dividend, and use that terminal equity in the loss.
 - Keep economic/numerical conventions orthogonal to run scale. The `paper` and `corrected` profiles control formulas only; `quick` and `paper_scale` configurations control scenario counts, training samples, feature-PCA fitting subsets, seeds, optimizer settings, schedules, and early stopping. Record every undisclosed project choice without labeling it as a paper fact.
+
+## Answer
+
+Both quick and paper-scale runs default to the Corrected convention; the Paper convention is reserved for paired fidelity analysis using the same Reference Bank, market innovations, and experiment settings. Formula conventions are orthogonal to run-scale configurations. Locked `paper` and `corrected` profiles must emit their full choice manifest, configuration hash, and Git commit; any component override changes the convention identity to `custom`.
+
+Only two material, runnable formula differences create profile branches: the Paper profile uses PCA loadings `lambda * q` while Corrected uses `sqrt(lambda) * q`, and Paper uses the literal loan-interest expression `max(exp(Y + kappa_L) - 1, 0)` while Corrected uses `max(exp((Y + kappa_L) / 12) - 1, 0)`. Clear editorial defects—including missing quantities and sums in the cash update, deposit-growth notation, enterprise-loan naming, and the time-zero annual-close condition—are corrected in both profiles and recorded as errata.
+
+All other undisclosed numerical choices are explicit shared project defaults rather than invented profile differences: decimal rates, monthly discrete forwards, week-end last-valid sampling, centered `n-1` covariance annualized by 52, deterministic PCA signs, unweighted cubic fits, monthly HJM steps, `N + H` long-end grids, no rate clipping, and a 60/180-transition timeline with a final roll-forward only. Alternative exploratory choices are configurable but produce `custom` results.
