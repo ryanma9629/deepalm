@@ -29,3 +29,9 @@ For each material numerical ambiguity identified in the term-structure research,
 - Convert SNB beta parameters to decimal rates at ingestion. Use decimal rates and volatilities, years for maturities and time steps, and mCHF for amounts throughout both profiles; percentage and basis-point units exist only at input/output boundaries.
 - Stabilize each PCA eigenvector sign by making its largest-absolute-value element positive. Fit each scaled loading by unweighted cubic least squares with an intercept on normalized tenor `u = x / 15`, without a zero boundary constraint or clipping. Both profiles share the fit procedure but receive their respective scaled loadings.
 - Compute the HJM volatility integral by the paper's trapezoidal rule beginning with the polynomial value at tenor zero, use the paper's forward tenor difference, and scale Gaussian innovations by `sqrt(dt)`. Use the analytic cubic integral only as a numerical validation oracle.
+
+### Grilling round 4
+
+- Fit PCA and cubic loadings on 1-month through 15-year tenors, then initialize HJM on `N + H` monthly nodes: 240 nodes through 20 years for the 5-year run and 360 nodes through 30 years for the 15-year run. Initialize the extended curve from NSS, evaluate the cubic loadings beyond 15 years, update only the first `L - 1` nodes, discard the final node each month, and expose the first 180 nodes to ALM. Both profiles share this disclosed long-end interpretation and report extrapolation diagnostics.
+- Do not clip or floor finite simulated rates in either profile. Fail on non-finite values and report the share of 1-month yields below -1% plus tenor-wise quantiles. Any artificial stress bound creates a `custom` run.
+- Calculate monthly loan interest literally as `max(exp(Y + kappa_L) - 1, 0)` in the Paper profile and as `max(exp((Y + kappa_L) / 12) - 1, 0)` in the Corrected profile.
