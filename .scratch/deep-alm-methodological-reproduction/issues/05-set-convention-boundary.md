@@ -1,7 +1,7 @@
 # Choose the Paper and Corrected convention boundary
 
 Type: grilling
-Status: open
+Status: claimed
 Blocked by: 02
 
 ## Question
