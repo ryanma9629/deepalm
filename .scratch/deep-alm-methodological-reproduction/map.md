@@ -20,6 +20,8 @@ Produce an implementation-ready decision set for a Python and PyTorch methodolog
 
 ## Decisions so far
 
+- [Inventory the paper's disclosed inputs and proprietary gaps](issues/01-inventory-disclosed-inputs-and-private-gaps.md): Public inputs support methodological reproduction, while proprietary cash-flow ladders, scale, product allocations, spreads, and cost bases must be replaced transparently in the Reference Bank.
+
 ## Not yet specified
 
 - The interfaces and tensor representations for balance-sheet state and monthly cash-flow ladders.
