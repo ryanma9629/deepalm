@@ -1,7 +1,7 @@
 # Define methodological reproduction acceptance thresholds
 
 Type: grilling
-Status: open
+Status: claimed
 Blocked by: 01, 02, 03, 04, 05
 
 ## Question
