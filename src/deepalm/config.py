@@ -37,6 +37,7 @@ class RunScaleConfiguration:
 class SourceDataConfiguration:
     snb_csv: Path
     paper_pdf: Path
+    nss_beta_unit: str
 
 
 @dataclass(frozen=True)
@@ -93,6 +94,7 @@ class ResolvedRunConfiguration:
         result["source_data"] = {
             "snb_csv": str(self.source_data.snb_csv),
             "paper_pdf": str(self.source_data.paper_pdf),
+            "nss_beta_unit": self.source_data.nss_beta_unit,
         }
         result["output"] = {
             "directory": str(self.output.directory),
@@ -188,10 +190,16 @@ def resolve_configuration(raw: object) -> ResolvedRunConfiguration:
 
 
 def _resolve_source_data(raw: object) -> SourceDataConfiguration:
-    section = _section(raw, "source_data", {"snb_csv", "paper_pdf"})
+    section = _section(raw, "source_data", {"snb_csv", "paper_pdf", "nss_beta_unit"})
+    nss_beta_unit = _string(section["nss_beta_unit"], "source_data.nss_beta_unit")
+    if nss_beta_unit != "percentage_points":
+        raise ConfigurationError(
+            "source_data.nss_beta_unit must be 'percentage_points'"
+        )
     return SourceDataConfiguration(
         snb_csv=Path(_string(section["snb_csv"], "source_data.snb_csv")),
         paper_pdf=Path(_string(section["paper_pdf"], "source_data.paper_pdf")),
+        nss_beta_unit=nss_beta_unit,
     )
 
 

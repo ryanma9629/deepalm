@@ -17,6 +17,7 @@ _CALIBRATION_START = pd.Timestamp("2005-01-01")
 _CALIBRATION_END = pd.Timestamp("2022-07-15")
 _INITIAL_CURVE_DATE = pd.Timestamp("2022-07-15")
 _MONTHLY_TENORS_YEARS = np.arange(1, 181, dtype=np.float64) / 12.0
+_BETA_UNIT = "percentage_points"
 
 
 class TermStructureError(OperationalRunError):
@@ -32,6 +33,19 @@ class TermStructureSnapshot:
     spot_rates: np.ndarray
     discount_factors: np.ndarray
     monthly_forwards: np.ndarray
+    instantaneous_forwards: np.ndarray
+
+
+@dataclass(frozen=True)
+class TermStructureHistory:
+    """A dated curve history used for one downstream purpose."""
+
+    dates: np.ndarray
+    tenors_years: np.ndarray
+    spot_rates: np.ndarray
+    discount_factors: np.ndarray
+    monthly_forwards: np.ndarray
+    instantaneous_forwards: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -43,9 +57,13 @@ class HistoricalTermStructures:
     spot_rates: np.ndarray
     discount_factors: np.ndarray
     monthly_forwards: np.ndarray
+    instantaneous_forwards: np.ndarray
+    deposit_reference_history: TermStructureHistory
     initial_curve: TermStructureSnapshot
     source_path: Path
     source_hash: str
+    source_beta_unit: str
+    rate_unit: str
     round_trip_error: float
 
 
@@ -53,15 +71,20 @@ class MarketScenarioModel:
     """Load the historical term structures used by the later HJM scenario model."""
 
     def load_historical_term_structures(
-        self, source_path: Path
+        self, source_path: Path, *, beta_unit: str = _BETA_UNIT
     ) -> HistoricalTermStructures:
         """Parse the SNB NSS export and reconstruct its calibration-window curves."""
 
-        parameter_table = _load_parameter_table(source_path)
+        if beta_unit != _BETA_UNIT:
+            raise TermStructureError(
+                "SNB NSS beta unit must be declared as percentage_points",
+                diagnostics={"beta_unit": beta_unit},
+            )
+        parameter_table = _load_parameter_table(source_path, beta_unit=beta_unit)
         calibration_table = _select_calibration_window(parameter_table)
-        spot_rates = _reconstruct_spot_rates(calibration_table)
-        discount_factors = np.exp(-spot_rates * _MONTHLY_TENORS_YEARS)
-        monthly_forwards = _monthly_forwards(discount_factors)
+        spot_rates, discount_factors, monthly_forwards, instantaneous_forwards = (
+            _reconstruct_curve_representations(calibration_table)
+        )
         round_trip_error = _round_trip_error(
             spot_rates, discount_factors, monthly_forwards
         )
@@ -70,6 +93,24 @@ class MarketScenarioModel:
                 "Spot, discount, and forward curves do not round-trip within 1e-10",
                 diagnostics={"round_trip_error": round_trip_error},
             )
+
+        deposit_reference_table = parameter_table.loc[:_CALIBRATION_END]
+        (
+            deposit_spots,
+            deposit_discounts,
+            deposit_forwards,
+            deposit_instantaneous_forwards,
+        ) = _reconstruct_curve_representations(deposit_reference_table)
+        deposit_reference_history = TermStructureHistory(
+            dates=_readonly(
+                deposit_reference_table.index.to_numpy(dtype="datetime64[ns]")
+            ),
+            tenors_years=_readonly(_MONTHLY_TENORS_YEARS),
+            spot_rates=_readonly(deposit_spots),
+            discount_factors=_readonly(deposit_discounts),
+            monthly_forwards=_readonly(deposit_forwards),
+            instantaneous_forwards=_readonly(deposit_instantaneous_forwards),
+        )
 
         dates = calibration_table.index.to_numpy(dtype="datetime64[ns]")
         initial_curve_index = np.flatnonzero(
@@ -86,6 +127,7 @@ class MarketScenarioModel:
             spot_rates=_readonly(spot_rates[index]),
             discount_factors=_readonly(discount_factors[index]),
             monthly_forwards=_readonly(monthly_forwards[index]),
+            instantaneous_forwards=_readonly(instantaneous_forwards[index]),
         )
         return HistoricalTermStructures(
             dates=_readonly(dates),
@@ -93,14 +135,18 @@ class MarketScenarioModel:
             spot_rates=_readonly(spot_rates),
             discount_factors=_readonly(discount_factors),
             monthly_forwards=_readonly(monthly_forwards),
+            instantaneous_forwards=_readonly(instantaneous_forwards),
+            deposit_reference_history=deposit_reference_history,
             initial_curve=initial_curve,
             source_path=source_path,
             source_hash=_sha256(source_path),
+            source_beta_unit=beta_unit,
+            rate_unit="decimal",
             round_trip_error=round_trip_error,
         )
 
 
-def _load_parameter_table(source_path: Path) -> pd.DataFrame:
+def _load_parameter_table(source_path: Path, *, beta_unit: str) -> pd.DataFrame:
     header_row = _validate_metadata_and_find_header(source_path)
     try:
         raw = pd.read_csv(
@@ -108,7 +154,7 @@ def _load_parameter_table(source_path: Path) -> pd.DataFrame:
             sep=";",
             skiprows=header_row,
             encoding="utf-8-sig",
-            dtype={"Date": "string", "d0": "string"},
+            dtype={"Date": "string", "d0": "string", "Value": "string"},
         )
     except (OSError, pd.errors.ParserError) as error:
         raise TermStructureError(f"Could not parse SNB source: {error}") from error
@@ -141,7 +187,16 @@ def _load_parameter_table(source_path: Path) -> pd.DataFrame:
             diagnostics={"duplicates": duplicate_rows.astype(str).to_dict("records")},
         )
 
-    raw["Value"] = pd.to_numeric(raw["Value"], errors="coerce")
+    value_text = raw["Value"].str.strip()
+    blank_values = value_text.isna() | value_text.eq("")
+    raw["Value"] = pd.to_numeric(value_text, errors="coerce")
+    invalid_values = ~blank_values & raw["Value"].isna()
+    if invalid_values.any():
+        invalid_rows = raw.loc[invalid_values, ["Date", "d0"]].head(4)
+        raise TermStructureError(
+            "SNB source contains invalid parameter values",
+            diagnostics={"invalid_values": invalid_rows.astype(str).to_dict("records")},
+        )
     table = raw.pivot(index="Date", columns="d0", values="Value").reindex(
         columns=_PARAMETERS
     )
@@ -162,6 +217,7 @@ def _load_parameter_table(source_path: Path) -> pd.DataFrame:
         )
     if (table[["t1", "t2"]] <= 0).any(axis=None):
         raise TermStructureError("SNB source requires positive t1 and t2 parameters")
+    table.loc[:, ["b0", "b1", "b2", "b3"]] = table[["b0", "b1", "b2", "b3"]] / 100.0
     return table.sort_index()
 
 
@@ -194,7 +250,7 @@ def _select_calibration_window(parameter_table: pd.DataFrame) -> pd.DataFrame:
 
 def _reconstruct_spot_rates(parameter_table: pd.DataFrame) -> np.ndarray:
     parameters = parameter_table.to_numpy(dtype=np.float64)
-    beta0, beta1, beta2, beta3 = (parameters[:, index] / 100.0 for index in range(4))
+    beta0, beta1, beta2, beta3 = (parameters[:, index] for index in range(4))
     tau1, tau2 = parameters[:, 4], parameters[:, 5]
     x1 = _MONTHLY_TENORS_YEARS[None, :] / tau1[:, None]
     x2 = _MONTHLY_TENORS_YEARS[None, :] / tau2[:, None]
@@ -209,6 +265,43 @@ def _reconstruct_spot_rates(parameter_table: pd.DataFrame) -> np.ndarray:
     if not np.isfinite(spots).all():
         raise TermStructureError("NSS reconstruction produced non-finite spot rates")
     return spots
+
+
+def _reconstruct_curve_representations(
+    parameter_table: pd.DataFrame,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    spot_rates = _reconstruct_spot_rates(parameter_table)
+    with np.errstate(over="ignore", invalid="ignore"):
+        discount_factors = np.exp(-spot_rates * _MONTHLY_TENORS_YEARS)
+    if not np.isfinite(discount_factors).all():
+        raise TermStructureError(
+            "NSS reconstruction produced non-finite discount factors"
+        )
+    monthly_forwards = _monthly_forwards(discount_factors)
+    if not np.isfinite(monthly_forwards).all():
+        raise TermStructureError(
+            "NSS reconstruction produced non-finite monthly forwards"
+        )
+    instantaneous_forwards = _instantaneous_forwards(parameter_table)
+    if not np.isfinite(instantaneous_forwards).all():
+        raise TermStructureError(
+            "NSS reconstruction produced non-finite instantaneous forwards"
+        )
+    return spot_rates, discount_factors, monthly_forwards, instantaneous_forwards
+
+
+def _instantaneous_forwards(parameter_table: pd.DataFrame) -> np.ndarray:
+    parameters = parameter_table.to_numpy(dtype=np.float64)
+    beta0, beta1, beta2, beta3 = (parameters[:, index] for index in range(4))
+    tau1, tau2 = parameters[:, 4], parameters[:, 5]
+    x1 = _MONTHLY_TENORS_YEARS[None, :] / tau1[:, None]
+    x2 = _MONTHLY_TENORS_YEARS[None, :] / tau2[:, None]
+    return (
+        beta0[:, None]
+        + beta1[:, None] * np.exp(-x1)
+        + beta2[:, None] * x1 * np.exp(-x1)
+        + beta3[:, None] * x2 * np.exp(-x2)
+    )
 
 
 def _monthly_forwards(discount_factors: np.ndarray) -> np.ndarray:

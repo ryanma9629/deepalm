@@ -23,3 +23,19 @@ _Avoid_: Silent fix, improved version
 **BM^E、BM^C、BM^D 与 MM**:
 论文中的四类无互换 TreasuryPolicy：等期限分配 benchmark、固定期限分配 benchmark、按决策日期分配 benchmark，以及共享参数的多期模型。
 _Avoid_: bme, bmc, bmd, mm
+
+**期限结构（Term Structure）**:
+某一估值日、同一组月度期限上的连续复利即期利率、贴现因子和离散远期利率，它们是同一条利率曲线的三种一致表示。
+_Avoid_: 三条独立曲线
+
+**校准窗口（Calibration Window）**:
+用于估计市场情景模型的、完整历史期限结构的固定时间区间；本项目采用 2005 年 1 月 1 日至 2022 年 7 月 15 日。
+_Avoid_: 任意训练数据
+
+**存款参考历史（Deposit Reference History）**:
+截至初始估值日的完整历史期限结构，用于计算初始存款参考利率，而非用于 HJM 校准。
+_Avoid_: 校准窗口
+
+**标准初始曲线（Canonical Initial Curve）**:
+2022 年 7 月 15 日的期限结构；它是 Reference Bank 的估值起点和市场情景的共同起点。
+_Avoid_: 最新曲线, 任意起始曲线

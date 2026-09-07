@@ -1,6 +1,7 @@
 source_data:
   snb_csv: data/snb-data-rendopar-en-all_19880401-20250731.csv
   paper_pdf: docs/Deep treasury management for banks.pdf
+  nss_beta_unit: percentage_points
 
 convention:
   profile: corrected

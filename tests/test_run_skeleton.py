@@ -16,6 +16,7 @@ def configuration_data(tmp_path: Path) -> dict[str, object]:
         "source_data": {
             "snb_csv": str(tmp_path / "snb.csv"),
             "paper_pdf": str(tmp_path / "paper.pdf"),
+            "nss_beta_unit": "percentage_points",
         },
         "convention": {"profile": "corrected"},
         "run_scale": {"profile": "quick"},
@@ -90,6 +91,10 @@ def test_corrected_profile_resolves_and_override_is_custom(tmp_path: Path) -> No
                 {"initial_assets": {"value": 5_000, "unit": "mCHF"}}
             ),
             "10,000 mCHF",
+        ),
+        (
+            lambda data: data["source_data"].update({"nss_beta_unit": "decimal"}),
+            "percentage_points",
         ),
         (
             lambda data: data["seeds"].update({"market_scenarios": -1}),
