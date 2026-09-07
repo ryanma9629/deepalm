@@ -133,6 +133,26 @@ def test_configuration_rejects_incompatible_run_combinations(
         resolve_configuration(invalid)
 
 
+@pytest.mark.parametrize(
+    "convention",
+    [
+        {"profile": "paper"},
+        {"profile": "corrected", "pca_loading_scale": "sqrt_eigenvalue"},
+    ],
+)
+def test_methodological_reproduction_requires_the_locked_corrected_convention(
+    tmp_path: Path, convention: dict[str, str]
+) -> None:
+    invalid = configuration_data(tmp_path)
+    invalid["convention"] = convention
+    invalid["run_scale"] = {"profile": "paper_scale"}
+    invalid["policy"] = {"names": ["BM^E", "BM^C", "BM^D", "MM"]}
+    invalid["acceptance"] = {"required_status": "methodologically-reproduced"}
+
+    with pytest.raises(ConfigurationError, match="Corrected convention"):
+        resolve_configuration(invalid)
+
+
 def test_runner_writes_an_atomic_auditable_bundle(tmp_path: Path) -> None:
     configuration = configuration_data(tmp_path)
     write_source_inputs(configuration)
@@ -218,6 +238,8 @@ def test_runner_preserves_diagnostics_for_a_failed_run(tmp_path: Path) -> None:
     manifest = json.loads((bundle.artifact_directory / "manifest.json").read_text())
     assert manifest["status"] == "failed"
     assert manifest["error"]
+    assert manifest["input_hashes"] == {"paper_pdf": None, "snb_csv": None}
+    assert set(manifest["input_hash_errors"]) == {"paper_pdf", "snb_csv"}
     assert bundle.metrics == {}
     assert bundle.checkpoints == ()
     assert bundle.acceptance_evidence == ()

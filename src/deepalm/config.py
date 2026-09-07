@@ -375,6 +375,13 @@ def _resolve_acceptance(raw: object) -> AcceptanceConfiguration:
 def _validate_combinations(configuration: ResolvedRunConfiguration) -> None:
     if configuration.acceptance.required_status != "methodologically-reproduced":
         return
+    if (
+        configuration.convention.profile != "corrected"
+        or configuration.convention.is_custom
+    ):
+        raise ConfigurationError(
+            "methodologically-reproduced requires the locked Corrected convention"
+        )
     if configuration.run_scale.profile != "paper_scale":
         raise ConfigurationError(
             "methodologically-reproduced requires the paper_scale run profile"

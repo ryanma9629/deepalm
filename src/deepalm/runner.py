@@ -31,6 +31,16 @@ class AcceptanceStatus(StrEnum):
     FAILED = "failed"
 
 
+class OperationalRunError(RuntimeError):
+    """A recoverable pipeline failure with serializable diagnostic context."""
+
+    def __init__(
+        self, message: str, *, diagnostics: Mapping[str, object] | None = None
+    ) -> None:
+        super().__init__(message)
+        self.diagnostics = dict(diagnostics or {})
+
+
 @dataclass(frozen=True)
 class RunBundle:
     """Auditable result of one reproduction execution."""
@@ -60,7 +70,7 @@ class ReproductionRunner:
             status = _status_for(acceptance_status)
             manifest = _build_manifest(configuration, status, acceptance_status)
             artifact_directory = _write_bundle_atomically(configuration, manifest)
-        except (OSError, ValueError) as error:
+        except (OperationalRunError, OSError, ValueError) as error:
             failure_directory = _write_failure_bundle(configuration, error)
             return RunBundle(
                 status=RunStatus.FAILED,
@@ -85,20 +95,14 @@ def _build_manifest(
     status: RunStatus,
     acceptance_status: AcceptanceStatus,
 ) -> dict[str, object]:
-    resolved_configuration = configuration.to_dict()
     return {
+        **_manifest_metadata(configuration),
         "status": status.value,
         "acceptance_status": acceptance_status.value,
-        "created_at": datetime.now(UTC).isoformat(),
-        "git_revision": _git_revision(),
-        "runtime": _runtime_identity(configuration),
         "input_hashes": {
             "snb_csv": _sha256(configuration.source_data.snb_csv),
             "paper_pdf": _sha256(configuration.source_data.paper_pdf),
         },
-        "seed_registry": configuration.seeds,
-        "resolved_configuration": resolved_configuration,
-        "resolved_configuration_hash": _configuration_hash(resolved_configuration),
     }
 
 
@@ -144,16 +148,15 @@ def _write_failure_bundle(
                 prefix=f".{configuration.output.run_name}.failed-", dir=output_root
             )
         )
+        input_hashes, input_hash_errors = _available_input_hashes(configuration)
         failure_manifest = {
+            **_manifest_metadata(configuration),
             "status": RunStatus.FAILED.value,
             "acceptance_status": AcceptanceStatus.PENDING.value,
-            "created_at": datetime.now(UTC).isoformat(),
             "error": str(error),
-            "git_revision": _git_revision(),
-            "runtime": _runtime_identity(configuration),
-            "seed_registry": configuration.seeds,
-            "resolved_configuration": configuration.to_dict(),
-            "resolved_configuration_hash": _configuration_hash(configuration.to_dict()),
+            "diagnostics": _diagnostics_for(error),
+            "input_hashes": input_hashes,
+            "input_hash_errors": input_hash_errors,
         }
         (staging_directory / "manifest.json").write_text(
             json.dumps(failure_manifest, indent=2, sort_keys=True) + "\n",
@@ -176,6 +179,23 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _available_input_hashes(
+    configuration: ResolvedRunConfiguration,
+) -> tuple[dict[str, str | None], dict[str, str]]:
+    hashes: dict[str, str | None] = {}
+    errors: dict[str, str] = {}
+    for name, path in {
+        "snb_csv": configuration.source_data.snb_csv,
+        "paper_pdf": configuration.source_data.paper_pdf,
+    }.items():
+        try:
+            hashes[name] = _sha256(path)
+        except OSError as error:
+            hashes[name] = None
+            errors[name] = str(error)
+    return hashes, errors
 
 
 def _runtime_identity(configuration: ResolvedRunConfiguration) -> dict[str, object]:
@@ -212,6 +232,18 @@ def _git_revision() -> str:
     return result.stdout.strip() if result.returncode == 0 else "unknown"
 
 
+def _manifest_metadata(configuration: ResolvedRunConfiguration) -> dict[str, object]:
+    resolved_configuration = configuration.to_dict()
+    return {
+        "created_at": datetime.now(UTC).isoformat(),
+        "git_revision": _git_revision(),
+        "runtime": _runtime_identity(configuration),
+        "seed_registry": configuration.seeds,
+        "resolved_configuration": resolved_configuration,
+        "resolved_configuration_hash": _configuration_hash(resolved_configuration),
+    }
+
+
 def _configuration_hash(resolved_configuration: dict[str, object]) -> str:
     serialized = json.dumps(
         resolved_configuration, sort_keys=True, separators=(",", ":")
@@ -223,3 +255,9 @@ def _status_for(acceptance_status: AcceptanceStatus) -> RunStatus:
     if acceptance_status is AcceptanceStatus.FAILED:
         return RunStatus.ACCEPTANCE_FAILED
     return RunStatus.COMPLETED
+
+
+def _diagnostics_for(error: Exception) -> dict[str, object]:
+    if isinstance(error, OperationalRunError):
+        return error.diagnostics
+    return {}
