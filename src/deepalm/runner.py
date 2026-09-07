@@ -43,11 +43,17 @@ class RunBundle:
 class ReproductionRunner:
     """Create an atomic, auditable bundle for one resolved run configuration."""
 
-    def run(self, configuration: ResolvedRunConfiguration) -> RunBundle:
+    def run(
+        self,
+        configuration: ResolvedRunConfiguration,
+        *,
+        acceptance_status: AcceptanceStatus = AcceptanceStatus.PENDING,
+    ) -> RunBundle:
         """Write the minimum audit bundle, returning a failure bundle on I/O errors."""
 
         try:
-            manifest = _build_manifest(configuration)
+            status = _status_for(acceptance_status)
+            manifest = _build_manifest(configuration, status, acceptance_status)
             artifact_directory = _write_bundle_atomically(configuration, manifest)
         except (OSError, ValueError) as error:
             return RunBundle(
@@ -58,16 +64,21 @@ class ReproductionRunner:
             )
 
         return RunBundle(
-            status=RunStatus.COMPLETED,
-            acceptance_status=AcceptanceStatus.PENDING,
+            status=status,
+            acceptance_status=acceptance_status,
             artifact_directory=artifact_directory,
         )
 
 
-def _build_manifest(configuration: ResolvedRunConfiguration) -> dict[str, object]:
+def _build_manifest(
+    configuration: ResolvedRunConfiguration,
+    status: RunStatus,
+    acceptance_status: AcceptanceStatus,
+) -> dict[str, object]:
+    resolved_configuration = configuration.to_dict()
     return {
-        "status": RunStatus.COMPLETED.value,
-        "acceptance_status": AcceptanceStatus.PENDING.value,
+        "status": status.value,
+        "acceptance_status": acceptance_status.value,
         "created_at": datetime.now(UTC).isoformat(),
         "git_revision": _git_revision(),
         "runtime": _runtime_identity(configuration),
@@ -76,7 +87,8 @@ def _build_manifest(configuration: ResolvedRunConfiguration) -> dict[str, object
             "paper_pdf": _sha256(configuration.source_data.paper_pdf),
         },
         "seed_registry": configuration.seeds,
-        "resolved_configuration": configuration.to_dict(),
+        "resolved_configuration": resolved_configuration,
+        "resolved_configuration_hash": _configuration_hash(resolved_configuration),
     }
 
 
@@ -118,10 +130,14 @@ def _runtime_identity(configuration: ResolvedRunConfiguration) -> dict[str, obje
     dependencies = {
         package: importlib.metadata.version(distribution)
         for package, distribution in {
+            "matplotlib": "matplotlib",
             "numpy": "numpy",
             "pandas": "pandas",
             "pyyaml": "PyYAML",
+            "scikit-learn": "scikit-learn",
+            "scipy": "scipy",
             "torch": "torch",
+            "tqdm": "tqdm",
         }.items()
     }
     return {
@@ -142,3 +158,16 @@ def _git_revision() -> str:
         text=True,
     )
     return result.stdout.strip() if result.returncode == 0 else "unknown"
+
+
+def _configuration_hash(resolved_configuration: dict[str, object]) -> str:
+    serialized = json.dumps(
+        resolved_configuration, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(serialized).hexdigest()
+
+
+def _status_for(acceptance_status: AcceptanceStatus) -> RunStatus:
+    if acceptance_status is AcceptanceStatus.FAILED:
+        return RunStatus.ACCEPTANCE_FAILED
+    return RunStatus.COMPLETED

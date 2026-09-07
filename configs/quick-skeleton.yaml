@@ -19,16 +19,19 @@ experiment:
   include_swaps: false
 
 policy:
-  names: [bme]
+  names: [BM^E]
 
 optimization:
   device: auto
   dtype: float32
 
 seeds:
-  market: 20260907
-  training: 20260908
-  bootstrap: 20260909
+  market_scenarios: 20260907
+  objective_parameters: 20260908
+  model_initialization: 20260909
+  data_loader_order: 20260910
+  bootstrap: 20260911
+  sensitivity: 20260912
 
 output:
   directory: artifacts

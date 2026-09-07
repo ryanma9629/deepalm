@@ -8,7 +8,7 @@ import pytest
 
 from deepalm.cli import main
 from deepalm.config import ConfigurationError, resolve_configuration
-from deepalm.runner import ReproductionRunner, RunStatus
+from deepalm.runner import AcceptanceStatus, ReproductionRunner, RunStatus
 
 
 def configuration_data(tmp_path: Path) -> dict[str, object]:
@@ -24,9 +24,16 @@ def configuration_data(tmp_path: Path) -> dict[str, object]:
             "initial_assets": {"value": 10_000, "unit": "mCHF"},
         },
         "experiment": {"horizons_years": [5, 15], "include_swaps": False},
-        "policy": {"names": ["bme"]},
+        "policy": {"names": ["BM^E"]},
         "optimization": {"device": "cpu", "dtype": "float64"},
-        "seeds": {"market": 11, "training": 12, "bootstrap": 13},
+        "seeds": {
+            "market_scenarios": 11,
+            "objective_parameters": 12,
+            "model_initialization": 13,
+            "data_loader_order": 14,
+            "bootstrap": 15,
+            "sensitivity": 16,
+        },
         "output": {"directory": str(tmp_path / "runs"), "run_name": "smoke"},
         "acceptance": {"required_status": "development-validated"},
     }
@@ -78,7 +85,16 @@ def test_corrected_profile_resolves_and_override_is_custom(tmp_path: Path) -> No
             ),
             "mCHF",
         ),
-        (lambda data: data["seeds"].update({"market": -1}), "non-negative integer"),
+        (
+            lambda data: data["reference_bank"].update(
+                {"initial_assets": {"value": 5_000, "unit": "mCHF"}}
+            ),
+            "10,000 mCHF",
+        ),
+        (
+            lambda data: data["seeds"].update({"market_scenarios": -1}),
+            "non-negative integer",
+        ),
     ],
 )
 def test_configuration_rejects_invalid_inputs(
@@ -100,7 +116,7 @@ def test_runner_writes_an_atomic_auditable_bundle(tmp_path: Path) -> None:
     bundle = ReproductionRunner().run(resolved)
 
     assert bundle.status is RunStatus.COMPLETED
-    assert bundle.acceptance_status == "pending"
+    assert bundle.acceptance_status is AcceptanceStatus.PENDING
     assert bundle.artifact_directory is not None
     assert bundle.artifact_directory.is_dir()
     assert not list(bundle.artifact_directory.parent.glob(".smoke-*"))
@@ -109,7 +125,20 @@ def test_runner_writes_an_atomic_auditable_bundle(tmp_path: Path) -> None:
     assert manifest["status"] == "completed"
     assert manifest["acceptance_status"] == "pending"
     assert manifest["resolved_configuration"]["convention"]["profile"] == "corrected"
-    assert manifest["seed_registry"] == {"bootstrap": 13, "market": 11, "training": 12}
+    assert manifest["seed_registry"] == {
+        "bootstrap": 15,
+        "data_loader_order": 14,
+        "market_scenarios": 11,
+        "model_initialization": 13,
+        "objective_parameters": 12,
+        "sensitivity": 16,
+    }
+    expected_configuration_hash = hashlib.sha256(
+        json.dumps(
+            manifest["resolved_configuration"], sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+    assert manifest["resolved_configuration_hash"] == expected_configuration_hash
     assert (
         manifest["input_hashes"]["snb_csv"]
         == hashlib.sha256(b"source-data").hexdigest()
@@ -119,7 +148,16 @@ def test_runner_writes_an_atomic_auditable_bundle(tmp_path: Path) -> None:
         == hashlib.sha256(b"paper-data").hexdigest()
     )
     assert manifest["runtime"]["python"]
-    assert manifest["runtime"]["dependencies"]["pyyaml"]
+    assert set(manifest["runtime"]["dependencies"]) == {
+        "matplotlib",
+        "numpy",
+        "pandas",
+        "pyyaml",
+        "scikit-learn",
+        "scipy",
+        "torch",
+        "tqdm",
+    }
     assert manifest["runtime"]["device"] == "cpu"
     assert manifest["runtime"]["dtype"] == "float64"
     assert manifest["git_revision"]
@@ -142,6 +180,22 @@ def test_runner_reports_operational_failure_without_a_completed_bundle(
     assert bundle.artifact_directory is None
     assert bundle.error is not None
     assert "not a directory" in bundle.error
+
+
+def test_runner_writes_an_acceptance_failed_bundle(tmp_path: Path) -> None:
+    configuration = configuration_data(tmp_path)
+    write_source_inputs(configuration)
+
+    bundle = ReproductionRunner().run(
+        resolve_configuration(configuration), acceptance_status=AcceptanceStatus.FAILED
+    )
+
+    assert bundle.status is RunStatus.ACCEPTANCE_FAILED
+    assert bundle.acceptance_status is AcceptanceStatus.FAILED
+    assert bundle.artifact_directory is not None
+    manifest = json.loads((bundle.artifact_directory / "manifest.json").read_text())
+    assert manifest["status"] == "acceptance_failed"
+    assert manifest["acceptance_status"] == "failed"
 
 
 def test_cli_returns_a_configuration_exit_code(

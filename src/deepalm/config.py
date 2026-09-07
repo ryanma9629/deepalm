@@ -255,6 +255,10 @@ def _resolve_reference_bank(raw: object) -> ReferenceBankConfiguration:
     value = quantity["value"]
     if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
         raise ConfigurationError("reference_bank.initial_assets.value must be positive")
+    if value != 10_000:
+        raise ConfigurationError(
+            "reference_bank.initial_assets.value must be 10,000 mCHF for the canonical profile"
+        )
 
     return ReferenceBankConfiguration(profile=profile, initial_assets_mchf=float(value))
 
@@ -282,7 +286,7 @@ def _resolve_experiment(raw: object) -> ExperimentConfiguration:
 def _resolve_policy(raw: object) -> PolicyConfiguration:
     section = _section(raw, "policy", {"names"})
     names = section["names"]
-    allowed = {"bme", "bmc", "bmd", "mm"}
+    allowed = {"BM^E", "BM^C", "BM^D", "MM"}
     if (
         not isinstance(names, list)
         or not names
@@ -323,7 +327,14 @@ def _resolve_optimization(raw: object) -> OptimizationConfiguration:
 
 def _resolve_seeds(raw: object) -> dict[str, int]:
     section = _mapping(raw, "seeds")
-    required = {"market", "training", "bootstrap"}
+    required = {
+        "market_scenarios",
+        "objective_parameters",
+        "model_initialization",
+        "data_loader_order",
+        "bootstrap",
+        "sensitivity",
+    }
     missing = sorted(required - set(section))
     if missing:
         raise ConfigurationError(f"Missing named seeds: {', '.join(missing)}")

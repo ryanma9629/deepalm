@@ -19,3 +19,7 @@ _Avoid_: Correct implementation
 **Corrected convention（修正口径）**:
 An explicitly labeled alternative used when evidence supports a correction or conventional interpretation of an ambiguous paper procedure.
 _Avoid_: Silent fix, improved version
+
+**BM^E、BM^C、BM^D 与 MM**:
+论文中的四类无互换 TreasuryPolicy：等期限分配 benchmark、固定期限分配 benchmark、按决策日期分配 benchmark，以及共享参数的多期模型。
+_Avoid_: bme, bmc, bmd, mm
