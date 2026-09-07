@@ -3,8 +3,10 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
 import torch
 
+from deepalm.baselines import BaselineReferenceError, FrozenDateBenchmarkReference
 from deepalm.config import (
     ExperimentConfiguration,
     PolicyConfiguration,
@@ -13,7 +15,7 @@ from deepalm.config import (
 )
 from deepalm.reference_bank import ReferenceBankProvider
 from deepalm.term_structures import MarketScenarioModel
-from deepalm.training import BMConstantTrainer, BMETrainer
+from deepalm.training import BMConstantTrainer, BMDateTrainer, BMETrainer
 
 SOURCE = (
     Path(__file__).resolve().parents[1]
@@ -176,3 +178,60 @@ def test_constant_benchmark_uses_the_shared_trainer_for_both_horizons(
     assert len(action_record["investment_maturity_totals"]) == 13
     assert len(action_record["funding_maturity_totals"]) == 16
     assert action_record["minimum_action"] >= 0.0
+
+
+def test_date_benchmark_freezes_each_selected_horizon_with_verified_identity(
+    tmp_path: Path,
+) -> None:
+    configuration = replace(
+        _configuration(tmp_path),
+        experiment=ExperimentConfiguration(horizons_years=(5, 15), include_swaps=False),
+        policy=PolicyConfiguration(names=("BM^D",)),
+    )
+    model = MarketScenarioModel()
+    historical = model.load_historical_term_structures(SOURCE)
+    calibration = model.calibrate_hjm_pca(historical)
+    snapshot = ReferenceBankProvider().build_canonical(historical)
+
+    results = BMDateTrainer(
+        configuration,
+        snapshot=snapshot,
+        historical=historical,
+        calibration=calibration,
+    ).fit_all()
+    first = results[0]
+    checkpoint = torch.load(first.checkpoint_path, weights_only=False)
+
+    assert [result.resource_profile.horizon_years for result in results] == [5, 15]
+    assert all(result.optimizer_updates == 1 for result in results)
+    assert all(result.baseline_reference_path is not None for result in results)
+    assert checkpoint["policy"] == "BM^D"
+    assert checkpoint["policy_metadata"]["decision_dates"] == 60
+    assert checkpoint["policy_metadata"]["parameter_count"] == 1_860
+    assert "T action dates" in checkpoint["policy_metadata"]["indexing_note"]
+
+    assert first.baseline_reference_identity is not None
+    reference = FrozenDateBenchmarkReference.load(first.baseline_reference_path)
+    assert reference.reference_identity == first.baseline_reference_identity
+    frozen_policy = reference.load_policy(device="cpu", dtype=torch.float64)
+    assert all(not parameter.requires_grad for parameter in frozen_policy.parameters())
+
+    with pytest.raises(BaselineReferenceError, match="does not match its filename"):
+        FrozenDateBenchmarkReference.load(
+            first.baseline_reference_path,
+            expected_reference_identity="0" * 64,
+        )
+
+    original_reference = first.baseline_reference_path.read_text(encoding="utf-8")
+    first.baseline_reference_path.write_text(
+        original_reference.replace("BM_D_5y.pt", "../BM_D_15y.pt"), encoding="utf-8"
+    )
+    with pytest.raises(BaselineReferenceError, match="reference identity"):
+        FrozenDateBenchmarkReference.load(
+            first.baseline_reference_path,
+            expected_reference_identity=first.baseline_reference_identity,
+        )
+    first.baseline_reference_path.write_text(original_reference, encoding="utf-8")
+    first.checkpoint_path.write_bytes(first.checkpoint_path.read_bytes() + b"changed")
+    with pytest.raises(BaselineReferenceError, match="identity"):
+        reference.load_policy(device="cpu", dtype=torch.float64)

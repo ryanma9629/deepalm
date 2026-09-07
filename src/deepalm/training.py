@@ -12,6 +12,7 @@ from pathlib import Path
 
 import torch
 
+from deepalm.baselines import FrozenDateBenchmarkReference
 from deepalm.config import (
     OptimizationConfiguration,
     OutputConfiguration,
@@ -23,7 +24,12 @@ from deepalm.objective import (
     evaluation_objective_parameters,
     sample_training_objective_parameters,
 )
-from deepalm.policies import BMConstantPolicy, BMEqualPolicy, TreasuryPolicy
+from deepalm.policies import (
+    BMConstantPolicy,
+    BMDatePolicy,
+    BMEqualPolicy,
+    TreasuryPolicy,
+)
 from deepalm.reference_bank import ReferenceBankSnapshot
 from deepalm.resources import ResourceMonitor, ResourceSnapshot
 from deepalm.runoff import ALMSimulator
@@ -40,6 +46,7 @@ _GRADIENT_CLIP_NORM = 0.2
 _POLICY_TYPES: dict[str, type[TreasuryPolicy]] = {
     "BM^E": BMEqualPolicy,
     "BM^C": BMConstantPolicy,
+    "BM^D": BMDatePolicy,
 }
 
 
@@ -104,6 +111,8 @@ class BenchmarkTrainingResult:
     learning_rates: tuple[float, ...]
     clipped_gradient_norms: tuple[float, ...]
     resource_profile: ResourceProfile
+    baseline_reference_path: Path | None = None
+    baseline_reference_identity: str | None = None
 
 
 @dataclass(frozen=True)
@@ -176,8 +185,11 @@ class BenchmarkTrainer:
                 horizon_years,
             )
         )
-        policy = _POLICY_TYPES[self._policy_name](
-            device=self._device, dtype=self._dtype
+        policy = _build_policy(
+            self._policy_name,
+            horizon_years=horizon_years,
+            device=self._device,
+            dtype=self._dtype,
         )
         optimizer = torch.optim.RAdam(
             policy.parameters(), lr=_BASE_LEARNING_RATE, weight_decay=0.0
@@ -622,6 +634,41 @@ class BMConstantTrainer(BenchmarkTrainer):
         )
 
 
+class BMDateTrainer(BenchmarkTrainer):
+    """BM^D adapter that freezes each selected local baseline by content identity."""
+
+    def __init__(
+        self,
+        configuration: ResolvedRunConfiguration,
+        *,
+        snapshot: ReferenceBankSnapshot,
+        historical: HistoricalTermStructures,
+        calibration: HjmPcaCalibration,
+        simulator: ALMSimulator | None = None,
+        market_model: MarketScenarioModel | None = None,
+        resource_monitor: ResourceMonitor | None = None,
+    ) -> None:
+        super().__init__(
+            configuration,
+            snapshot=snapshot,
+            historical=historical,
+            calibration=calibration,
+            policy_name="BM^D",
+            simulator=simulator,
+            market_model=market_model,
+            resource_monitor=resource_monitor,
+        )
+
+    def fit(self, *, horizon_years: int) -> BenchmarkTrainingResult:
+        result = super().fit(horizon_years=horizon_years)
+        reference = FrozenDateBenchmarkReference.freeze(result.checkpoint_path)
+        return replace(
+            result,
+            baseline_reference_path=reference.reference_path,
+            baseline_reference_identity=reference.reference_identity,
+        )
+
+
 @dataclass
 class _TimingAccumulator:
     warmup_seconds: float = 0.0
@@ -682,6 +729,7 @@ def _checkpoint_contents(
             name: value.detach().cpu().clone()
             for name, value in policy.state_dict().items()
         },
+        "policy_metadata": _policy_metadata(policy),
         "optimizer_state": optimizer.state_dict(),
         "scheduler_state": scheduler.state_dict(),
         "optimizer": {
@@ -784,6 +832,24 @@ def _resource_profile(
         ),
         accelerator_memory_status=("measured" if accelerator_values else "unavailable"),
     )
+
+
+def _build_policy(
+    policy_name: str,
+    *,
+    horizon_years: int,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> TreasuryPolicy:
+    policy_type = _POLICY_TYPES[policy_name]
+    if policy_type is BMDatePolicy:
+        return BMDatePolicy(transitions=12 * horizon_years, device=device, dtype=dtype)
+    return policy_type(device=device, dtype=dtype)
+
+
+def _policy_metadata(policy: TreasuryPolicy) -> dict[str, object]:
+    metadata = getattr(policy, "audit_metadata", None)
+    return metadata if isinstance(metadata, dict) else {}
 
 
 def _gradient_norm(policy: TreasuryPolicy) -> torch.Tensor:

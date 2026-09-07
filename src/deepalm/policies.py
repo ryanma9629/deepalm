@@ -122,3 +122,70 @@ class BMConstantPolicy(TreasuryPolicy):
             funding=funding_scale.unsqueeze(1)
             * torch.softmax(self.funding_distribution_logits, dim=0),
         )
+
+
+class BMDatePolicy(TreasuryPolicy):
+    """BM^D benchmark: independent scale and maturity choices by decision date.
+
+    The simulator has one actionable decision for each transition, followed by a
+    terminal passive transition.  BM^D therefore owns exactly ``transitions``
+    rows of parameters, not an extra terminal row.
+    """
+
+    def __init__(
+        self,
+        *,
+        transitions: int,
+        device: torch.device | str | None = None,
+        dtype: torch.dtype | None = None,
+    ) -> None:
+        super().__init__()
+        if transitions not in (60, 180):
+            raise TreasuryActionError(
+                "BM^D supports the resolved 60- or 180-transition horizons"
+            )
+        options: dict[str, torch.device | str | torch.dtype] = {}
+        if device is not None:
+            options["device"] = device
+        if dtype is not None:
+            options["dtype"] = dtype
+        self.transitions = transitions
+        self.investment_scales = nn.Parameter(torch.ones(transitions, **options))
+        self.funding_scales = nn.Parameter(torch.ones(transitions, **options))
+        self.investment_distribution_logits = nn.Parameter(
+            torch.zeros((transitions, 13), **options)
+        )
+        self.funding_distribution_logits = nn.Parameter(
+            torch.zeros((transitions, 16), **options)
+        )
+
+    @property
+    def audit_metadata(self) -> dict[str, int | str]:
+        """Expose the model's actual parameterization for checkpoint audit."""
+
+        return {
+            "decision_dates": self.transitions,
+            "investment_maturities_per_date": 13,
+            "funding_maturities_per_date": 16,
+            "parameter_count": sum(parameter.numel() for parameter in self.parameters()),
+            "indexing_note": (
+                "The simulator uses T action dates [0, T-1] and then one passive "
+                "terminal transition; BM^D therefore has 60/180 parameter rows, "
+                "rather than adding a terminal T+1 action row."
+            ),
+        }
+
+    def forward(self, state: TreasuryPolicyState) -> TreasuryAction:
+        if state.transitions != self.transitions:
+            raise TreasuryActionError(
+                "BM^D policy horizon must match the simulator decision horizon"
+            )
+        time = state.time
+        investment_scale = torch.relu(self.investment_scales[time])
+        funding_scale = torch.relu(self.funding_scales[time])
+        return TreasuryAction(
+            investments=investment_scale.expand(state.investments.shape[0], 1)
+            * torch.softmax(self.investment_distribution_logits[time], dim=0),
+            funding=funding_scale.expand(state.funding.shape[0], 1)
+            * torch.softmax(self.funding_distribution_logits[time], dim=0),
+        )

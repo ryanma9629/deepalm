@@ -7,7 +7,12 @@ import numpy as np
 import pytest
 import torch
 
-from deepalm.policies import BMConstantPolicy, BMEqualPolicy, TreasuryPolicyState
+from deepalm.policies import (
+    BMConstantPolicy,
+    BMDatePolicy,
+    BMEqualPolicy,
+    TreasuryPolicyState,
+)
 from deepalm.reference_bank import ReferenceBankProvider
 from deepalm.runoff import ALMSimulator, RunoffSimulationError
 from deepalm.term_structures import MarketScenarioModel
@@ -70,6 +75,93 @@ def test_constant_benchmark_learns_one_non_equal_distribution_per_ladder() -> No
     assert torch.allclose(first_action.funding, later_action.funding)
     assert not torch.allclose(first_action.investments, equal_action.investments)
     assert not torch.allclose(first_action.funding, equal_action.funding)
+
+
+def test_date_benchmark_learns_independent_actions_for_each_decision_date() -> None:
+    policy = BMDatePolicy(transitions=60, dtype=torch.float64)
+    with torch.no_grad():
+        policy.investment_scales[0] = 1.0
+        policy.investment_scales[1] = 2.0
+        policy.funding_scales[0] = 3.0
+        policy.funding_scales[1] = 4.0
+        policy.investment_distribution_logits[0, 0] = 2.0
+        policy.investment_distribution_logits[1, 1] = 2.0
+        policy.funding_distribution_logits[0, 0] = 2.0
+        policy.funding_distribution_logits[1, 1] = 2.0
+    ladders = torch.tensor([[13.0] + [0.0] * 179], dtype=torch.float64)
+    first_action = policy(
+        TreasuryPolicyState(
+            investments=ladders,
+            funding=torch.tensor([[16.0] + [0.0] * 179], dtype=torch.float64),
+            time=0,
+            transitions=60,
+        )
+    )
+    second_action = policy(
+        TreasuryPolicyState(
+            investments=ladders,
+            funding=torch.tensor([[16.0] + [0.0] * 179], dtype=torch.float64),
+            time=1,
+            transitions=60,
+        )
+    )
+    repeated_second_action = policy(
+        TreasuryPolicyState(
+            investments=ladders.clone(),
+            funding=torch.tensor([[16.0] + [0.0] * 179], dtype=torch.float64),
+            time=1,
+            transitions=60,
+        )
+    )
+
+    assert first_action.investments.shape == (1, 13)
+    assert first_action.funding.shape == (1, 16)
+    assert torch.all(first_action.investments >= 0.0)
+    assert torch.all(first_action.funding >= 0.0)
+    assert not torch.allclose(first_action.investments, second_action.investments)
+    assert not torch.allclose(first_action.funding, second_action.funding)
+    assert torch.allclose(second_action.investments, repeated_second_action.investments)
+    assert torch.allclose(second_action.funding, repeated_second_action.funding)
+    assert policy.audit_metadata["decision_dates"] == 60
+    assert policy.audit_metadata["parameter_count"] == 1_860
+    assert policy.audit_metadata["investment_maturities_per_date"] == 13
+    assert policy.audit_metadata["funding_maturities_per_date"] == 16
+
+    final_policy = BMDatePolicy(transitions=180, dtype=torch.float64)
+    final_action = final_policy(
+        TreasuryPolicyState(
+            investments=ladders,
+            funding=torch.tensor([[16.0] + [0.0] * 179], dtype=torch.float64),
+            time=179,
+            transitions=180,
+        )
+    )
+    assert final_action.investments.shape == (1, 13)
+    assert final_action.funding.shape == (1, 16)
+    assert final_policy.audit_metadata["parameter_count"] == 5_580
+
+
+def test_date_benchmark_initial_action_ignores_future_market_scenario() -> None:
+    model = MarketScenarioModel()
+    historical = model.load_historical_term_structures(SOURCE)
+    snapshot = ReferenceBankProvider().build_canonical(historical)
+    baseline = np.broadcast_to(
+        historical.initial_curve.discount_factors, (1, 61, 180)
+    ).copy()
+    shifted = baseline.copy()
+    shifted[:, 1:] *= 0.95
+    policy = BMDatePolicy(transitions=60, dtype=torch.float64)
+
+    baseline_result = ALMSimulator().rollout(
+        snapshot, SimpleNamespace(discount_factors=baseline), policy=policy
+    )
+    shifted_result = ALMSimulator().rollout(
+        snapshot, SimpleNamespace(discount_factors=shifted), policy=policy
+    )
+
+    assert baseline_result.treasury_actions is not None
+    assert shifted_result.treasury_actions is not None
+    assert torch.allclose(baseline_result.treasury_actions, shifted_result.treasury_actions)
 
 
 @pytest.mark.parametrize("policy_type", [BMEqualPolicy, BMConstantPolicy])
