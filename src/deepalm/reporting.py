@@ -78,6 +78,13 @@ def build_paired_convention_pilot_report(
     ) or not isinstance(jobs, list) or not isinstance(intervals, list):
         raise ReportingError("Paired evaluation lacks report, identity, or interval evidence")
     conventions: dict[str, dict[str, object]] = {}
+    resolved_configuration = pilot_manifest.get("resolved_configuration")
+    runtime = pilot_manifest.get("runtime")
+    architecture = (
+        resolved_configuration.get("architecture")
+        if isinstance(resolved_configuration, dict)
+        else None
+    )
     for convention in ("paper", "corrected"):
         convention_jobs = [
             job for job in jobs if isinstance(job, dict) and job.get("convention") == convention
@@ -107,6 +114,9 @@ def build_paired_convention_pilot_report(
         )
         conventions[convention] = {
             "formula_choices": formula_choices,
+            "architecture": architecture,
+            "runtime": runtime,
+            "financial_semantics_version": locked.get("financial_semantics_version"),
             "jobs": convention_jobs,
             "locked_reports": convention_reports,
             "locked_evaluation_identity": locked,
@@ -121,7 +131,10 @@ def build_paired_convention_pilot_report(
             "directory": str(pilot_run_directory.resolve()),
             "manifest_sha256": _sha256(pilot_manifest_path),
             "git_revision": pilot_manifest.get("git_revision"),
-            "financial_semantics_version": pilot_manifest.get("financial_semantics_version"),
+            "financial_semantics_version": {
+                convention: details["financial_semantics_version"]
+                for convention, details in conventions.items()
+            },
             "shared_identities": pilot.get("shared_identities"),
             "resource_use": pilot.get("resource_measurements"),
         },

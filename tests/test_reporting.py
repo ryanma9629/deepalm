@@ -129,7 +129,8 @@ def test_runner_publishes_an_atomic_paired_pilot_report_with_separate_convention
     manifest = {
         "status": "completed",
         "git_revision": "pilot-revision",
-        "financial_semantics_version": "fixed-rate-cohorts-cash-rollover-v3",
+        "runtime": {"device": "mps", "dtype": "float32"},
+        "resolved_configuration": {"architecture": {"profile": "compact"}},
         "paired_convention_pilot": {
             "label": "paired-convention-research-pilot",
             "status": "completed",
@@ -183,6 +184,7 @@ def test_runner_publishes_an_atomic_paired_pilot_report_with_separate_convention
                 },
                 "locked_evaluation_manifests": {
                     convention: {
+                        "financial_semantics_version": "fixed-rate-cohorts-cash-rollover-v3",
                         "test_scenarios": {"5": {"paths": 64}},
                         "checkpoints": {},
                     }
@@ -219,6 +221,14 @@ def test_runner_publishes_an_atomic_paired_pilot_report_with_separate_convention
     assert report["kind"] == "paired-convention-pilot-report"
     assert set(report["conventions"]) == {"paper", "corrected"}
     assert report["conventions"]["paper"]["jobs"][0]["convention"] == "paper"
+    assert report["conventions"]["paper"]["architecture"] == {"profile": "compact"}
+    assert report["conventions"]["paper"]["runtime"] == {
+        "device": "mps",
+        "dtype": "float32",
+    }
+    assert report["conventions"]["paper"]["financial_semantics_version"] == (
+        "fixed-rate-cohorts-cash-rollover-v3"
+    )
     assert report["paired_intervals"][0]["resamples"] == 100
     assert report["deferred_work"] == [
         "paper widths",

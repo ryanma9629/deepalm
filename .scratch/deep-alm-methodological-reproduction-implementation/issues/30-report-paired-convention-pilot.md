@@ -10,11 +10,11 @@
 
 **Specification revision:** 2 (2026-09-08)
 
-- [ ] Publish atomically a machine-readable paired-pilot report with separate Paper and Corrected sections for BM^D/MM 5/15 年及可用的 MM(15y|5y)。
-- [ ] Identify for every paired result the two formula choices, convention, architecture, device/dtype, registered seed, common Reference Bank, market/calibration, split/path identity, horizon, checkpoint and frozen-baseline identity, actual updates, and resource use.
-- [ ] Report paired differences, 100-resample intervals where applicable, constraints, numerical behavior, and every incomplete/non-finite branch with its evidence reference. Do not fabricate a pair, interval, or zero value when a member is missing.
-- [ ] State prominently that this is a `paired-convention-research-pilot`: it is neither convergence evidence, paper-result replication, `methodologically-reproduced`, nor bank-model approval.
-- [ ] Include a precise deferred-work inventory: paper widths, three MM seeds, sensitivity retraining, 10,000 bootstrap, full paper figures, and Ticket 24’s economic acceptance gates.
+- [x] Publish atomically a machine-readable paired-pilot report with separate Paper and Corrected sections for BM^D/MM 5/15 年及可用的 MM(15y|5y)。
+- [x] Identify for every paired result the two formula choices, convention, architecture, device/dtype, registered seed, common Reference Bank, market/calibration, split/path identity, horizon, checkpoint and frozen-baseline identity, actual updates, and resource use.
+- [x] Report paired differences, 100-resample intervals where applicable, constraints, numerical behavior, and every incomplete/non-finite branch with its evidence reference. Do not fabricate a pair, interval, or zero value when a member is missing.
+- [x] State prominently that this is a `paired-convention-research-pilot`: it is neither convergence evidence, paper-result replication, `methodologically-reproduced`, nor bank-model approval.
+- [x] Include a precise deferred-work inventory: paper widths, three MM seeds, sensitivity retraining, 10,000 bootstrap, full paper figures, and Ticket 24’s economic acceptance gates.
 
 ## Comments
 
