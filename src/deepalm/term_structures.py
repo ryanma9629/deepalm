@@ -103,6 +103,8 @@ class MarketScenarioBatch:
     seed: int
     calibration_identity: str
     round_trip_error: float
+    initial_curve_identity: str
+    as_of_date: str
     split: str = "default"
     epoch: int = 0
     global_path_indices: tuple[int, ...] = ()
@@ -141,6 +143,8 @@ class MarketScenarioBatch:
             split=self.split,
             epoch=self.epoch,
             global_path_indices=self.global_path_indices,
+            initial_curve_identity=self.initial_curve_identity,
+            as_of_date=self.as_of_date,
         )
 
 
@@ -425,6 +429,8 @@ class MarketScenarioModel:
             split=split,
             epoch=epoch,
             global_path_indices=indices,
+            initial_curve_identity=historical.source_hash,
+            as_of_date=str(historical.initial_curve.as_of_date.astype("datetime64[D]")),
         )
 
     def validate_hjm_one_step(
@@ -528,6 +534,8 @@ class MarketScenarioModel:
             round_trip_error=_scenario_round_trip_error(
                 spot_rates, discount_factors, monthly_forwards
             ),
+            initial_curve_identity=historical.source_hash,
+            as_of_date=str(historical.initial_curve.as_of_date.astype("datetime64[D]")),
         )
 
     def summarize_terminal_curve_diversity(

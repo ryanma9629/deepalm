@@ -26,9 +26,7 @@ SOURCE = (
 def test_paper_and_corrected_interest_differ_only_by_annualization() -> None:
     yield_rate = torch.tensor([0.03], dtype=torch.float64)
 
-    paper = monthly_loan_interest_rate(
-        yield_rate, spread=0.015, convention="paper"
-    )
+    paper = monthly_loan_interest_rate(yield_rate, spread=0.015, convention="paper")
     corrected = monthly_loan_interest_rate(
         yield_rate, spread=0.015, convention="corrected"
     )
@@ -38,7 +36,9 @@ def test_paper_and_corrected_interest_differ_only_by_annualization() -> None:
     assert paper.item() > corrected.item() > 0
 
 
-def test_loan_transition_replaces_maturities_adds_growth_and_impairs_enterprise() -> None:
+def test_loan_transition_replaces_maturities_adds_growth_and_impairs_enterprise() -> (
+    None
+):
     mortgages = torch.zeros((1, 180), dtype=torch.float64)
     enterprise = torch.zeros((1, 180), dtype=torch.float64)
     mortgages[0, 0] = 10.0
@@ -88,14 +88,21 @@ def test_simulator_reconciles_loan_events_and_applies_annual_impairment() -> Non
     model = MarketScenarioModel()
     historical = model.load_historical_term_structures(SOURCE)
     snapshot = ReferenceBankProvider().build_canonical(historical)
-    discounts = np.broadcast_to(historical.initial_curve.discount_factors, (1, 14, 180)).copy()
+    discounts = np.broadcast_to(
+        historical.initial_curve.discount_factors, (1, 14, 180)
+    ).copy()
     spots = np.broadcast_to(historical.initial_curve.spot_rates, (1, 14, 180)).copy()
     spots[0, 0, 5] = 0.01
     spots[0, 12, 5] = 0.06
 
     result = ALMSimulator().rollout(
         snapshot,
-        SimpleNamespace(discount_factors=discounts, spot_rates=spots),
+        SimpleNamespace(
+            discount_factors=discounts,
+            spot_rates=spots,
+            initial_curve_identity=snapshot.initial_curve_identity,
+            as_of_date=snapshot.as_of_date,
+        ),
         include_loan_dynamics=True,
         convention="corrected",
     )

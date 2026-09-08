@@ -40,6 +40,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     bank_parser.add_argument(
         "--config", type=Path, required=True, help="YAML run configuration"
     )
+    bank_parser.add_argument(
+        "--snapshot",
+        type=Path,
+        help="versioned imported Reference Bank snapshot; omit to build canonical",
+    )
     arguments = parser.parse_args(argv)
 
     try:
@@ -56,7 +61,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments.command == "preflight":
         bundle = runner.preflight_market(configuration)
     elif arguments.command == "bank":
-        bundle = runner.build_reference_bank(configuration)
+        bundle = runner.build_reference_bank(
+            configuration, snapshot_path=arguments.snapshot
+        )
     else:
         bundle = runner.run(configuration)
     if bundle.status is RunStatus.COMPLETED:

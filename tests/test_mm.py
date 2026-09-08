@@ -34,7 +34,13 @@ def _training_curves(*, dtype: torch.dtype = torch.float64) -> torch.Tensor:
     tenors = torch.linspace(0.0, 1.0, 180, dtype=dtype)
     paths = torch.arange(3, dtype=dtype).reshape(3, 1, 1)
     times = torch.arange(4, dtype=dtype).reshape(1, 4, 1)
-    return 0.01 + 0.003 * paths + 0.002 * times + 0.004 * tenors + 0.001 * paths * tenors.square()
+    return (
+        0.01
+        + 0.003 * paths
+        + 0.002 * times
+        + 0.004 * tenors
+        + 0.001 * paths * tenors.square()
+    )
 
 
 def _registered_training_curves(
@@ -147,12 +153,16 @@ def test_mm_policy_uses_compact_or_paper_widths_to_create_legal_actions(
     compact = MMPolicy(
         reference=_frozen_reference(tmp_path / "compact"),
         curve_features=transform,
-        architecture=ArchitectureConfiguration(profile="compact", widths=(64, 64, 32, 32)),
+        architecture=ArchitectureConfiguration(
+            profile="compact", widths=(64, 64, 32, 32)
+        ),
     )
     paper = MMPolicy(
         reference=_frozen_reference(tmp_path / "paper"),
         curve_features=transform,
-        architecture=ArchitectureConfiguration(profile="paper", widths=(512, 512, 256, 128)),
+        architecture=ArchitectureConfiguration(
+            profile="paper", widths=(512, 512, 256, 128)
+        ),
     )
 
     action = compact(_state())
@@ -162,7 +172,9 @@ def test_mm_policy_uses_compact_or_paper_widths_to_create_legal_actions(
     assert torch.all(action.concatenated >= 0)
     assert compact.audit_metadata["widths"] == (64, 64, 32, 32)
     assert paper.audit_metadata["widths"] == (512, 512, 256, 128)
-    assert compact.final_encoding.out_features == paper.final_encoding.out_features == 64
+    assert (
+        compact.final_encoding.out_features == paper.final_encoding.out_features == 64
+    )
 
 
 def test_mm_stop_gradient_preserves_forward_values_and_policy_gradient(
@@ -172,7 +184,9 @@ def test_mm_stop_gradient_preserves_forward_values_and_policy_gradient(
     policy = MMPolicy(
         reference=_frozen_reference(tmp_path),
         curve_features=transform,
-        architecture=ArchitectureConfiguration(profile="compact", widths=(64, 64, 32, 32)),
+        architecture=ArchitectureConfiguration(
+            profile="compact", widths=(64, 64, 32, 32)
+        ),
     )
     differentiable_state = _state(requires_grad=True)
     detached_state = _state()
@@ -201,7 +215,9 @@ def test_mm_action_keeps_gradient_through_a_future_financial_transition(
     policy = MMPolicy(
         reference=_frozen_reference(tmp_path),
         curve_features=CurveFeaturePCA.fit(_registered_training_curves()),
-        architecture=ArchitectureConfiguration(profile="compact", widths=(64, 64, 32, 32)),
+        architecture=ArchitectureConfiguration(
+            profile="compact", widths=(64, 64, 32, 32)
+        ),
     )
     curve = _state().curve.clone().requires_grad_(True)
     prior_constraints = _state().prior_constraint_values.clone().requires_grad_(True)
@@ -243,13 +259,17 @@ def test_mm_requires_an_identity_checked_reference_and_complete_observations(
             baseline=BMDatePolicy(transitions=60, dtype=torch.float64),
             baseline_identity="frozen-baseline-v1",
             curve_features=transform,
-            architecture=ArchitectureConfiguration(profile="compact", widths=(64, 64, 32, 32)),
+            architecture=ArchitectureConfiguration(
+                profile="compact", widths=(64, 64, 32, 32)
+            ),
         )
 
     policy = MMPolicy(
         reference=_frozen_reference(tmp_path),
         curve_features=transform,
-        architecture=ArchitectureConfiguration(profile="compact", widths=(64, 64, 32, 32)),
+        architecture=ArchitectureConfiguration(
+            profile="compact", widths=(64, 64, 32, 32)
+        ),
     )
     incomplete = TreasuryPolicyState(
         investments=torch.ones((1, 180), dtype=torch.float64),
@@ -273,13 +293,17 @@ def test_mm_loads_its_baseline_from_an_identity_checked_frozen_reference(
     policy = MMPolicy(
         reference=reference,
         curve_features=transform,
-        architecture=ArchitectureConfiguration(profile="compact", widths=(64, 64, 32, 32)),
+        architecture=ArchitectureConfiguration(
+            profile="compact", widths=(64, 64, 32, 32)
+        ),
         device="cpu",
         dtype=torch.float64,
     )
 
     assert policy.baseline_identity == reference.reference_identity
-    assert not any(parameter.requires_grad for parameter in policy.baseline.parameters())
+    assert not any(
+        parameter.requires_grad for parameter in policy.baseline.parameters()
+    )
 
 
 def test_mm_policy_receives_complete_live_bank_state_during_rollout(
@@ -299,7 +323,9 @@ def test_mm_policy_receives_complete_live_bank_state_during_rollout(
     policy = MMPolicy(
         reference=_frozen_reference(tmp_path),
         curve_features=transform,
-        architecture=ArchitectureConfiguration(profile="compact", widths=(64, 64, 32, 32)),
+        architecture=ArchitectureConfiguration(
+            profile="compact", widths=(64, 64, 32, 32)
+        ),
     )
     discounts = np.broadcast_to(
         historical.initial_curve.discount_factors, (1, 61, 180)
@@ -312,6 +338,8 @@ def test_mm_policy_receives_complete_live_bank_state_during_rollout(
             discount_factors=discounts,
             spot_rates=spots,
             horizon_years=5,
+            initial_curve_identity=snapshot.initial_curve_identity,
+            as_of_date=snapshot.as_of_date,
         ),
         policy=policy,
         include_loan_dynamics=True,

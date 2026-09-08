@@ -48,11 +48,15 @@ class OperationalRunError(RuntimeError):
 class MarketPreflightModel(Protocol):
     """Structural contract used by the bounded market preflight stage."""
 
-    def load_historical_term_structures(self, source_path: Path, *, beta_unit: str) -> Any: ...
+    def load_historical_term_structures(
+        self, source_path: Path, *, beta_unit: str
+    ) -> Any: ...
 
     def calibrate_hjm_pca(self, historical: Any) -> Any: ...
 
-    def generate_hjm_scenarios(self, historical: Any, calibration: Any, **kwargs: Any) -> Any: ...
+    def generate_hjm_scenarios(
+        self, historical: Any, calibration: Any, **kwargs: Any
+    ) -> Any: ...
 
 
 @dataclass(frozen=True)
@@ -227,30 +231,40 @@ class ReproductionRunner:
             )
 
     def build_reference_bank(
-        self, configuration: ResolvedRunConfiguration
+        self,
+        configuration: ResolvedRunConfiguration,
+        *,
+        snapshot_path: Path | None = None,
     ) -> RunBundle:
-        """Build the canonical, reviewable Reference Bank without policy training."""
+        """Build or import a reviewable Reference Bank without policy training."""
 
         try:
             from deepalm.reference_bank import ReferenceBankProvider
             from deepalm.term_structures import MarketScenarioModel
 
-            historical = MarketScenarioModel().load_historical_term_structures(
-                configuration.source_data.snb_csv,
-                beta_unit=configuration.source_data.nss_beta_unit,
-            )
             provider = ReferenceBankProvider()
-            snapshot = provider.build_canonical(historical)
+            if snapshot_path is None:
+                historical = MarketScenarioModel().load_historical_term_structures(
+                    configuration.source_data.snb_csv,
+                    beta_unit=configuration.source_data.nss_beta_unit,
+                )
+                snapshot = provider.build_canonical(historical)
+            else:
+                snapshot = provider.load(snapshot_path)
             manifest = _build_manifest(
                 configuration, RunStatus.COMPLETED, AcceptanceStatus.PENDING
             )
             manifest["reference_bank"] = {
                 "content_hash": snapshot.content_hash,
+                "schema_version": snapshot.schema_version,
+                "profile": snapshot.profile,
                 "as_of_date": snapshot.as_of_date,
                 "initial_curve_identity": snapshot.initial_curve_identity,
-                "total_assets_mchf": snapshot.total_assets,
-                "total_liabilities_mchf": snapshot.total_liabilities,
-                "equity_mchf": snapshot.equity,
+                "total_assets": snapshot.total_assets,
+                "total_liabilities": snapshot.total_liabilities,
+                "equity": snapshot.equity,
+                "currency": snapshot.currency,
+                "unit": snapshot.unit,
                 "loan_duration_years": snapshot.loan_duration_years,
                 "deposit_duration_years": snapshot.deposit_duration_years,
             }

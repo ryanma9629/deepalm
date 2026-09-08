@@ -49,10 +49,19 @@ def test_constraint_values_match_independent_hand_calculation() -> None:
 
     result = evaluate_constraints(state)
 
-    assert result.values[0, 0].item() == pytest.approx((0.71 * 100 + 0.89 * 100) / (0.176 * 100 + 0.13 * 100 + 0.01 * 100), abs=1e-10)
-    assert result.values[0, 1].item() == pytest.approx((0.95 * 100 + 0.90 * 100 + 0.60 * 100 + 100) / (0.12 * 100 + 0.71 * 200), abs=1e-10)
-    assert result.values[0, 2].item() == pytest.approx(100 / (0.025 * (100 + 0.20 * 100)), abs=1e-10)
-    assert result.values[0, 3].item() == pytest.approx(100 / (0.10 * 100 + 0.35 * 100 + 100), abs=1e-10)
+    assert result.values[0, 0].item() == pytest.approx(
+        (0.71 * 100 + 0.89 * 100) / (0.176 * 100 + 0.13 * 100 + 0.01 * 100), abs=1e-10
+    )
+    assert result.values[0, 1].item() == pytest.approx(
+        (0.95 * 100 + 0.90 * 100 + 0.60 * 100 + 100) / (0.12 * 100 + 0.71 * 200),
+        abs=1e-10,
+    )
+    assert result.values[0, 2].item() == pytest.approx(
+        100 / (0.025 * (100 + 0.20 * 100)), abs=1e-10
+    )
+    assert result.values[0, 3].item() == pytest.approx(
+        100 / (0.10 * 100 + 0.35 * 100 + 100), abs=1e-10
+    )
     assert result.values[0, 4].item() == pytest.approx(0.0, abs=1e-10)
     assert result.values[0, 5].item() == pytest.approx(0.0, abs=1e-10)
 
@@ -116,7 +125,9 @@ def test_eyr_uses_pre_dividend_equity_only_at_an_annual_close() -> None:
     )
 
     assert result.annual_mask.item()
-    assert result.values[0, 5].item() == pytest.approx((100.0 - 90.0 - 6.0) / 90.0, abs=1e-10)
+    assert result.values[0, 5].item() == pytest.approx(
+        (100.0 - 90.0 - 6.0) / 90.0, abs=1e-10
+    )
 
 
 def test_eyr_preserves_negative_prior_equity_and_rejects_zero_denominator() -> None:
@@ -143,7 +154,9 @@ def test_eyr_preserves_negative_prior_equity_and_rejects_zero_denominator() -> N
         )
 
 
-def test_objective_uses_asymmetric_target_and_excludes_crra_from_training_loss() -> None:
+def test_objective_uses_asymmetric_target_and_excludes_crra_from_training_loss() -> (
+    None
+):
     parameters = ObjectiveParameters(
         mu=torch.tensor([0.02, 0.02], dtype=torch.float64),
         penalty_weight=torch.tensor([3.5, 3.5], dtype=torch.float64),
@@ -233,9 +246,7 @@ def test_simulator_returns_constraint_trajectory_and_terminal_objective(
     historical = model.load_historical_term_structures(SNB_SOURCE)
     snapshot = ReferenceBankProvider().build_canonical(historical)
     monthly_tenors = torch.arange(1, 181, dtype=torch.float64) / 12.0
-    discounts = torch.exp(-0.03 * monthly_tenors).repeat(
-        1, horizon_months + 1, 1
-    )
+    discounts = torch.exp(-0.03 * monthly_tenors).repeat(1, horizon_months + 1, 1)
     spots = torch.full_like(discounts, 0.03)
     parameters = ObjectiveParameters(
         mu=torch.tensor([0.04], dtype=torch.float64),
@@ -244,7 +255,12 @@ def test_simulator_returns_constraint_trajectory_and_terminal_objective(
 
     result = ALMSimulator().rollout(
         snapshot,
-        SimpleNamespace(discount_factors=discounts, spot_rates=spots),
+        SimpleNamespace(
+            discount_factors=discounts,
+            spot_rates=spots,
+            initial_curve_identity=snapshot.initial_curve_identity,
+            as_of_date=snapshot.as_of_date,
+        ),
         actions=torch.zeros((1, horizon_months, 29), dtype=torch.float64),
         include_deposit_dynamics=True,
         include_constraints=True,
@@ -263,9 +279,9 @@ def test_simulator_returns_constraint_trajectory_and_terminal_objective(
     assert not result.constraint_annual_mask[0, -1]
     assert result.dividends is not None
     pre_dividend_equity = result.equity[0, 12] + result.dividends[0, 11]
-    expected_eyr = (
-        pre_dividend_equity - result.equity[0, 0] - 6.0
-    ) / result.equity[0, 0]
+    expected_eyr = (pre_dividend_equity - result.equity[0, 0] - 6.0) / result.equity[
+        0, 0
+    ]
     assert result.constraint_values[0, 12, 5].item() == pytest.approx(
         expected_eyr.item(), abs=1e-10
     )
@@ -281,7 +297,11 @@ def test_action_dependent_objective_gradient_matches_central_difference() -> Non
     discounts = torch.tensor(
         historical.initial_curve.discount_factors, dtype=torch.float64
     ).repeat(1, 61, 1)
-    market = SimpleNamespace(discount_factors=discounts)
+    market = SimpleNamespace(
+        discount_factors=discounts,
+        initial_curve_identity=snapshot.initial_curve_identity,
+        as_of_date=snapshot.as_of_date,
+    )
     parameters = ObjectiveParameters(
         mu=torch.tensor([0.20], dtype=torch.float64),
         penalty_weight=torch.tensor([0.05], dtype=torch.float64),
@@ -290,29 +310,37 @@ def test_action_dependent_objective_gradient_matches_central_difference() -> Non
     direction[0, 0, 0] = 1.0
 
     amount = torch.tensor(1.0, dtype=torch.float64, requires_grad=True)
-    objective = ALMSimulator().rollout(
-        snapshot,
-        market,
-        actions=amount * direction,
-        objective_parameters=parameters,
-    ).objective
+    objective = (
+        ALMSimulator()
+        .rollout(
+            snapshot,
+            market,
+            actions=amount * direction,
+            objective_parameters=parameters,
+        )
+        .objective
+    )
     assert objective is not None
     objective.total.sum().backward()
 
     def total_loss(value: float) -> float:
-        result = ALMSimulator().rollout(
-            snapshot,
-            market,
-            actions=value * direction,
-            objective_parameters=parameters,
-        ).objective
+        result = (
+            ALMSimulator()
+            .rollout(
+                snapshot,
+                market,
+                actions=value * direction,
+                objective_parameters=parameters,
+            )
+            .objective
+        )
         assert result is not None
         return result.total.item()
 
     epsilon = 1e-5
-    finite_difference = (
-        total_loss(1.0 + epsilon) - total_loss(1.0 - epsilon)
-    ) / (2.0 * epsilon)
+    finite_difference = (total_loss(1.0 + epsilon) - total_loss(1.0 - epsilon)) / (
+        2.0 * epsilon
+    )
     assert amount.grad is not None
     assert amount.grad.abs().item() > 1e-8
     assert abs(amount.grad.item() - finite_difference) <= 1e-6 + 1e-4 * abs(

@@ -25,7 +25,11 @@ from deepalm.loans import (
 )
 from deepalm.objective import ObjectiveParameters, ObjectiveResult, evaluate_objective
 from deepalm.policies import TreasuryPolicy, TreasuryPolicyState
-from deepalm.reference_bank import ReferenceBankProvider, ReferenceBankSnapshot
+from deepalm.reference_bank import (
+    ReferenceBankError,
+    ReferenceBankProvider,
+    ReferenceBankSnapshot,
+)
 from deepalm.runner import OperationalRunError
 from deepalm.term_structures import MarketScenarioBatch
 from deepalm.treasury import TreasuryAction, apply_treasury_action
@@ -108,12 +112,24 @@ class ALMSimulator:
     ) -> PassiveRunoffResult:
         """Return all action-free states implied by a market discount-path batch."""
 
-        ReferenceBankProvider().validate(snapshot)
+        provider = ReferenceBankProvider()
+        provider.validate(snapshot)
         discounts = _discount_tensor(market, device=device, dtype=dtype)
         paths, states, _tenors = discounts.shape
         transitions = states - 1
         _validate_horizon(market, transitions)
         _require_positive_finite("discount_factors", discounts)
+        market_curve_identity = getattr(market, "initial_curve_identity", None)
+        market_as_of_date = getattr(market, "as_of_date", None)
+        if not market_curve_identity or not market_as_of_date:
+            raise ReferenceBankError(
+                "Reference Bank requires market curve identity and valuation date"
+            )
+        provider.validate(
+            snapshot,
+            market_curve_identity=market_curve_identity,
+            market_as_of_date=market_as_of_date,
+        )
         policy_requires_full_state = policy is not None and bool(
             getattr(policy, "requires_full_state", False)
         )
@@ -224,11 +240,15 @@ class ALMSimulator:
             time=0,
             transitions=transitions,
             cash=cash[:, 0],
-            curve=spots[:, 0] if policy_requires_full_state and spots is not None else None,
+            curve=spots[:, 0]
+            if policy_requires_full_state and spots is not None
+            else None,
             prior_constraint_values=(
                 initial_constraints.values if policy_requires_full_state else None
             ),
-            objective_parameters=objective_parameters if policy_requires_full_state else None,
+            objective_parameters=objective_parameters
+            if policy_requires_full_state
+            else None,
         )
         if initial_action is not None:
             assert treasury_cash is not None
@@ -349,8 +369,8 @@ class ALMSimulator:
                 )
                 deposit_growth[:, transition] = nmd_growth + td_growth
                 costs[:, transition] = operating_cost(
-                    personnel_cost=snapshot.personnel_cost_mchf,
-                    material_cost=snapshot.material_cost_mchf,
+                    personnel_cost=snapshot.personnel_cost,
+                    material_cost=snapshot.material_cost,
                     completed_years=transition // 12,
                     configuration=deposit_configuration,
                 )
@@ -410,7 +430,9 @@ class ALMSimulator:
                         else None
                     ),
                     prior_constraint_values=(
-                        current_constraints.values if policy_requires_full_state else None
+                        current_constraints.values
+                        if policy_requires_full_state
+                        else None
                     ),
                     objective_parameters=(
                         objective_parameters if policy_requires_full_state else None
@@ -682,24 +704,16 @@ def _policy_action_at(
             time=time,
             transitions=transitions,
             mortgages=ladders["mortgages"] if full_state else None,
-            enterprise_loans=(
-                ladders["enterprise_loans"]
-                if full_state
-                else None
-            ),
+            enterprise_loans=(ladders["enterprise_loans"] if full_state else None),
             non_maturity_deposits=(
-                ladders["non_maturity_deposits"]
-                if full_state
-                else None
+                ladders["non_maturity_deposits"] if full_state else None
             ),
             term_deposits=ladders["term_deposits"] if full_state else None,
             cash=cash if full_state else None,
             curve=curve if full_state else None,
             prior_constraint_values=prior_constraint_values if full_state else None,
             mu=(
-                objective_parameters.mu
-                if full_state and objective_parameters
-                else None
+                objective_parameters.mu if full_state and objective_parameters else None
             ),
             penalty_weight=(
                 objective_parameters.penalty_weight

@@ -40,20 +40,38 @@ def test_cash_penalty_and_annual_operating_cost() -> None:
         torch.tensor([100.0]), torch.tensor([2.0]), torch.tensor([1.01])
     )
     assert penalty.item() == pytest.approx(40.0 * (1 / 1.01 - 1))
-    assert operating_cost(personnel_cost=3, material_cost=1, completed_years=1) == pytest.approx(4.06)
+    assert operating_cost(
+        personnel_cost=3, material_cost=1, completed_years=1
+    ) == pytest.approx(4.06)
 
 
 def test_simulator_tracks_deposit_cost_cash_charge_and_nonterminal_dividend() -> None:
-    source = Path(__file__).resolve().parents[1] / "data/snb-data-rendopar-en-all_19880401-20250731.csv"
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "data/snb-data-rendopar-en-all_19880401-20250731.csv"
+    )
     model = MarketScenarioModel()
     historical = model.load_historical_term_structures(source)
     snapshot = ReferenceBankProvider().build_canonical(historical)
-    discounts = np.broadcast_to(historical.initial_curve.discount_factors, (1, 14, 180)).copy()
+    discounts = np.broadcast_to(
+        historical.initial_curve.discount_factors, (1, 14, 180)
+    ).copy()
     spots = np.broadcast_to(historical.initial_curve.spot_rates, (1, 14, 180)).copy()
     discounts[:, :, 0] = 1.01
-    result = ALMSimulator().rollout(snapshot, SimpleNamespace(discount_factors=discounts, spot_rates=spots), include_deposit_dynamics=True)
+    result = ALMSimulator().rollout(
+        snapshot,
+        SimpleNamespace(
+            discount_factors=discounts,
+            spot_rates=spots,
+            initial_curve_identity=snapshot.initial_curve_identity,
+            as_of_date=snapshot.as_of_date,
+        ),
+        include_deposit_dynamics=True,
+    )
     assert result.deposit_growth is not None and torch.all(result.deposit_growth > 0)
-    assert result.operating_costs is not None and result.operating_costs[0, 12] == pytest.approx(4.06)
+    assert result.operating_costs is not None and result.operating_costs[
+        0, 12
+    ] == pytest.approx(4.06)
     assert result.cash_penalties is not None and torch.all(result.cash_penalties >= 0)
     assert result.dividends is not None and result.dividends[0, 11] >= 0
     assert torch.max(result.accounting_error.abs()).item() <= 1e-6

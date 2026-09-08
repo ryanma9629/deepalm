@@ -39,6 +39,7 @@ Produce an implementation-ready decision set for a Python and PyTorch methodolog
 ## Implementation context
 
 - [17 Lock final-test evaluation and small-sample statistics](issues/17-lock-test-evaluation.md): Resolved with frozen-checkpoint final-test evaluation, locked common paths, auditable manifest, constraint/risk reports, and deterministic paired bootstrap statistics.
+- [26 Validate replaceable bank and market inputs](issues/26-validate-replaceable-bank-and-market-inputs.md): Resolved with versioned single-currency snapshot import/export, auditable market lineage, runner-stage import, and synthetic passive-rollout evidence.
 
 ## Out of scope
 

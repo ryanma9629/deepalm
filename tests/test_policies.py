@@ -153,15 +153,29 @@ def test_date_benchmark_initial_action_ignores_future_market_scenario() -> None:
     policy = BMDatePolicy(transitions=60, dtype=torch.float64)
 
     baseline_result = ALMSimulator().rollout(
-        snapshot, SimpleNamespace(discount_factors=baseline), policy=policy
+        snapshot,
+        SimpleNamespace(
+            discount_factors=baseline,
+            initial_curve_identity=snapshot.initial_curve_identity,
+            as_of_date=snapshot.as_of_date,
+        ),
+        policy=policy,
     )
     shifted_result = ALMSimulator().rollout(
-        snapshot, SimpleNamespace(discount_factors=shifted), policy=policy
+        snapshot,
+        SimpleNamespace(
+            discount_factors=shifted,
+            initial_curve_identity=snapshot.initial_curve_identity,
+            as_of_date=snapshot.as_of_date,
+        ),
+        policy=policy,
     )
 
     assert baseline_result.treasury_actions is not None
     assert shifted_result.treasury_actions is not None
-    assert torch.allclose(baseline_result.treasury_actions, shifted_result.treasury_actions)
+    assert torch.allclose(
+        baseline_result.treasury_actions, shifted_result.treasury_actions
+    )
 
 
 @pytest.mark.parametrize("policy_type", [BMEqualPolicy, BMConstantPolicy])
@@ -179,10 +193,22 @@ def test_benchmark_actions_do_not_depend_on_market_scenario(
     policy = policy_type(dtype=torch.float64)
 
     baseline_result = ALMSimulator().rollout(
-        snapshot, SimpleNamespace(discount_factors=baseline), policy=policy
+        snapshot,
+        SimpleNamespace(
+            discount_factors=baseline,
+            initial_curve_identity=snapshot.initial_curve_identity,
+            as_of_date=snapshot.as_of_date,
+        ),
+        policy=policy,
     )
     shifted_result = ALMSimulator().rollout(
-        snapshot, SimpleNamespace(discount_factors=shifted), policy=policy
+        snapshot,
+        SimpleNamespace(
+            discount_factors=shifted,
+            initial_curve_identity=snapshot.initial_curve_identity,
+            as_of_date=snapshot.as_of_date,
+        ),
+        policy=policy,
     )
 
     assert baseline_result.treasury_actions is not None
@@ -203,7 +229,11 @@ def test_bme_policy_is_recomputed_inside_rollout_and_remains_differentiable() ->
 
     result = ALMSimulator().rollout(
         snapshot,
-        SimpleNamespace(discount_factors=discounts),
+        SimpleNamespace(
+            discount_factors=discounts,
+            initial_curve_identity=snapshot.initial_curve_identity,
+            as_of_date=snapshot.as_of_date,
+        ),
         policy=policy,
     )
     result.equity[:, -1].sum().backward()
@@ -215,7 +245,11 @@ def test_bme_policy_is_recomputed_inside_rollout_and_remains_differentiable() ->
     with pytest.raises(RunoffSimulationError, match="either actions or policy"):
         ALMSimulator().rollout(
             snapshot,
-            SimpleNamespace(discount_factors=discounts),
+            SimpleNamespace(
+                discount_factors=discounts,
+                initial_curve_identity=snapshot.initial_curve_identity,
+                as_of_date=snapshot.as_of_date,
+            ),
             actions=torch.zeros((1, 2, 29), dtype=torch.float64),
             policy=policy,
         )

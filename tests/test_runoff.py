@@ -34,14 +34,26 @@ def test_passive_runoff_settles_shifts_revalues_and_preserves_snapshot(
     ).copy()
 
     result = PassiveRunoffSimulator().rollout(
-        snapshot, SimpleNamespace(discount_factors=discounts)
+        snapshot,
+        SimpleNamespace(
+            discount_factors=discounts,
+            initial_curve_identity=snapshot.initial_curve_identity,
+            as_of_date=snapshot.as_of_date,
+        ),
     )
 
-    asset_settled = sum(snapshot.ladders[name][0] for name in ("investments", "mortgages", "enterprise_loans"))
-    liability_settled = sum(snapshot.ladders[name][0] for name in ("non_maturity_deposits", "term_deposits", "funding"))
+    asset_settled = sum(
+        snapshot.ladders[name][0]
+        for name in ("investments", "mortgages", "enterprise_loans")
+    )
+    liability_settled = sum(
+        snapshot.ladders[name][0]
+        for name in ("non_maturity_deposits", "term_deposits", "funding")
+    )
     expected_cash = snapshot.cash + asset_settled - liability_settled
     expected_mortgage_value = float(
-        snapshot.ladders["mortgages"][1:] @ historical.initial_curve.discount_factors[:-1]
+        snapshot.ladders["mortgages"][1:]
+        @ historical.initial_curve.discount_factors[:-1]
     )
 
     assert result.cash.shape == (1, 3)
@@ -113,7 +125,11 @@ def test_zero_actions_match_passive_runoff_and_nonzero_actions_reach_terminal_eq
     discounts = np.broadcast_to(
         historical.initial_curve.discount_factors, (1, 3, 180)
     ).copy()
-    market = SimpleNamespace(discount_factors=discounts)
+    market = SimpleNamespace(
+        discount_factors=discounts,
+        initial_curve_identity=snapshot.initial_curve_identity,
+        as_of_date=snapshot.as_of_date,
+    )
     simulator = ALMSimulator()
 
     passive = simulator.rollout(snapshot, market)
@@ -148,7 +164,11 @@ def test_float32_mps_rollout_accepts_machine_precision_reconciliation(
 
     result = ALMSimulator().rollout(
         snapshot,
-        SimpleNamespace(discount_factors=discounts),
+        SimpleNamespace(
+            discount_factors=discounts,
+            initial_curve_identity=snapshot.initial_curve_identity,
+            as_of_date=snapshot.as_of_date,
+        ),
         device="mps",
         dtype=torch.float32,
     )
@@ -164,13 +184,21 @@ def test_active_rollout_gradient_matches_central_difference(
     discounts = np.broadcast_to(
         historical.initial_curve.discount_factors, (1, 3, 180)
     ).copy()
-    market = SimpleNamespace(discount_factors=discounts)
+    market = SimpleNamespace(
+        discount_factors=discounts,
+        initial_curve_identity=snapshot.initial_curve_identity,
+        as_of_date=snapshot.as_of_date,
+    )
     simulator = ALMSimulator()
     direction = torch.zeros((1, 2, 29), dtype=torch.float64)
     direction[0, 0, 0] = 1.0
 
     amount = torch.tensor(1.0, dtype=torch.float64, requires_grad=True)
-    loss = simulator.rollout(snapshot, market, actions=amount * direction).equity[:, -1].sum()
+    loss = (
+        simulator.rollout(snapshot, market, actions=amount * direction)
+        .equity[:, -1]
+        .sum()
+    )
     loss.backward()
 
     def terminal_equity(value: float) -> float:
@@ -198,7 +226,11 @@ def test_final_action_is_followed_by_one_passive_roll(
     discounts = np.broadcast_to(
         historical.initial_curve.discount_factors, (1, horizon_months + 1, 180)
     ).copy()
-    market = SimpleNamespace(discount_factors=discounts)
+    market = SimpleNamespace(
+        discount_factors=discounts,
+        initial_curve_identity=snapshot.initial_curve_identity,
+        as_of_date=snapshot.as_of_date,
+    )
     actions = torch.zeros((1, horizon_months, 29), dtype=torch.float64)
     actions[0, -1, 13] = 1.0
     simulator = ALMSimulator()
