@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import tempfile
 import time
 from dataclasses import asdict, dataclass, replace
@@ -14,10 +15,17 @@ import torch
 
 from deepalm.baselines import FrozenDateBenchmarkReference
 from deepalm.config import (
+    ArchitectureConfiguration,
     OptimizationConfiguration,
     OutputConfiguration,
     ResolvedRunConfiguration,
     RunScaleConfiguration,
+)
+from deepalm.mm import (
+    CurveFeaturePCA,
+    MMObservationError,
+    MMPolicy,
+    RegisteredTrainingCurves,
 )
 from deepalm.objective import (
     ObjectiveParameters,
@@ -120,7 +128,9 @@ class SelectionSchedule:
                 patience=15,
                 minimum_relative_improvement=0.001,
             )
-        return cls(first_selection_epoch=1, patience=None, minimum_relative_improvement=0.0)
+        return cls(
+            first_selection_epoch=1, patience=None, minimum_relative_improvement=0.0
+        )
 
     @classmethod
     def from_run_scale(cls, scale: RunScaleConfiguration) -> SelectionSchedule:
@@ -250,6 +260,21 @@ class DeviceValidationRecord:
     checkpoint_path: Path | None
 
 
+@dataclass(frozen=True)
+class MMWidthCheckResult:
+    """Evidence from the isolated two-path paper-width MM optimizer update."""
+
+    artifact_path: Path
+    optimizer_updates: int
+    paths: int
+    finite: bool
+    updated: bool
+    clipped: bool
+    baseline_reference_identity: str
+    architecture: ArchitectureConfiguration
+    resource_profile: ResourceProfile
+
+
 class BenchmarkTrainer:
     """Train, select, restore, and document one no-swap benchmark/horizon job."""
 
@@ -265,7 +290,7 @@ class BenchmarkTrainer:
         market_model: MarketScenarioModel | None = None,
         resource_monitor: ResourceMonitor | None = None,
     ) -> None:
-        if policy_name not in _POLICY_TYPES:
+        if policy_name not in _POLICY_TYPES and policy_name != "MM":
             raise TrainingError(f"Unsupported benchmark policy: {policy_name}")
         self._configuration = configuration
         self._snapshot = snapshot
@@ -294,7 +319,9 @@ class BenchmarkTrainer:
         """Run, or safely resume, one benchmark-training job."""
 
         resolved_control = control or TrainingControl()
-        recovery_path = resolved_control.resume_from or self._recovery_path(horizon_years)
+        recovery_path = resolved_control.resume_from or self._recovery_path(
+            horizon_years
+        )
         interruption_path = self._interruption_path(horizon_years)
         try:
             return self._fit(
@@ -317,7 +344,10 @@ class BenchmarkTrainer:
                 diagnostics=error.diagnostics,
             ) from error
         except MemoryError as error:
-            diagnostics = {"error": str(error), "resource_snapshot": self._monitor.snapshot().to_dict()}
+            diagnostics = {
+                "error": str(error),
+                "resource_snapshot": self._monitor.snapshot().to_dict(),
+            }
             self._record_interruption(
                 interruption_path,
                 reason="out_of_memory",
@@ -419,11 +449,9 @@ class BenchmarkTrainer:
                 horizon_years,
             )
         )
-        policy = _build_policy(
-            self._policy_name,
-            horizon_years=horizon_years,
-            device=self._device,
-            dtype=self._dtype,
+        policy = self._create_policy(horizon_years=horizon_years)
+        policy_dependencies = self._policy_dependencies(
+            horizon_years=horizon_years, policy=policy
         )
         optimizer = torch.optim.RAdam(
             policy.parameters(), lr=_BASE_LEARNING_RATE, weight_decay=0.0
@@ -465,11 +493,10 @@ class BenchmarkTrainer:
                     historical=self._historical,
                     calibration=self._calibration,
                     snapshot=self._snapshot,
+                    policy_dependencies=policy_dependencies,
                 ),
             )
-            _validate_resource_override(
-                recovered, configuration=self._configuration
-            )
+            _validate_resource_override(recovered, configuration=self._configuration)
             policy.load_state_dict(recovered["policy_state"])
             optimizer.load_state_dict(recovered["optimizer_state"])
             scheduler.load_state_dict(recovered["scheduler_state"])
@@ -643,6 +670,7 @@ class BenchmarkTrainer:
                     resource_snapshot=self._monitor.snapshot(),
                     selection_tracker=selection_tracker,
                     resume_lineage=resume_lineage,
+                    policy_dependencies=policy_dependencies,
                 ),
             )
             if control.stop_after_completed_epoch == epoch:
@@ -691,6 +719,7 @@ class BenchmarkTrainer:
                 calibration=self._calibration,
                 snapshot=self._snapshot,
                 resource_profile_path=self._resource_profile_path(horizon_years),
+                policy_dependencies=policy_dependencies,
             ),
         )
         timing.artifact_seconds += time.perf_counter() - artifact_started
@@ -719,6 +748,29 @@ class BenchmarkTrainer:
             clipped_gradient_norms=tuple(clipped_gradient_norms),
             resource_profile=profile,
         )
+
+    def _create_policy(self, *, horizon_years: int) -> TreasuryPolicy:
+        """Create the policy whose state is owned by this trainer.
+
+        Subclasses with immutable dependencies (such as MM's frozen BM^D and
+        curve transform) override this narrow seam without duplicating the
+        training, selection, recovery, or artifact lifecycle.
+        """
+
+        return _build_policy(
+            self._policy_name,
+            horizon_years=horizon_years,
+            device=self._device,
+            dtype=self._dtype,
+        )
+
+    def _policy_dependencies(
+        self, *, horizon_years: int, policy: TreasuryPolicy
+    ) -> dict[str, object]:
+        """Return immutable, checkpoint-bound dependencies for this policy."""
+
+        del horizon_years, policy
+        return {}
 
     def fit_all(self) -> tuple[BenchmarkTrainingResult, ...]:
         """Train the configured benchmark once for every resolved horizon."""
@@ -1047,6 +1099,497 @@ class BMDateTrainer(BenchmarkTrainer):
         )
 
 
+class MMTrainer(BenchmarkTrainer):
+    """Five-year, time-shared MM training around one frozen BM^D reference.
+
+    The shared :class:`BenchmarkTrainer` remains responsible for the actual
+    multi-period optimization.  This adapter owns only the MM-specific
+    immutable inputs: a selected BM^D reference and a PCA transform fitted on
+    registered training curves.
+    """
+
+    def __init__(
+        self,
+        configuration: ResolvedRunConfiguration,
+        *,
+        snapshot: ReferenceBankSnapshot,
+        historical: HistoricalTermStructures,
+        calibration: HjmPcaCalibration,
+        baseline_reference: FrozenDateBenchmarkReference,
+        simulator: ALMSimulator | None = None,
+        market_model: MarketScenarioModel | None = None,
+        resource_monitor: ResourceMonitor | None = None,
+    ) -> None:
+        if baseline_reference.horizon_years != 5:
+            raise TrainingError("MM requires a frozen five-year BM^D baseline")
+        expected_baseline_data = {
+            "market_source_hash": historical.source_hash,
+            "hjm_calibration_identity": calibration.calibration_identity,
+            "reference_bank_content_hash": snapshot.content_hash,
+        }
+        if dict(baseline_reference.data_identities) != expected_baseline_data:
+            raise TrainingError(
+                "Frozen five-year BM^D baseline was not selected for these inputs"
+            )
+        super().__init__(
+            configuration,
+            snapshot=snapshot,
+            historical=historical,
+            calibration=calibration,
+            policy_name="MM",
+            simulator=simulator,
+            market_model=market_model,
+            resource_monitor=resource_monitor,
+        )
+        self._baseline_reference = baseline_reference
+        self._curve_features: CurveFeaturePCA | None = None
+
+    def fit(
+        self,
+        *,
+        horizon_years: int,
+        control: TrainingControl | None = None,
+    ) -> BenchmarkTrainingResult:
+        self._require_five_year_compact(horizon_years)
+        self._materialize_baseline_reference(horizon_years)
+        result = super().fit(horizon_years=horizon_years, control=control)
+        return replace(
+            result,
+            baseline_reference_path=self._baseline_reference.reference_path,
+            baseline_reference_identity=self._baseline_reference.reference_identity,
+        )
+
+    def validate_devices(
+        self, *, horizon_years: int
+    ) -> tuple[DeviceValidationRecord, ...]:
+        """Validate MM updates on available local devices with its frozen inputs."""
+
+        self._require_five_year_compact(horizon_years)
+        records: list[DeviceValidationRecord] = []
+        for device in ("cpu", "mps"):
+            if device == "mps" and not torch.backends.mps.is_available():
+                records.append(
+                    DeviceValidationRecord(
+                        device=device,
+                        status="not-run",
+                        finite=False,
+                        updated=False,
+                        clipped=False,
+                        checkpoint_path=None,
+                    )
+                )
+                continue
+            result = MMTrainer(
+                _device_validation_configuration(self._configuration, device),
+                snapshot=self._snapshot,
+                historical=self._historical,
+                calibration=self._calibration,
+                baseline_reference=self._baseline_reference,
+                simulator=self._simulator,
+                market_model=self._market_model,
+            ).fit(horizon_years=horizon_years)
+            records.append(
+                DeviceValidationRecord(
+                    device=device,
+                    status="completed",
+                    finite=all(
+                        torch.isfinite(torch.tensor(norm))
+                        for norm in result.clipped_gradient_norms
+                    ),
+                    updated=result.optimizer_updates > 0,
+                    clipped=all(
+                        norm <= _GRADIENT_CLIP_NORM + 1e-5
+                        for norm in result.clipped_gradient_norms
+                    ),
+                    checkpoint_path=result.checkpoint_path,
+                )
+            )
+        return tuple(records)
+
+    def load_selected_checkpoint(self, checkpoint_path: Path) -> MMPolicy:
+        """Reload a selected MM only when its frozen inputs still match exactly."""
+
+        try:
+            checkpoint = torch.load(
+                checkpoint_path, map_location="cpu", weights_only=False
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            raise TrainingError(
+                f"Could not load MM checkpoint: {checkpoint_path}"
+            ) from error
+        if not isinstance(checkpoint, dict) or checkpoint.get("policy") != "MM":
+            raise TrainingError("Checkpoint is not an MM policy")
+        if checkpoint.get("horizon_years") != 5:
+            raise TrainingError("MM checkpoint must be five-year")
+        dependencies = checkpoint.get("policy_dependencies")
+        expected = self._policy_dependencies(
+            horizon_years=5, policy=self._create_policy(horizon_years=5)
+        )
+        if dependencies != expected:
+            raise TrainingError("MM checkpoint immutable dependency identity mismatch")
+        try:
+            restored_features = CurveFeaturePCA.from_dict(
+                dependencies["curve_feature_pca"],
+                expected_data_identity=self._historical.source_hash,
+                expected_calibration_identity=self._calibration.calibration_identity,
+                expected_training_state_identity=self._curve_feature_pca(
+                    horizon_years=5
+                ).training_state_identity,
+            )
+        except (KeyError, MMObservationError) as error:
+            raise TrainingError(
+                "MM checkpoint curve preprocessing is incompatible"
+            ) from error
+        policy = MMPolicy(
+            reference=self._baseline_reference,
+            curve_features=restored_features,
+            architecture=self._configuration.architecture,
+            device=self._device,
+            dtype=self._dtype,
+        )
+        try:
+            policy.load_state_dict(checkpoint["policy_state"])
+        except (KeyError, RuntimeError) as error:
+            raise TrainingError("MM checkpoint policy state is incompatible") from error
+        policy.eval()
+        return policy
+
+    @classmethod
+    def load_policy_from_checkpoint(
+        cls,
+        checkpoint_path: Path,
+        *,
+        device: torch.device | str = "cpu",
+        dtype: torch.dtype = torch.float64,
+    ) -> MMPolicy:
+        """Restore an evaluable MM directly from its self-contained run folder."""
+
+        try:
+            checkpoint = torch.load(
+                checkpoint_path, map_location="cpu", weights_only=False
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            raise TrainingError(
+                f"Could not load MM checkpoint: {checkpoint_path}"
+            ) from error
+        if (
+            not isinstance(checkpoint, dict)
+            or checkpoint.get("policy") != "MM"
+            or checkpoint.get("horizon_years") != 5
+        ):
+            raise TrainingError("Checkpoint is not a five-year MM policy")
+        dependencies = checkpoint.get("policy_dependencies")
+        if not isinstance(dependencies, dict):
+            raise TrainingError("MM checkpoint has no immutable dependency record")
+        try:
+            reference_filename = dependencies["baseline_reference_filename"]
+            reference = FrozenDateBenchmarkReference.load(
+                checkpoint_path.parent / str(reference_filename),
+                expected_reference_identity=str(
+                    dependencies["baseline_reference_identity"]
+                ),
+            )
+            if (
+                reference.checkpoint_sha256
+                != dependencies["baseline_checkpoint_sha256"]
+            ):
+                raise TrainingError(
+                    "MM checkpoint baseline checkpoint identity mismatch"
+                )
+            data_identities = checkpoint["data_identities"]
+            pca = CurveFeaturePCA.from_dict(
+                dependencies["curve_feature_pca"],
+                expected_data_identity=str(data_identities["market_source_hash"]),
+                expected_calibration_identity=str(
+                    data_identities["hjm_calibration_identity"]
+                ),
+                expected_training_state_identity=str(
+                    dependencies["curve_feature_pca"]["training_state_identity"]
+                ),
+            )
+            architecture_data = checkpoint["configuration"]["architecture"]
+            architecture = ArchitectureConfiguration(
+                profile=str(architecture_data["profile"]),
+                widths=tuple(int(width) for width in architecture_data["widths"]),
+                encoder_features=int(architecture_data["encoder_features"]),
+                observation_features=int(architecture_data["observation_features"]),
+                final_encoding_features=int(
+                    architecture_data["final_encoding_features"]
+                ),
+                action_features=int(architecture_data["action_features"]),
+            )
+        except (KeyError, TypeError, ValueError, MMObservationError) as error:
+            raise TrainingError(
+                "MM checkpoint dependency record is incompatible"
+            ) from error
+        policy = MMPolicy(
+            reference=reference,
+            curve_features=pca,
+            architecture=architecture,
+            device=device,
+            dtype=dtype,
+        )
+        try:
+            policy.load_state_dict(checkpoint["policy_state"])
+        except (KeyError, RuntimeError) as error:
+            raise TrainingError("MM checkpoint policy state is incompatible") from error
+        policy.eval()
+        return policy
+
+    def run_paper_width_check(self, *, horizon_years: int) -> MMWidthCheckResult:
+        """Run one isolated two-path full-horizon update at paper width.
+
+        This is deliberately an engineering feasibility check, not a competing
+        model-selection run.  It writes a separate JSON evidence artifact and
+        never mutates the compact selected checkpoint.
+        """
+
+        self._require_five_year_compact(horizon_years)
+        self._materialize_baseline_reference(horizon_years)
+        paper_architecture = ArchitectureConfiguration(
+            profile="paper", widths=(512, 512, 256, 128)
+        )
+        torch.manual_seed(
+            _derived_seed(
+                self._configuration.seeds["model_initialization"],
+                "MM",
+                horizon_years,
+                "paper-width-check",
+            )
+        )
+        policy = MMPolicy(
+            reference=self._baseline_reference,
+            curve_features=self._curve_feature_pca(horizon_years),
+            architecture=paper_architecture,
+            device=self._device,
+            dtype=self._dtype,
+        )
+        trainable_parameters = [
+            parameter for parameter in policy.parameters() if parameter.requires_grad
+        ]
+        optimizer = torch.optim.RAdam(
+            trainable_parameters, lr=_BASE_LEARNING_RATE, weight_decay=0.0
+        )
+        timing = _TimingAccumulator()
+        peaks = [self._monitor.check("before-MM-paper-width-warmup")]
+        timing.warmup_seconds = _warmup_device(self._device)
+        peaks.append(self._monitor.check("after-MM-paper-width-warmup"))
+        paths = 2
+        market = self._training_market(
+            horizon_years=horizon_years,
+            epoch=1,
+            start=0,
+            paths=paths,
+            timing=timing,
+        )
+        parameters = _training_objective_parameters(
+            paths,
+            seed=_derived_seed(
+                _job_seed(
+                    self._configuration.seeds["objective_parameters"],
+                    "MM",
+                    horizon_years,
+                ),
+                "paper-width-check",
+                1,
+                0,
+            ),
+            device=self._device,
+            dtype=self._dtype,
+        )
+        before = [parameter.detach().clone() for parameter in trainable_parameters]
+        update_started = time.perf_counter()
+        optimizer.zero_grad(set_to_none=True)
+        outcome = self._simulator.rollout(
+            self._snapshot,
+            market,
+            policy=policy,
+            device=self._device,
+            dtype=self._dtype,
+            include_loan_dynamics=True,
+            convention=self._configuration.convention.profile,
+            include_deposit_dynamics=True,
+            objective_parameters=parameters,
+        )
+        if outcome.objective is None:
+            raise TrainingError("MM paper-width rollout did not return an objective")
+        loss = outcome.objective.total.mean()
+        finite = bool(torch.isfinite(loss).item())
+        if not finite:
+            raise TrainingError("MM paper-width loss is non-finite")
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(
+            trainable_parameters, max_norm=_GRADIENT_CLIP_NORM
+        )
+        clipped_norm = _gradient_norm(policy)
+        clipped = bool(
+            torch.isfinite(clipped_norm).item()
+            and clipped_norm.item() <= _GRADIENT_CLIP_NORM + 1e-5
+        )
+        if not clipped:
+            raise TrainingError(
+                "MM paper-width gradient clipping did not produce a finite bound"
+            )
+        optimizer.step()
+        _synchronize_device(self._device)
+        timing.forward_backward_update_seconds += time.perf_counter() - update_started
+        updated = any(
+            not torch.equal(old, new.detach())
+            for old, new in zip(before, trainable_parameters, strict=True)
+        )
+        if not updated:
+            raise TrainingError(
+                "MM paper-width optimizer step did not update parameters"
+            )
+        peaks.append(self._monitor.check("after-MM-paper-width-update-1"))
+        profile = _resource_profile(
+            horizon_years=horizon_years,
+            device=str(self._device),
+            timing=timing,
+            snapshots=peaks,
+        )
+        artifact_path = self._checkpoint_path(horizon_years).with_suffix(
+            ".paper-width-check.json"
+        )
+        artifact_contents = {
+            "format_version": 1,
+            "kind": "MM-paper-width-check",
+            "policy": "MM",
+            "horizon_years": horizon_years,
+            "optimizer_updates": 1,
+            "paths": paths,
+            "finite": finite,
+            "updated": updated,
+            "clipped": clipped,
+            "gradient_clip_norm": _GRADIENT_CLIP_NORM,
+            "clipped_gradient_norm": float(clipped_norm.detach().cpu()),
+            "architecture": asdict(paper_architecture),
+            "policy_dependencies": self._policy_dependencies(
+                horizon_years=horizon_years, policy=policy
+            ),
+        }
+        artifact_started = time.perf_counter()
+        _save_json_artifact(
+            artifact_path,
+            {**artifact_contents, "resource_profile": profile.to_dict()},
+        )
+        timing.artifact_seconds += time.perf_counter() - artifact_started
+        profile = _resource_profile(
+            horizon_years=horizon_years,
+            device=str(self._device),
+            timing=timing,
+            snapshots=peaks,
+        )
+        _save_json_artifact(
+            artifact_path, {**artifact_contents, "resource_profile": profile.to_dict()}
+        )
+        return MMWidthCheckResult(
+            artifact_path=artifact_path,
+            optimizer_updates=1,
+            paths=paths,
+            finite=finite,
+            updated=updated,
+            clipped=clipped,
+            baseline_reference_identity=self._baseline_reference.reference_identity,
+            architecture=paper_architecture,
+            resource_profile=profile,
+        )
+
+    def _create_policy(self, *, horizon_years: int) -> MMPolicy:
+        self._require_five_year_compact(horizon_years)
+        return MMPolicy(
+            reference=self._baseline_reference,
+            curve_features=self._curve_feature_pca(horizon_years),
+            architecture=self._configuration.architecture,
+            device=self._device,
+            dtype=self._dtype,
+        )
+
+    def _policy_dependencies(
+        self, *, horizon_years: int, policy: TreasuryPolicy
+    ) -> dict[str, object]:
+        del policy
+        features = self._curve_feature_pca(horizon_years)
+        return {
+            "baseline_reference_identity": self._baseline_reference.reference_identity,
+            "baseline_checkpoint_sha256": self._baseline_reference.checkpoint_sha256,
+            "baseline_horizon_years": self._baseline_reference.horizon_years,
+            "baseline_reference_filename": self._baseline_reference.reference_path.name,
+            "curve_feature_pca": features.to_dict(),
+            "preprocessing_scenario": {
+                "split": "training",
+                "epoch": 0,
+                "global_path_indices": (
+                    f"0..{self._configuration.run_scale.training_paths_per_epoch - 1}"
+                ),
+                "job_seed": _job_seed(
+                    self._configuration.seeds["market_scenarios"], "MM", horizon_years
+                ),
+            },
+        }
+
+    def _curve_feature_pca(self, horizon_years: int) -> CurveFeaturePCA:
+        self._require_five_year_compact(horizon_years)
+        if self._curve_features is None:
+            paths = self._configuration.run_scale.training_paths_per_epoch
+            market = self._market_model.generate_hjm_scenarios(
+                self._historical,
+                self._calibration,
+                convention=self._configuration.convention.profile,
+                horizon_years=horizon_years,
+                paths=paths,
+                seed=_job_seed(
+                    self._configuration.seeds["market_scenarios"], "MM", horizon_years
+                ),
+                split="training",
+                epoch=0,
+                global_path_indices=tuple(range(paths)),
+            )
+            registered = RegisteredTrainingCurves(
+                curves=torch.tensor(market.spot_rates, dtype=torch.float64),
+                data_identity=self._historical.source_hash,
+                calibration_identity=self._calibration.calibration_identity,
+            )
+            self._curve_features = CurveFeaturePCA.fit(registered)
+        return self._curve_features
+
+    def _require_five_year_compact(self, horizon_years: int) -> None:
+        if horizon_years != 5:
+            raise TrainingError("MM implementation is limited to the five-year horizon")
+        if self._configuration.architecture.profile != "compact":
+            raise TrainingError(
+                "MM selection training must use the compact architecture"
+            )
+
+    def _materialize_baseline_reference(self, horizon_years: int) -> None:
+        """Copy the content-addressed BM^D pair beside an MM run checkpoint."""
+
+        destination_directory = self._checkpoint_path(horizon_years).parent
+        destination_reference = (
+            destination_directory / self._baseline_reference.reference_path.name
+        )
+        destination_checkpoint = (
+            destination_directory / self._baseline_reference.checkpoint_path.name
+        )
+        _copy_identity_checked_artifact(
+            self._baseline_reference.checkpoint_path, destination_checkpoint
+        )
+        _copy_identity_checked_artifact(
+            self._baseline_reference.reference_path, destination_reference
+        )
+        try:
+            materialized = FrozenDateBenchmarkReference.load(
+                destination_reference,
+                expected_reference_identity=self._baseline_reference.reference_identity,
+            )
+        except Exception as error:
+            raise TrainingError(
+                "Could not materialize frozen MM baseline reference"
+            ) from error
+        if materialized.checkpoint_sha256 != self._baseline_reference.checkpoint_sha256:
+            raise TrainingError("Materialized MM baseline checkpoint identity mismatch")
+
+
 @dataclass
 class _TimingAccumulator:
     warmup_seconds: float = 0.0
@@ -1092,6 +1635,7 @@ def _checkpoint_contents(
     calibration: HjmPcaCalibration,
     snapshot: ReferenceBankSnapshot,
     resource_profile_path: Path,
+    policy_dependencies: dict[str, object],
 ) -> dict[str, object]:
     configuration_data = configuration.to_dict()
     return {
@@ -1108,6 +1652,7 @@ def _checkpoint_contents(
             for name, value in policy.state_dict().items()
         },
         "policy_metadata": _policy_metadata(policy),
+        "policy_dependencies": policy_dependencies,
         "optimizer_state": optimizer.state_dict(),
         "scheduler_state": scheduler.state_dict(),
         "optimizer": {
@@ -1285,6 +1830,7 @@ def _recovery_contents(
     resource_snapshot: ResourceSnapshot,
     selection_tracker: SelectionTracker,
     resume_lineage: list[dict[str, object]],
+    policy_dependencies: dict[str, object],
 ) -> dict[str, object]:
     return {
         "format_version": 1,
@@ -1314,6 +1860,7 @@ def _recovery_contents(
             historical=historical,
             calibration=calibration,
             snapshot=snapshot,
+            policy_dependencies=policy_dependencies,
         ),
         "execution_context": _execution_context(configuration),
         "resume_lineage": resume_lineage,
@@ -1344,6 +1891,7 @@ def _recovery_identity(
     historical: HistoricalTermStructures,
     calibration: HjmPcaCalibration,
     snapshot: ReferenceBankSnapshot,
+    policy_dependencies: dict[str, object],
 ) -> dict[str, object]:
     semantic_configuration = configuration.to_dict()
     semantic_configuration.pop("output")
@@ -1358,6 +1906,7 @@ def _recovery_identity(
             "hjm_calibration_identity": calibration.calibration_identity,
             "reference_bank_content_hash": snapshot.content_hash,
         },
+        "policy_dependencies": policy_dependencies,
     }
 
 
@@ -1389,7 +1938,9 @@ def _resume_lineage(
     """Append the operational override that led to this resumed execution."""
 
     stored = recovered.get("resume_lineage", [])
-    if not isinstance(stored, list) or not all(isinstance(item, dict) for item in stored):
+    if not isinstance(stored, list) or not all(
+        isinstance(item, dict) for item in stored
+    ):
         raise TrainingError("Recovery artifact has an invalid resume lineage")
     lineage = [dict(item) for item in stored]
     previous = _recovered_execution_context(recovered)
@@ -1413,13 +1964,19 @@ def _recovered_execution_context(recovered: dict[str, object]) -> dict[str, obje
 
     context = recovered.get("execution_context", recovered.get("execution_overrides"))
     if not isinstance(context, dict):
-        raise TrainingError("Recovery artifact is incompatible: missing execution context")
+        raise TrainingError(
+            "Recovery artifact is incompatible: missing execution context"
+        )
     resource_limits = context.get("resource_limits", recovered.get("resource_limits"))
     if not isinstance(resource_limits, dict):
-        raise TrainingError("Recovery artifact is incompatible: missing resource limits")
+        raise TrainingError(
+            "Recovery artifact is incompatible: missing resource limits"
+        )
     required = {"device", "output_directory", "run_name"}
     if not required.issubset(context):
-        raise TrainingError("Recovery artifact is incompatible: invalid execution context")
+        raise TrainingError(
+            "Recovery artifact is incompatible: invalid execution context"
+        )
     return {
         "device": context["device"],
         "output_directory": context["output_directory"],
@@ -1440,10 +1997,14 @@ def _validate_resource_override(
 ) -> None:
     saved = _recovered_execution_context(recovered)["resource_limits"]
     if not isinstance(saved, dict):  # pragma: no cover - checked by helper above.
-        raise TrainingError("Recovery artifact is incompatible: missing resource limits")
+        raise TrainingError(
+            "Recovery artifact is incompatible: missing resource limits"
+        )
     current = _resource_limits(configuration)
     if any(current[name] < saved[name] for name in current):
-        raise TrainingError("Recovery artifact is incompatible: resource budgets may only increase")
+        raise TrainingError(
+            "Recovery artifact is incompatible: resource budgets may only increase"
+        )
 
 
 def _selection_record_from_dict(record: object) -> SelectionRecord:
@@ -1471,9 +2032,7 @@ def _selection_tracker_from_dict(
     if not isinstance(value, dict):
         raise TrainingError("Recovery artifact has an invalid selection tracker")
     raw_best = value.get("best_selection")
-    if raw_best is not None and (
-        not isinstance(raw_best, list) or len(raw_best) != 2
-    ):
+    if raw_best is not None and (not isinstance(raw_best, list) or len(raw_best) != 2):
         raise TrainingError("Recovery artifact has an invalid selection tracker")
     return SelectionTracker(
         schedule=schedule,
@@ -1490,6 +2049,40 @@ def _selection_tracker_from_dict(
 
 def _save_recovery(path: Path, contents: dict[str, object]) -> None:
     _save_checkpoint(path, contents)
+
+
+def _copy_identity_checked_artifact(source: Path, destination: Path) -> None:
+    """Atomically copy one immutable dependency, refusing a conflicting target."""
+
+    if not source.is_file():
+        raise TrainingError(f"Required immutable artifact is missing: {source}")
+    source_hash = _file_sha256(source)
+    if destination.is_file():
+        if _file_sha256(destination) != source_hash:
+            raise TrainingError(
+                f"Immutable artifact destination conflicts with source: {destination}"
+            )
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=destination.parent, delete=False) as temporary:
+        temporary_path = Path(temporary.name)
+    try:
+        shutil.copyfile(source, temporary_path)
+        os.replace(temporary_path, destination)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+    if _file_sha256(destination) != source_hash:
+        raise TrainingError(
+            f"Immutable artifact copy failed identity check: {destination}"
+        )
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def _save_json_artifact(path: Path, contents: dict[str, object]) -> None:
