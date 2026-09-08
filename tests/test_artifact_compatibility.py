@@ -25,7 +25,7 @@ from deepalm.training import (
 )
 
 
-@pytest.mark.parametrize("mutation", ["missing", "unknown", "claimed-complete", "claimed-correction", "boolean-version"])
+@pytest.mark.parametrize("mutation", ["missing", "unknown", "claimed-correction", "boolean-version"])
 def test_freezing_checkpoint_rejects_unknown_artifact_semantics(tmp_path: Path, mutation: str) -> None:
     reference = _frozen_reference(tmp_path)
     checkpoint = torch.load(reference.checkpoint_path, weights_only=False)
@@ -34,8 +34,6 @@ def test_freezing_checkpoint_rejects_unknown_artifact_semantics(tmp_path: Path, 
         identity.pop("artifact_semantics")
     elif mutation == "unknown":
         identity["artifact_semantics"] = {"contract_version": 999}
-    elif mutation == "claimed-complete":
-        identity["artifact_semantics"]["repair_status"] = "complete"
     elif mutation == "claimed-correction":
         identity["artifact_semantics"]["corrections"]["C-1"] = False
     else:
@@ -46,7 +44,9 @@ def test_freezing_checkpoint_rejects_unknown_artifact_semantics(tmp_path: Path, 
         FrozenDateBenchmarkReference.freeze(reference.checkpoint_path)
 
 
-def test_training_records_actual_pending_repairs_without_metric_coupling(tmp_path: Path) -> None:
+def test_training_records_actual_completed_policy_repairs_without_metric_coupling(
+    tmp_path: Path,
+) -> None:
     configuration = _configuration(tmp_path)
     model = MarketScenarioModel()
     historical = model.load_historical_term_structures(SOURCE)
@@ -59,15 +59,15 @@ def test_training_records_actual_pending_repairs_without_metric_coupling(tmp_pat
     result = trainer.fit(horizon_years=5)
     checkpoint = torch.load(result.checkpoint_path, weights_only=False)
     semantics = checkpoint["code_identity"]["artifact_semantics"]
-    assert semantics["repair_status"] == "pending"
+    assert semantics["repair_status"] == "complete"
     assert semantics["corrections"] == {
-        "C-1": True, "C-2": True, "C-3": False, "C-5": True, "C-6": True,
+        "C-1": True, "C-2": True, "C-3": True, "C-5": True, "C-6": True,
     }
     assert "metric_version" not in semantics
     assert "R-1" not in semantics["corrections"]
     trainer.load_selected_checkpoint(result.checkpoint_path)
     checkpoint["code_identity"]["artifact_semantics"]["policy_version"] = (
-        "legacy-nominal-mm-absolute-bmd-v1"
+        "economic-mm-observation-v2"
     )
     incompatible = tmp_path / "incompatible.pt"
     torch.save(checkpoint, incompatible)
@@ -100,7 +100,7 @@ def test_recovery_rejects_missing_semantics_before_resuming(tmp_path: Path) -> N
         trainer.fit(horizon_years=5, control=TrainingControl(stop_after_completed_epoch=1))
     path = stopped.value.recovery_path
     recovery = torch.load(path, weights_only=False)
-    assert recovery["recovery_identity"]["artifact_semantics"]["repair_status"] == "pending"
+    assert recovery["recovery_identity"]["artifact_semantics"]["repair_status"] == "complete"
     recovery["recovery_identity"].pop("artifact_semantics")
     torch.save(recovery, path)
     with pytest.raises(TrainingError, match="artifact semantics"):

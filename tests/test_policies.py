@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -77,13 +78,81 @@ def test_constant_benchmark_learns_one_non_equal_distribution_per_ladder() -> No
     assert not torch.allclose(first_action.funding, equal_action.funding)
 
 
+def test_date_benchmark_scales_actions_from_maturing_notional_plus_adjustment() -> None:
+    """Equation 43 uses the first ladder bucket, not an absolute date scale."""
+
+    policy = BMDatePolicy(transitions=60, dtype=torch.float64)
+    parameters = policy.state_dict()
+    parameters["investment_adjustments"] = torch.zeros(60, dtype=torch.float64)
+    parameters["funding_adjustments"] = torch.zeros(60, dtype=torch.float64)
+    parameters["investment_adjustments"][0] = 10.0
+    parameters["funding_adjustments"][0] = -5.0
+    policy.load_state_dict(parameters)
+
+    def state(investment_maturity: float, funding_maturity: float) -> TreasuryPolicyState:
+        return TreasuryPolicyState(
+            investments=torch.tensor(
+                [[investment_maturity] + [0.0] * 179], dtype=torch.float64
+            ),
+            funding=torch.tensor(
+                [[funding_maturity] + [0.0] * 179], dtype=torch.float64
+            ),
+            time=0,
+            transitions=60,
+        )
+
+    action = policy(state(100.0, 40.0))
+    changed_maturity_action = policy(state(120.0, 20.0))
+    unrelated_market_action = policy(
+        replace(
+            state(100.0, 40.0),
+            cash=torch.tensor([999.0], dtype=torch.float64),
+            curve=torch.linspace(0.01, 0.20, 180, dtype=torch.float64).unsqueeze(0),
+            mortgages=torch.full((1, 180), 17.0, dtype=torch.float64),
+            enterprise_loans=torch.full((1, 180), 19.0, dtype=torch.float64),
+            non_maturity_deposits=torch.full((1, 180), 23.0, dtype=torch.float64),
+            term_deposits=torch.full((1, 180), 29.0, dtype=torch.float64),
+            discounts=torch.full((1, 180), 0.8, dtype=torch.float64),
+            initial_assets=torch.tensor([1000.0], dtype=torch.float64),
+            prior_constraint_values=torch.full((1, 6), 7.0, dtype=torch.float64),
+            mu=torch.tensor([0.2], dtype=torch.float64),
+            penalty_weight=torch.tensor([8.0], dtype=torch.float64),
+        )
+    )
+
+    assert action.investments.sum().item() == pytest.approx(110.0)
+    assert action.funding.sum().item() == pytest.approx(35.0)
+    assert changed_maturity_action.investments.sum().item() == pytest.approx(130.0)
+    assert changed_maturity_action.funding.sum().item() == pytest.approx(15.0)
+    assert torch.allclose(action.concatenated, unrelated_market_action.concatenated)
+
+    zero_adjustments = policy.state_dict()
+    zero_adjustments["investment_adjustments"] = torch.zeros(60, dtype=torch.float64)
+    zero_adjustments["funding_adjustments"] = torch.zeros(60, dtype=torch.float64)
+    policy.load_state_dict(zero_adjustments)
+    zero_action = policy(state(100.0, 40.0))
+    nonnegative_action = policy(state(-120.0, 40.0))
+
+    assert zero_action.investments.sum().item() == pytest.approx(100.0)
+    assert zero_action.funding.sum().item() == pytest.approx(40.0)
+    assert nonnegative_action.investments.sum().item() == pytest.approx(0.0)
+
+    legacy_parameters = policy.state_dict()
+    legacy_parameters["investment_scales"] = legacy_parameters.pop(
+        "investment_adjustments"
+    )
+    legacy_parameters["funding_scales"] = legacy_parameters.pop("funding_adjustments")
+    with pytest.raises(RuntimeError, match="Missing key"):
+        policy.load_state_dict(legacy_parameters)
+
+
 def test_date_benchmark_learns_independent_actions_for_each_decision_date() -> None:
     policy = BMDatePolicy(transitions=60, dtype=torch.float64)
     with torch.no_grad():
-        policy.investment_scales[0] = 1.0
-        policy.investment_scales[1] = 2.0
-        policy.funding_scales[0] = 3.0
-        policy.funding_scales[1] = 4.0
+        policy.investment_adjustments[0] = 1.0
+        policy.investment_adjustments[1] = 2.0
+        policy.funding_adjustments[0] = 3.0
+        policy.funding_adjustments[1] = 4.0
         policy.investment_distribution_logits[0, 0] = 2.0
         policy.investment_distribution_logits[1, 1] = 2.0
         policy.funding_distribution_logits[0, 0] = 2.0
@@ -142,6 +211,7 @@ def test_date_benchmark_learns_independent_actions_for_each_decision_date() -> N
 
 
 def test_date_benchmark_initial_action_ignores_future_market_scenario() -> None:
+    """Only time zero shares a ladder when the future scenario paths diverge."""
     model = MarketScenarioModel()
     historical = model.load_historical_term_structures(SOURCE)
     snapshot = ReferenceBankProvider().build_canonical(historical)
@@ -174,7 +244,7 @@ def test_date_benchmark_initial_action_ignores_future_market_scenario() -> None:
     assert baseline_result.treasury_actions is not None
     assert shifted_result.treasury_actions is not None
     assert torch.allclose(
-        baseline_result.treasury_actions, shifted_result.treasury_actions
+        baseline_result.treasury_actions[:, 0], shifted_result.treasury_actions[:, 0]
     )
 
 

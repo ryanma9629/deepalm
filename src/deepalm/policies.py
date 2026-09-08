@@ -169,7 +169,7 @@ class BMConstantPolicy(TreasuryPolicy):
 
 
 class BMDatePolicy(TreasuryPolicy):
-    """BM^D benchmark: independent scale and maturity choices by decision date.
+    """BM^D benchmark: independent maturity choices and scale adjustments by date.
 
     The simulator has one actionable decision for each transition, followed by a
     terminal passive transition.  BM^D therefore owns exactly ``transitions``
@@ -194,8 +194,8 @@ class BMDatePolicy(TreasuryPolicy):
         if dtype is not None:
             options["dtype"] = dtype
         self.transitions = transitions
-        self.investment_scales = nn.Parameter(torch.ones(transitions, **options))
-        self.funding_scales = nn.Parameter(torch.ones(transitions, **options))
+        self.investment_adjustments = nn.Parameter(torch.ones(transitions, **options))
+        self.funding_adjustments = nn.Parameter(torch.ones(transitions, **options))
         self.investment_distribution_logits = nn.Parameter(
             torch.zeros((transitions, 13), **options)
         )
@@ -212,6 +212,9 @@ class BMDatePolicy(TreasuryPolicy):
             "investment_maturities_per_date": 13,
             "funding_maturities_per_date": 16,
             "parameter_count": sum(parameter.numel() for parameter in self.parameters()),
+            "scale_parameterization": (
+                "maturing_notional_plus_date_adjustment"
+            ),
             "indexing_note": (
                 "The simulator uses T action dates [0, T-1] and then one passive "
                 "terminal transition; BM^D therefore has 60/180 parameter rows, "
@@ -225,11 +228,13 @@ class BMDatePolicy(TreasuryPolicy):
                 "BM^D policy horizon must match the simulator decision horizon"
             )
         time = state.time
-        investment_scale = torch.relu(self.investment_scales[time])
-        funding_scale = torch.relu(self.funding_scales[time])
+        investment_scale = torch.relu(
+            state.investments[:, 0] + self.investment_adjustments[time]
+        )
+        funding_scale = torch.relu(state.funding[:, 0] + self.funding_adjustments[time])
         return TreasuryAction(
-            investments=investment_scale.expand(state.investments.shape[0], 1)
+            investments=investment_scale.unsqueeze(1)
             * torch.softmax(self.investment_distribution_logits[time], dim=0),
-            funding=funding_scale.expand(state.funding.shape[0], 1)
+            funding=funding_scale.unsqueeze(1)
             * torch.softmax(self.funding_distribution_logits[time], dim=0),
         )

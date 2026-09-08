@@ -404,6 +404,56 @@ def test_mm_action_keeps_gradient_through_a_future_financial_transition(
     assert torch.any(policy.investment_encoder.weight.grad != 0)
 
 
+def test_mm_uses_its_frozen_bmd_on_the_current_detached_ladders(
+    tmp_path: Path,
+) -> None:
+    policy = MMPolicy(
+        reference=_frozen_reference(tmp_path),
+        curve_features=CurveFeaturePCA.fit(_registered_training_curves()),
+        architecture=ArchitectureConfiguration(
+            profile="compact", widths=(64, 64, 32, 32)
+        ),
+    )
+    with torch.no_grad():
+        policy.investment_scale_head.weight.zero_()
+        policy.investment_scale_head.bias.zero_()
+        policy.funding_scale_head.weight.zero_()
+        policy.funding_scale_head.bias.zero_()
+
+    state = _state()
+    investments = state.investments.clone()
+    funding = state.funding.clone()
+    investments[:, 0] = 100.0
+    funding[:, 0] = 40.0
+    action = policy(replace(state, investments=investments, funding=funding))
+
+    changed_maturing_investments = investments.clone()
+    changed_maturing_investments[:, 0] = 120.0
+    changed_action = policy(
+        replace(state, investments=changed_maturing_investments, funding=funding)
+    )
+    market_changed_action = policy(
+        replace(
+            state,
+            investments=investments,
+            funding=funding,
+            curve=state.curve + 0.01,
+        )
+    )
+
+    assert torch.allclose(
+        action.investments.sum(dim=1), torch.full((2,), 101.0, dtype=torch.float64)
+    )
+    assert torch.allclose(
+        action.funding.sum(dim=1), torch.full((2,), 41.0, dtype=torch.float64)
+    )
+    assert torch.allclose(
+        changed_action.investments.sum(dim=1),
+        torch.full((2,), 121.0, dtype=torch.float64),
+    )
+    assert torch.allclose(action.concatenated, market_changed_action.concatenated)
+
+
 def test_mm_requires_an_identity_checked_reference_and_complete_observations(
     tmp_path: Path,
 ) -> None:

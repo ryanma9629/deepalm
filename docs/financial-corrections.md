@@ -21,6 +21,11 @@ and Corrected. No production/pilot training is required to validate these fixes.
   by their paper bounds `(1.05, 1.05, 1.00, 0.17, 0, 0)`. Nominal ladders stay
   in the four encoders. Zero A or A0 fails explicitly, while finite negative
   equity remains an input value.
+- C-3 BM^D scale: at each of the fixed 60 or 180 decision dates, the action
+  total is the current first-bucket maturing notional plus that date's learned
+  adjustment, floored at zero; its learned softmax still allocates the total
+  across the 13 investment or 16 funding maturities. A frozen BM^D inside MM
+  evaluates this same parameterization on the current detached ladders.
 - E-03: the negative-rate cash charge is non-negative and subtracted from cash.
   Exempt cash and non-negative short rates produce zero charge, not interest income.
 - Equation 8: loan growth uses the current pre-roll nominal balance rather than
@@ -45,8 +50,10 @@ Financial semantics are identified by
 and epoch recovery identities must match the financial semantics version.
 Missing/older versions require fresh training, not a metadata-only upgrade.
 Historical checkpoints and reports are retained, not rewritten or deleted.
-The MM policy-observation identity is `economic-mm-observation-v2`, so prior
-nominal-observation MM checkpoints are rejected and require fresh training.
+The policy identity is `maturity-relative-bmd-v3`, so prior absolute-scale
+BM^D and nominal-observation MM checkpoints are rejected and require fresh
+training. BM^D parameter state now records date adjustments rather than
+absolute scales; old state keys are not migrated or reinterpreted.
 
 ## Fixed-rate loan cohorts
 

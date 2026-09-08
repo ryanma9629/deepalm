@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from typing import Literal
 
 FINANCIAL_SEMANTICS_VERSION = "dated-deposit-history-v6"
-POLICY_SEMANTICS_VERSION = "economic-mm-observation-v2"
+POLICY_SEMANTICS_VERSION = "maturity-relative-bmd-v3"
 METRIC_SEMANTICS_VERSION = "centered-equity-ratio-and-penalty-v2"
 SNAPSHOT_SCHEMA_VERSION = 5
 
@@ -16,7 +16,9 @@ _CORRECTIONS = {
     "evaluation": ("C-1", "C-2", "C-3", "C-5", "C-6", "C-7", "C-8", "R-1", "R-2"),
 }
 # Activate only alongside a completed formula repair and its regression evidence.
-_IMPLEMENTED_CORRECTIONS: frozenset[str] = frozenset({"C-1", "C-2", "C-5", "C-6"})
+_IMPLEMENTED_CORRECTIONS: frozenset[str] = frozenset(
+    {"C-1", "C-2", "C-3", "C-5", "C-6"}
+)
 
 
 def artifact_semantics(scope: ArtifactScope) -> dict[str, object]:
