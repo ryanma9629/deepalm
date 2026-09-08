@@ -24,6 +24,7 @@ from deepalm.reference_bank import (
     ReferenceBankSnapshot,
 )
 from deepalm.runoff import ALMSimulator, PassiveRunoffResult
+from deepalm.semantics import FINANCIAL_SEMANTICS_VERSION, current_financial_semantics
 from deepalm.term_structures import (
     HistoricalTermStructures,
     HjmPcaCalibration,
@@ -95,11 +96,10 @@ class FrozenPolicySensitivityResult:
 def signed_tail_metrics(
     values: torch.Tensor, *, confidence: float = 0.95
 ) -> dict[str, float | None]:
-    """Return signed lower-tail quantile/mean: negative values remain losses.
+    """Return centered lower-tail risk (equations 51f--g, E-10 corrected).
 
-    ``signed_var_95`` is the 5th-percentile return and ``signed_es_95`` is the
-    mean return at or below that threshold.  They are intentionally not
-    multiplied by -1, so reports retain the sign and unit of the input return.
+    Select the tail on the raw scale, then subtract the full-sample mean.
+    Negative values measure downside deviation, not absolute negative returns.
     """
 
     if values.ndim != 1 or values.numel() == 0 or not torch.isfinite(values).all():
@@ -107,8 +107,19 @@ def signed_tail_metrics(
     quantile = torch.quantile(values, 1.0 - confidence)
     tail = values[values <= quantile]
     return {
-        "signed_var_95": float(quantile),
-        "signed_es_95": float(tail.mean()) if tail.numel() else None,
+        "signed_var_95": float(quantile - values.mean()),
+        "signed_es_95": float(tail.mean() - values.mean()) if tail.numel() else None,
+    }
+
+
+def penalty_tail_metrics(values: torch.Tensor) -> dict[str, float | None]:
+    """Centered upper-tail penalty risk, equations 50d--e with E-10 corrected."""
+    if values.ndim != 1 or values.numel() == 0 or not torch.isfinite(values).all():
+        return {"var95": None, "es95": None}
+    threshold = torch.quantile(values, 0.95)
+    return {
+        "var95": float(threshold - values.mean()),
+        "es95": float(values[values >= threshold].mean() - values.mean()),
     }
 
 
@@ -302,6 +313,8 @@ class LockedEvaluator:
     ) -> dict[str, object]:
         return {
             "format_version": 1,
+            "risk_metric_convention": "centered-equity-ratio-and-penalty-v2",
+            "financial_semantics_version": FINANCIAL_SEMANTICS_VERSION,
             "kind": (
                 "frozen-policy-reference-bank-sensitivity"
                 if self._frozen_policy_snapshot.content_hash != self._snapshot.content_hash
@@ -538,7 +551,7 @@ def _report_outcome(
         "standardized_dividend_yield": _available(
             dividend_yield, "dividends unavailable"
         ),
-        "risk": _risk_report(annualized),
+        "risk": equity_risk_report(ratio),
         "constraints": _constraint_report(
             outcome.constraint_values,
             outcome.constraint_violations,
@@ -692,6 +705,8 @@ def _validate_checkpoint_compatibility(
     calibration: HjmPcaCalibration,
     snapshot: ReferenceBankSnapshot,
 ) -> None:
+    if not current_financial_semantics(checkpoint):
+        raise LockedEvaluationError("Checkpoint financial semantics are incompatible; retraining required")
     expected = {
         "market_source_hash": historical.source_hash,
         "hjm_calibration_identity": calibration.calibration_identity,
@@ -773,17 +788,28 @@ def _available(values: torch.Tensor | None, reason: str) -> dict[str, object]:
     return {"value": _mean(values), "status": "available"}
 
 
-def _risk_report(annualized_returns: torch.Tensor) -> dict[str, object]:
-    """Do not condition final-test tail risk on solvent paths only."""
+def equity_risk_report(equity_ratios: torch.Tensor) -> dict[str, object]:
+    """Paper equity-ratio risk, including finite zero/negative terminal equity."""
 
-    if not torch.isfinite(annualized_returns).all():
+    if (
+        equity_ratios.ndim != 1
+        or equity_ratios.numel() == 0
+        or not torch.isfinite(equity_ratios).all()
+    ):
         return {
             "signed_var_95": None,
             "signed_es_95": None,
             "status": "unavailable",
-            "reason": "terminal equity ratio is non-positive",
+            "reason": "terminal equity ratios are empty or non-finite",
+            "input": "terminal_equity_ratio",
+            "centered": True,
         }
-    return {**signed_tail_metrics(annualized_returns), "status": "available"}
+    return {
+        **signed_tail_metrics(equity_ratios),
+        "status": "available",
+        "input": "terminal_equity_ratio",
+        "centered": True,
+    }
 
 
 def _mean(values: torch.Tensor) -> float:
@@ -795,12 +821,7 @@ def _std(values: torch.Tensor) -> float:
 
 
 def _upper_es95(values: torch.Tensor) -> float | None:
-    """Mean of the adverse upper five-percent tail of a non-negative penalty."""
-
-    if values.ndim != 1 or not torch.isfinite(values).all():
-        return None
-    threshold = torch.quantile(values, 0.95)
-    return float(values[values >= threshold].mean())
+    return penalty_tail_metrics(values)["es95"]
 
 
 def _derived_seed(seed: int, *parts: str) -> int:

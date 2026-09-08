@@ -22,6 +22,7 @@ from deepalm.loans import (
     DEFAULT_LOAN_CONFIGURATION,
     LoanConfiguration,
     apply_loan_transition,
+    initial_loan_cohort_state,
 )
 from deepalm.objective import ObjectiveParameters, ObjectiveResult, evaluate_objective
 from deepalm.policies import TreasuryPolicy, TreasuryPolicyState
@@ -164,6 +165,22 @@ class ALMSimulator:
             .clone()
             for name in _ALL_LADDERS
         }
+        loan_cohorts = (
+            {
+                name: initial_loan_cohort_state(
+                    snapshot.loan_cohorts[name],
+                    paths=paths,
+                    device=device,
+                    dtype=dtype,
+                )
+                for name in ("mortgages", "enterprise_loans")
+            }
+            if include_loan_dynamics
+            else None
+        )
+        if loan_cohorts is not None:
+            for name, cohorts in loan_cohorts.items():
+                ladders[name] = cohorts.cash_flows
         cash = torch.empty((paths, states), device=device, dtype=dtype)
         assets = torch.empty_like(cash)
         liabilities = torch.empty_like(cash)
@@ -293,24 +310,23 @@ class ALMSimulator:
             )
             if include_loan_dynamics:
                 assert spots is not None
+                assert loan_cohorts is not None
                 loan_event = apply_loan_transition(
-                    ladders["mortgages"],
-                    ladders["enterprise_loans"],
+                    loan_cohorts["mortgages"],
+                    loan_cohorts["enterprise_loans"],
                     six_month_yield=spots[:, transition + 1, 5],
                     six_month_yield_one_year_ago=(
                         spots[:, transition + 1 - 12, 5]
                         if transition + 1 >= 12 and transition + 1 < transitions
                         else None
                     ),
-                    initial_total_loan_value=(
-                        snapshot.target_economic_values["mortgages"]
-                        + snapshot.target_economic_values["enterprise_loans"]
-                    ),
                     convention=convention,
                     annual_close=(transition + 1) % 12 == 0
                     and transition + 1 < transitions,
                     configuration=loan_configuration,
                 )
+                loan_cohorts["mortgages"] = loan_event.mortgage_cohorts
+                loan_cohorts["enterprise_loans"] = loan_event.enterprise_cohorts
                 ladders["mortgages"] = loan_event.mortgages
                 ladders["enterprise_loans"] = loan_event.enterprise_loans
                 loan_originations[:, transition] = loan_event.originations
@@ -319,12 +335,10 @@ class ALMSimulator:
                 cash_movement = (
                     cash_movement
                     - loan_event.originations
-                    + loan_event.interest_cash_flow
                 )
                 reconstructed_cash_movement = (
                     reconstructed_cash_movement
                     - loan_event.originations
-                    + loan_event.interest_cash_flow
                 )
             if include_deposit_dynamics:
                 assert spots is not None
@@ -383,12 +397,17 @@ class ALMSimulator:
                 )
                 cash_movement = (
                     cash_movement
+                    # Maturing deposits are paid out above and immediately renewed.
+                    + nmd_matured
+                    + td_matured
                     + deposit_growth[:, transition]
                     - costs[:, transition]
                     - penalties[:, transition]
                 )
                 reconstructed_cash_movement = (
                     reconstructed_cash_movement
+                    + settlements["non_maturity_deposits"][:, transition]
+                    + settlements["term_deposits"][:, transition]
                     + deposit_growth[:, transition]
                     - costs[:, transition]
                     - penalties[:, transition]

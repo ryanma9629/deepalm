@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
 import torch
 
 from deepalm.runner import OperationalRunError
@@ -28,9 +29,123 @@ class LoanConfiguration:
 
 
 @dataclass(frozen=True)
+class LoanCohortState:
+    """Principal schedules and irrevocably fixed monthly coupons by cohort."""
+
+    principal_cash_flows: torch.Tensor
+    monthly_coupon_rates: torch.Tensor
+
+    def __post_init__(self) -> None:
+        if (
+            self.principal_cash_flows.ndim != 3
+            or self.principal_cash_flows.shape[2] != 180
+            or self.monthly_coupon_rates.shape
+            != self.principal_cash_flows.shape[:2]
+        ):
+            raise LoanDynamicsError(
+                "Loan cohorts require principal [paths, cohorts, 180] and rates [paths, cohorts]"
+            )
+        if (
+            not torch.isfinite(self.principal_cash_flows).all()
+            or not torch.isfinite(self.monthly_coupon_rates).all()
+            or torch.any(self.principal_cash_flows < 0)
+            or torch.any(self.monthly_coupon_rates < 0)
+        ):
+            raise LoanDynamicsError(
+                "Loan cohort principal and coupon rates must be finite and non-negative"
+            )
+
+    @classmethod
+    def empty(
+        cls,
+        *,
+        paths: int,
+        device: torch.device | str = "cpu",
+        dtype: torch.dtype = torch.float64,
+    ) -> LoanCohortState:
+        return cls(
+            principal_cash_flows=torch.zeros(
+                (paths, 0, 180), device=device, dtype=dtype
+            ),
+            monthly_coupon_rates=torch.zeros((paths, 0), device=device, dtype=dtype),
+        )
+
+    @property
+    def paths(self) -> int:
+        return int(self.principal_cash_flows.shape[0])
+
+    @property
+    def outstanding_principal(self) -> torch.Tensor:
+        return self.principal_cash_flows.sum(dim=(1, 2))
+
+    @property
+    def matured_principal(self) -> torch.Tensor:
+        return self.principal_cash_flows[:, :, 0].sum(dim=1)
+
+    @property
+    def cash_flows(self) -> torch.Tensor:
+        outstanding = torch.flip(
+            torch.cumsum(
+                torch.flip(self.principal_cash_flows, dims=(2,)), dim=2
+            ),
+            dims=(2,),
+        )
+        return self.principal_cash_flows.sum(dim=1) + (
+            outstanding * self.monthly_coupon_rates.unsqueeze(2)
+        ).sum(dim=1)
+
+    @property
+    def settled_interest(self) -> torch.Tensor:
+        return self.cash_flows[:, 0] - self.matured_principal
+
+    def roll_forward(self) -> LoanCohortState:
+        return LoanCohortState(
+            principal_cash_flows=torch.nn.functional.pad(
+                self.principal_cash_flows[:, :, 1:], (0, 1)
+            ),
+            monthly_coupon_rates=self.monthly_coupon_rates,
+        )
+
+    def originate(
+        self,
+        principal: torch.Tensor,
+        monthly_coupon_rate: torch.Tensor,
+        *,
+        terms: tuple[int, ...],
+        weights: tuple[float, ...],
+    ) -> LoanCohortState:
+        if principal.shape != (self.paths,) or monthly_coupon_rate.shape != (
+            self.paths,
+        ):
+            raise LoanDynamicsError(
+                "Loan origination amounts and rates must have one value per path"
+            )
+        schedule = _principal_schedule(principal, terms, weights)
+        return LoanCohortState(
+            principal_cash_flows=torch.cat(
+                (self.principal_cash_flows, schedule.unsqueeze(1)), dim=1
+            ),
+            monthly_coupon_rates=torch.cat(
+                (self.monthly_coupon_rates, monthly_coupon_rate.unsqueeze(1)), dim=1
+            ),
+        )
+
+    def impair(self, factor: torch.Tensor) -> LoanCohortState:
+        if factor.shape != (self.paths,):
+            raise LoanDynamicsError("Loan impairment must have one value per path")
+        return LoanCohortState(
+            principal_cash_flows=self.principal_cash_flows
+            * (1.0 - factor[:, None, None]),
+            monthly_coupon_rates=self.monthly_coupon_rates,
+        )
+
+
+@dataclass(frozen=True)
 class LoanTransition:
     """Cash and ladder updates for one post-settlement monthly loan event."""
 
+    mortgage_cohorts: LoanCohortState
+    enterprise_cohorts: LoanCohortState
     mortgages: torch.Tensor
     enterprise_loans: torch.Tensor
     originations: torch.Tensor
@@ -39,6 +154,34 @@ class LoanTransition:
 
 
 DEFAULT_LOAN_CONFIGURATION = LoanConfiguration()
+
+
+def initial_loan_cohort_state(
+    cohorts: object,
+    *,
+    paths: int,
+    device: torch.device | str,
+    dtype: torch.dtype,
+) -> LoanCohortState:
+    """Create one independent cohort state per simulated path from a snapshot."""
+
+    try:
+        principal = torch.tensor(
+            np.stack([cohort.principal_cash_flows for cohort in cohorts]),
+            device=device,
+            dtype=dtype,
+        )
+        rates = torch.tensor(
+            [cohort.monthly_coupon_rate for cohort in cohorts],
+            device=device,
+            dtype=dtype,
+        )
+    except (AttributeError, TypeError, ValueError) as error:
+        raise LoanDynamicsError("Reference Bank fixed-rate loan cohorts are invalid") from error
+    return LoanCohortState(
+        principal_cash_flows=principal.unsqueeze(0).expand(paths, -1, -1).clone(),
+        monthly_coupon_rates=rates.unsqueeze(0).expand(paths, -1).clone(),
+    )
 
 
 def monthly_loan_interest_rate(
@@ -64,47 +207,49 @@ def monthly_loan_interest_rate(
 
 
 def apply_loan_transition(
-    mortgages: torch.Tensor,
-    enterprise_loans: torch.Tensor,
+    mortgages: LoanCohortState,
+    enterprise_loans: LoanCohortState,
     *,
     six_month_yield: torch.Tensor,
     six_month_yield_one_year_ago: torch.Tensor | None,
-    initial_total_loan_value: float,
     convention: str,
     annual_close: bool,
     configuration: LoanConfiguration = DEFAULT_LOAN_CONFIGURATION,
 ) -> LoanTransition:
-    """Replace maturing loans, add deterministic growth, interest, and impairment."""
+    """Settle fixed coupons, replace principal, and lock rates on new loans."""
 
     _validate_configuration(configuration)
-    _validate_ladder("mortgages", mortgages)
-    _validate_ladder("enterprise_loans", enterprise_loans)
-    if mortgages.shape[0] != enterprise_loans.shape[0]:
+    if mortgages.paths != enterprise_loans.paths:
         raise LoanDynamicsError("Mortgage and enterprise-loan path counts differ")
-    if six_month_yield.shape != (mortgages.shape[0],):
+    if six_month_yield.shape != (mortgages.paths,):
         raise LoanDynamicsError("Six-month yield must provide one value per path")
     _validate_finite("six_month_yield", six_month_yield)
-    if initial_total_loan_value <= 0:
-        raise LoanDynamicsError("Initial total loan value must be positive")
-
-    growth = initial_total_loan_value * configuration.annual_growth / 12.0
-    mortgage_originations = mortgages[:, 0] + growth * configuration.mortgage_growth_share
+    interest = mortgages.settled_interest + enterprise_loans.settled_interest
+    growth = (
+        (mortgages.outstanding_principal + enterprise_loans.outstanding_principal)
+        * configuration.annual_growth / 12.0
+    )
+    mortgage_originations = (
+        mortgages.matured_principal + growth * configuration.mortgage_growth_share
+    )
     enterprise_originations = (
-        enterprise_loans[:, 0] + growth * configuration.enterprise_growth_share
+        enterprise_loans.matured_principal
+        + growth * configuration.enterprise_growth_share
     )
-    shifted_mortgages = _shift_left(mortgages)
-    shifted_enterprise = _shift_left(enterprise_loans)
-    new_mortgages = _add_bullet_originations(
-        shifted_mortgages,
+    coupon = monthly_loan_interest_rate(
+        six_month_yield, spread=configuration.spread, convention=convention
+    )
+    new_mortgages = mortgages.roll_forward().originate(
         mortgage_originations,
-        configuration.mortgage_terms_months,
-        configuration.mortgage_weights,
+        coupon,
+        terms=configuration.mortgage_terms_months,
+        weights=configuration.mortgage_weights,
     )
-    new_enterprise = _add_bullet_originations(
-        shifted_enterprise,
+    new_enterprise = enterprise_loans.roll_forward().originate(
         enterprise_originations,
-        configuration.enterprise_terms_months,
-        configuration.enterprise_weights,
+        coupon,
+        terms=configuration.enterprise_terms_months,
+        weights=configuration.enterprise_weights,
     )
 
     impairment = torch.zeros_like(enterprise_originations)
@@ -117,38 +262,31 @@ def apply_loan_transition(
         impairment = torch.clamp_min(
             six_month_yield - six_month_yield_one_year_ago - 0.02, 0.0
         )
-        new_enterprise = new_enterprise * (1.0 - impairment.unsqueeze(1))
+        new_enterprise = new_enterprise.impair(impairment)
 
-    interest_rate = monthly_loan_interest_rate(
-        six_month_yield, spread=configuration.spread, convention=convention
-    )
-    interest_cash_flow = interest_rate * (
-        new_mortgages.sum(dim=1) + new_enterprise.sum(dim=1)
-    )
-    _validate_finite("loan_interest_cash_flow", interest_cash_flow)
+    _validate_finite("loan_interest_cash_flow", interest)
     return LoanTransition(
-        mortgages=new_mortgages,
-        enterprise_loans=new_enterprise,
+        mortgage_cohorts=new_mortgages,
+        enterprise_cohorts=new_enterprise,
+        mortgages=new_mortgages.cash_flows,
+        enterprise_loans=new_enterprise.cash_flows,
         originations=mortgage_originations + enterprise_originations,
-        interest_cash_flow=interest_cash_flow,
+        interest_cash_flow=interest,
         impairment_factor=impairment,
     )
 
 
-def _add_bullet_originations(
-    ladder: torch.Tensor,
-    originations: torch.Tensor,
+def _principal_schedule(
+    principal: torch.Tensor,
     terms: tuple[int, ...],
     weights: tuple[float, ...],
 ) -> torch.Tensor:
-    result = ladder.clone()
+    result = torch.zeros(
+        (principal.shape[0], 180), device=principal.device, dtype=principal.dtype
+    )
     for term, weight in zip(terms, weights, strict=True):
-        result[:, term - 1] = result[:, term - 1] + originations * weight
+        result[:, term - 1] = result[:, term - 1] + principal * weight
     return result
-
-
-def _shift_left(ladder: torch.Tensor) -> torch.Tensor:
-    return torch.nn.functional.pad(ladder[:, 1:], (0, 1))
 
 
 def _validate_configuration(configuration: LoanConfiguration) -> None:
@@ -170,14 +308,6 @@ def _validate_configuration(configuration: LoanConfiguration) -> None:
             raise LoanDynamicsError(f"Invalid {name} loan maturity distribution")
     if abs(configuration.mortgage_growth_share + configuration.enterprise_growth_share - 1.0) > 1e-12:
         raise LoanDynamicsError("Loan growth shares must sum to one")
-
-
-def _validate_ladder(name: str, ladder: torch.Tensor) -> None:
-    if ladder.ndim != 2 or ladder.shape[1] != 180:
-        raise LoanDynamicsError(f"{name} ladder must have shape [paths, 180]")
-    if torch.any(ladder < 0):
-        raise LoanDynamicsError(f"{name} ladder cannot contain negative cash flows")
-    _validate_finite(name, ladder)
 
 
 def _validate_finite(name: str, values: torch.Tensor) -> None:

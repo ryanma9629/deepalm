@@ -29,7 +29,7 @@ _TARGETS = {
     "funding": 4_000.0,
 }
 _LADDER_NAMES = tuple(name for name in _TARGETS if name != "cash")
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _PROFILES = {"canonical", "imported", "sensitivity"}
 _CANONICAL_AS_OF_DATE = "2022-07-15"
 _CANONICAL_CURVE_IDENTITY = (
@@ -57,6 +57,14 @@ class ReferenceBankSensitivity:
 
 
 @dataclass(frozen=True)
+class LoanCohort:
+    """One initial fixed-rate loan cohort's remaining principal schedule."""
+
+    principal_cash_flows: np.ndarray
+    monthly_coupon_rate: float
+
+
+@dataclass(frozen=True)
 class ReferenceBankSnapshot:
     """Immutable initial bank state shared by the two model horizons."""
 
@@ -67,6 +75,7 @@ class ReferenceBankSnapshot:
     cash: float
     equity: float
     ladders: Mapping[str, np.ndarray]
+    loan_cohorts: Mapping[str, tuple[LoanCohort, ...]]
     target_economic_values: Mapping[str, float]
     target_value_errors: Mapping[str, float]
     product_assumptions: Mapping[str, object]
@@ -115,11 +124,33 @@ class ReferenceBankProvider:
             )
         mortgage_weights = [0.06] * 11
         mortgage_weights[8] = 0.40
-        raw = {
-            "mortgages": _seasoned_ladder(
-                tuple(range(24, 145, 12)), mortgage_weights, 0.015
+        loan_cohorts = {
+            "mortgages": _scaled_loan_cohorts(
+                _seasoned_loan_cohorts(
+                    tuple(range(24, 145, 12)),
+                    mortgage_weights,
+                    historical.initial_curve.spot_rates,
+                    0.015,
+                ),
+                target=_TARGETS["mortgages"],
+                discounts=discounts,
             ),
-            "enterprise_loans": _seasoned_ladder((1, 2, 3), (1 / 3,) * 3, 0.015),
+            "enterprise_loans": _scaled_loan_cohorts(
+                _seasoned_loan_cohorts(
+                    (1, 2, 3),
+                    (1 / 3,) * 3,
+                    historical.initial_curve.spot_rates,
+                    0.015,
+                ),
+                target=_TARGETS["enterprise_loans"],
+                discounts=discounts,
+            ),
+        }
+        raw = {
+            "mortgages": _loan_cohort_cash_flows(loan_cohorts["mortgages"]),
+            "enterprise_loans": _loan_cohort_cash_flows(
+                loan_cohorts["enterprise_loans"]
+            ),
             "investments": _seasoned_ladder(
                 tuple(range(36, 181, 12)), (1 / 13,) * 13, 0.01
             ),
@@ -132,7 +163,11 @@ class ReferenceBankProvider:
             ),
         }
         ladders = {
-            name: _readonly(raw[name] * (_TARGETS[name] / float(raw[name] @ discounts)))
+            name: _readonly(
+                raw[name]
+                if name in loan_cohorts
+                else raw[name] * (_TARGETS[name] / float(raw[name] @ discounts))
+            )
             for name in _LADDER_NAMES
         }
         durations = {
@@ -161,6 +196,7 @@ class ReferenceBankProvider:
             initial_curve_identity=historical.source_hash,
             cash=_TARGETS["cash"],
             ladders=ladders,
+            loan_cohorts=loan_cohorts,
             target_economic_values=_TARGETS,
             equity=1_000.0,
             assumptions=assumptions,
@@ -231,12 +267,32 @@ class ReferenceBankProvider:
             loan_spread = value
         elif factor == "operating_cost_multiplier":
             cost_multiplier = value
-        raw = {
-            "mortgages": _seasoned_ladder(
-                tuple(range(24, 145, 12)), mortgage_weights, loan_spread
+        loan_cohorts = {
+            "mortgages": _scaled_loan_cohorts(
+                _seasoned_loan_cohorts(
+                    tuple(range(24, 145, 12)),
+                    mortgage_weights,
+                    historical.initial_curve.spot_rates,
+                    loan_spread,
+                ),
+                target=targets["mortgages"],
+                discounts=discounts,
             ),
-            "enterprise_loans": _seasoned_ladder(
-                (1, 2, 3), (1 / 3,) * 3, loan_spread
+            "enterprise_loans": _scaled_loan_cohorts(
+                _seasoned_loan_cohorts(
+                    (1, 2, 3),
+                    (1 / 3,) * 3,
+                    historical.initial_curve.spot_rates,
+                    loan_spread,
+                ),
+                target=targets["enterprise_loans"],
+                discounts=discounts,
+            ),
+        }
+        raw = {
+            "mortgages": _loan_cohort_cash_flows(loan_cohorts["mortgages"]),
+            "enterprise_loans": _loan_cohort_cash_flows(
+                loan_cohorts["enterprise_loans"]
             ),
             "investments": _seasoned_ladder(
                 tuple(range(36, 181, 12)), (1 / 13,) * 13, 0.01
@@ -252,7 +308,11 @@ class ReferenceBankProvider:
             ),
         }
         ladders = {
-            name: _readonly(raw[name] * (targets[name] / float(raw[name] @ discounts)))
+            name: _readonly(
+                raw[name]
+                if name in loan_cohorts
+                else raw[name] * (targets[name] / float(raw[name] @ discounts))
+            )
             for name in _LADDER_NAMES
         }
         durations = {
@@ -284,6 +344,7 @@ class ReferenceBankProvider:
             initial_curve_identity=historical.source_hash,
             cash=targets["cash"],
             ladders=ladders,
+            loan_cohorts=loan_cohorts,
             target_economic_values=targets,
             equity=targets["cash"]
             + targets["investments"]
@@ -355,6 +416,31 @@ class ReferenceBankProvider:
             )
         if set(snapshot.ladders) != set(_LADDER_NAMES):
             raise ReferenceBankError("Reference Bank ladders have an invalid identity")
+        if set(snapshot.loan_cohorts) != {"mortgages", "enterprise_loans"}:
+            raise ReferenceBankError("Reference Bank fixed-rate loan cohorts are incomplete")
+        for name, cohorts in snapshot.loan_cohorts.items():
+            if not cohorts:
+                raise ReferenceBankError(
+                    f"Reference Bank {name} requires at least one fixed-rate cohort"
+                )
+            for cohort in cohorts:
+                if (
+                    cohort.principal_cash_flows.shape != (180,)
+                    or not np.all(np.isfinite(cohort.principal_cash_flows))
+                    or np.any(cohort.principal_cash_flows < 0)
+                    or not np.isfinite(cohort.monthly_coupon_rate)
+                    or cohort.monthly_coupon_rate < 0
+                    or cohort.principal_cash_flows.flags.writeable
+                ):
+                    raise ReferenceBankError(
+                        f"Reference Bank {name} fixed-rate cohort is invalid"
+                    )
+            if snapshot.ladders[name].shape == (180,) and not np.allclose(
+                _loan_cohort_cash_flows(cohorts), snapshot.ladders[name], atol=1e-8
+            ):
+                raise ReferenceBankError(
+                    f"Reference Bank {name} ladder does not match its fixed-rate cohorts"
+                )
         if set(snapshot.target_economic_values) != set(_TARGETS):
             raise ReferenceBankError(
                 "Reference Bank value targets have an invalid identity"
@@ -459,6 +545,7 @@ class ReferenceBankProvider:
             "schema_version": _SCHEMA_VERSION,
             "profiles": sorted(_PROFILES),
             "ladder_names": list(_LADDER_NAMES),
+            "loan_cohort_products": ["mortgages", "enterprise_loans"],
             "ladder_length_months": 180,
             "required_provenance": sorted(_PROVENANCE_FIELDS),
             "unit_rule": "unit must be m followed by the declared ISO currency",
@@ -540,6 +627,18 @@ class ReferenceBankProvider:
                     name: np.asarray(values, dtype=np.float64)
                     for name, values in data["ladders"].items()
                 },
+                loan_cohorts={
+                    name: tuple(
+                        LoanCohort(
+                            principal_cash_flows=np.asarray(
+                                cohort["principal_cash_flows"], dtype=np.float64
+                            ),
+                            monthly_coupon_rate=float(cohort["monthly_coupon_rate"]),
+                        )
+                        for cohort in cohorts
+                    )
+                    for name, cohorts in data["loan_cohorts"].items()
+                },
                 target_economic_values=data["target_economic_values"],
                 equity=data["equity"],
                 assumptions=data["product_assumptions"],
@@ -606,6 +705,50 @@ class ReferenceBankProvider:
         }
 
 
+def _seasoned_loan_cohorts(
+    terms: tuple[int, ...],
+    weights: tuple[float, ...] | list[float],
+    spot_rates: np.ndarray,
+    spread: float,
+) -> tuple[LoanCohort, ...]:
+    cohorts: list[LoanCohort] = []
+    for term, weight in zip(terms, weights, strict=True):
+        coupon = float(np.expm1((spot_rates[term - 1] + spread) / 12.0))
+        schedule = np.zeros(180, dtype=np.float64)
+        for age in range(term):
+            schedule[term - age - 1] = weight / term
+        cohorts.append(
+            LoanCohort(
+                principal_cash_flows=schedule, monthly_coupon_rate=coupon
+            )
+        )
+    return tuple(cohorts)
+
+
+def _loan_cohort_cash_flows(cohorts: tuple[LoanCohort, ...]) -> np.ndarray:
+    result = np.zeros(180, dtype=np.float64)
+    for cohort in cohorts:
+        outstanding = np.cumsum(cohort.principal_cash_flows[::-1])[::-1]
+        result += cohort.principal_cash_flows + cohort.monthly_coupon_rate * outstanding
+    return result
+
+
+def _scaled_loan_cohorts(
+    cohorts: tuple[LoanCohort, ...], *, target: float, discounts: np.ndarray
+) -> tuple[LoanCohort, ...]:
+    current_value = float(_loan_cohort_cash_flows(cohorts) @ discounts)
+    if current_value <= 0:
+        raise ReferenceBankError("Fixed-rate loan cohorts have no positive value")
+    scale = target / current_value
+    return tuple(
+        LoanCohort(
+            principal_cash_flows=cohort.principal_cash_flows * scale,
+            monthly_coupon_rate=cohort.monthly_coupon_rate,
+        )
+        for cohort in cohorts
+    )
+
+
 def _seasoned_ladder(
     terms: tuple[int, ...], weights: tuple[float, ...] | list[float], coupon: float
 ) -> np.ndarray:
@@ -637,6 +780,7 @@ def _make_snapshot(
     initial_curve_identity: str,
     cash: float,
     ladders: Mapping[str, np.ndarray],
+    loan_cohorts: Mapping[str, tuple[LoanCohort, ...]],
     target_economic_values: Mapping[str, float],
     equity: float,
     assumptions: Mapping[str, object],
@@ -657,6 +801,18 @@ def _make_snapshot(
         "equity": float(equity),
         "ladders": MappingProxyType(
             {name: _readonly(value) for name, value in ladders.items()}
+        ),
+        "loan_cohorts": MappingProxyType(
+            {
+                name: tuple(
+                    LoanCohort(
+                        principal_cash_flows=_readonly(cohort.principal_cash_flows),
+                        monthly_coupon_rate=float(cohort.monthly_coupon_rate),
+                    )
+                    for cohort in cohorts
+                )
+                for name, cohorts in loan_cohorts.items()
+            }
         ),
         "target_economic_values": MappingProxyType(
             {name: float(value) for name, value in target_economic_values.items()}
@@ -682,6 +838,16 @@ def _to_data(snapshot: ReferenceBankSnapshot) -> dict[str, object]:
         "cash": snapshot.cash,
         "equity": snapshot.equity,
         "ladders": {name: ladder.tolist() for name, ladder in snapshot.ladders.items()},
+        "loan_cohorts": {
+            name: [
+                {
+                    "principal_cash_flows": cohort.principal_cash_flows.tolist(),
+                    "monthly_coupon_rate": cohort.monthly_coupon_rate,
+                }
+                for cohort in cohorts
+            ]
+            for name, cohorts in snapshot.loan_cohorts.items()
+        },
         "target_economic_values": dict(snapshot.target_economic_values),
         "target_value_errors": dict(snapshot.target_value_errors),
         "product_assumptions": dict(snapshot.product_assumptions),

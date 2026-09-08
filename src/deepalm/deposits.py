@@ -91,4 +91,5 @@ def cash_penalty(cash: torch.Tensor, minimum_reserves: torch.Tensor, one_month_d
         raise DepositDynamicsError("Cash penalty inputs must share one value per path")
     if not torch.isfinite(cash).all() or not torch.isfinite(minimum_reserves).all() or not torch.isfinite(one_month_discount).all() or torch.any(one_month_discount <= 0):
         raise DepositDynamicsError("Cash penalty inputs must be finite with positive discounts")
-    return torch.clamp_min(cash - 30.0 * minimum_reserves, 0.0) * (torch.minimum(1.0 / one_month_discount, torch.ones_like(one_month_discount)) - 1.0)
+    # E-03: this is a non-negative cost, subtracted by the cash ledger.
+    return torch.clamp_min(cash - 30.0 * minimum_reserves, 0.0) * (1.0 - torch.minimum(1.0 / one_month_discount, torch.ones_like(one_month_discount)))

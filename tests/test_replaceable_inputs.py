@@ -31,13 +31,25 @@ def _imported_snapshot_data() -> dict[str, object]:
         if name != "cash"
     }
     data: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "profile": "imported",
         "as_of_date": "2024-01-31",
         "initial_curve_identity": "synthetic-usd-2024-01-31",
         "cash": targets["cash"],
         "equity": 300.0,
         "ladders": ladders,
+        "loan_cohorts": {
+            name: [
+                {
+                    "principal_cash_flows": [amount] + [0.0] * 179,
+                    "monthly_coupon_rate": 0.0,
+                }
+            ]
+            for name, amount in (
+                ("mortgages", targets["mortgages"]),
+                ("enterprise_loans", targets["enterprise_loans"]),
+            )
+        },
         "target_economic_values": targets,
         "target_value_errors": {name: 0.0 for name in ladders},
         "product_assumptions": {
@@ -128,6 +140,20 @@ def test_imported_snapshot_rejects_incomplete_or_incompatible_contracts(
         )
 
 
+def test_imported_snapshot_rejects_legacy_schema_without_fixed_rate_cohorts(
+    tmp_path: Path,
+) -> None:
+    data = _imported_snapshot_data()
+    data["schema_version"] = 1
+    data.pop("loan_cohorts")
+    data["content_hash"] = _content_hash(data)
+    source = tmp_path / "legacy-v1.json"
+    source.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(ReferenceBankError, match="schema version"):
+        ReferenceBankProvider().load(source)
+
+
 @pytest.mark.parametrize(
     ("mutate", "message"),
     (
@@ -142,6 +168,12 @@ def test_imported_snapshot_rejects_incomplete_or_incompatible_contracts(
         (
             lambda data: data.__setitem__("unit", "mCHF"),
             "currency and unit",
+        ),
+        (
+            lambda data: data["loan_cohorts"]["mortgages"][0].update(
+                {"monthly_coupon_rate": 0.01}
+            ),
+            "does not match",
         ),
     ),
 )

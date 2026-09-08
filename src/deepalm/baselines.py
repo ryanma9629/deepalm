@@ -14,6 +14,7 @@ from typing import Any
 import torch
 
 from deepalm.policies import BMDatePolicy
+from deepalm.semantics import current_financial_semantics
 
 _REFERENCE_NAME = re.compile(r"\.baseline\.([0-9a-f]{64})\.json$")
 
@@ -146,6 +147,8 @@ def _load_checkpoint(path: Path) -> dict[str, Any]:
         raise BaselineReferenceError("Frozen BM^D baseline checkpoint cannot be loaded") from error
     if not isinstance(loaded, dict):
         raise BaselineReferenceError("Frozen BM^D baseline checkpoint has invalid content")
+    if not current_financial_semantics(loaded):
+        raise BaselineReferenceError("Frozen BM^D baseline financial semantics are incompatible; retraining required")
     return loaded
 
 

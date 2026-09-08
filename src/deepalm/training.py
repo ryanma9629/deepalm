@@ -44,6 +44,7 @@ from deepalm.policies import (
 from deepalm.reference_bank import ReferenceBankSnapshot
 from deepalm.resources import BudgetExceeded, ResourceMonitor, ResourceSnapshot
 from deepalm.runoff import ALMSimulator, PassiveRunoffResult
+from deepalm.semantics import FINANCIAL_SEMANTICS_VERSION, current_financial_semantics
 from deepalm.term_structures import (
     HistoricalTermStructures,
     HjmPcaCalibration,
@@ -1293,6 +1294,8 @@ class MMTrainer(BenchmarkTrainer):
             or checkpoint.get("horizon_years") not in {5, 15}
         ):
             raise TrainingError("Checkpoint is not a supported MM policy")
+        if not current_financial_semantics(checkpoint):
+            raise TrainingError("MM checkpoint financial semantics are incompatible; retraining required")
         dependencies = checkpoint.get("policy_dependencies")
         if not isinstance(dependencies, dict):
             raise TrainingError("MM checkpoint has no immutable dependency record")
@@ -1742,6 +1745,7 @@ def _checkpoint_contents(
         "configuration": configuration_data,
         "configuration_identity": _json_identity(configuration_data),
         "code_identity": {
+            "financial_semantics_version": FINANCIAL_SEMANTICS_VERSION,
             "git_revision": _training_git_revision(),
             "checkpoint_schema_version": 1,
         },
@@ -2085,6 +2089,8 @@ def _validate_selected_checkpoint_contract(
     and the three immutable input identities must instead agree exactly.
     """
 
+    if not current_financial_semantics(checkpoint):
+        raise TrainingError(f"{policy_label} checkpoint financial semantics are incompatible; retraining required")
     recorded = checkpoint.get("configuration")
     if not isinstance(recorded, dict):
         raise TrainingError(f"{policy_label} checkpoint lacks a configuration manifest")
@@ -2142,6 +2148,7 @@ def _recovery_identity(
     return {
         "policy": policy_name,
         "horizon_years": horizon_years,
+        "financial_semantics_version": FINANCIAL_SEMANTICS_VERSION,
         "semantic_configuration_identity": _json_identity(semantic_configuration),
         "data_identities": {
             "market_source_hash": historical.source_hash,

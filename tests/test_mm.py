@@ -21,6 +21,7 @@ from deepalm.objective import evaluation_objective_parameters
 from deepalm.policies import BMDatePolicy, TreasuryPolicyState
 from deepalm.reference_bank import ReferenceBankProvider
 from deepalm.runoff import ALMSimulator
+from deepalm.semantics import FINANCIAL_SEMANTICS_VERSION
 from deepalm.term_structures import MarketScenarioModel
 from deepalm.treasury import apply_treasury_action
 
@@ -85,6 +86,9 @@ def _frozen_reference(tmp_path: Path) -> FrozenDateBenchmarkReference:
     torch.save(
         {
             "policy": "BM^D",
+            "code_identity": {
+                "financial_semantics_version": FINANCIAL_SEMANTICS_VERSION
+            },
             "horizon_years": 5,
             "configuration_identity": "configuration-v1",
             "data_identities": {"market": "market-v1"},

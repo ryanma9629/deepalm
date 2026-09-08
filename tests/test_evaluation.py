@@ -13,13 +13,41 @@ from deepalm.evaluation import (
     LockedEvaluator,
     PolicyCheckpoint,
     _constraint_report,
+    equity_risk_report,
     paired_bootstrap,
+    penalty_tail_metrics,
     signed_tail_metrics,
 )
 from deepalm.policies import BMEqualPolicy
 from deepalm.reference_bank import ReferenceBankProvider
 from deepalm.term_structures import MarketScenarioModel
 from deepalm.training import MMTrainer, _job_seed
+
+
+def test_equity_tail_risk_is_centered_and_translation_invariant() -> None:
+    values = torch.arange(100, dtype=torch.float64)
+    tails = signed_tail_metrics(values)
+    assert tails["signed_var_95"] == pytest.approx(-44.55)
+    assert tails["signed_es_95"] == pytest.approx(-47.5)
+    assert signed_tail_metrics(values + 1000) == pytest.approx(tails)
+
+
+def test_penalty_tail_risk_selects_raw_upper_tail_before_centering() -> None:
+    values = torch.arange(100, dtype=torch.float64)
+    assert penalty_tail_metrics(values) == pytest.approx({"var95": 44.55, "es95": 47.5})
+    assert penalty_tail_metrics(values + 1000) == pytest.approx(
+        penalty_tail_metrics(values)
+    )
+
+
+def test_equity_risk_includes_insolvent_paths_without_annualizing() -> None:
+    report = equity_risk_report(
+        torch.tensor([-1.0, 0.0, 1.0, 2.0], dtype=torch.float64)
+    )
+    assert report["status"] == "available"
+    assert report["input"] == "terminal_equity_ratio"
+    assert report["signed_var_95"] == pytest.approx(-1.35)
+    assert report["signed_es_95"] == pytest.approx(-1.5)
 
 
 def test_signed_tail_metrics_keep_loss_sign_and_paired_bootstrap_is_reproducible() -> (
@@ -74,9 +102,13 @@ def test_locked_evaluation_uses_disjoint_common_test_paths_and_writes_manifest(
 
     assert result.markets[5].split == "test"
     assert result.markets[5].global_path_indices == (0, 1)
-    assert result.reports["BM^D"]["annualized_return"]["status"] == "unavailable"
-    assert result.reports["BM^D"]["annualized_return"]["reason"]
-    assert result.reports["BM^D"]["risk"]["status"] == "unavailable"
+    assert result.reports["BM^D"]["risk"]["status"] == "available"
+    assert result.reports["BM^D"]["risk"]["input"] == "terminal_equity_ratio"
+    assert result.reports["BM^D"]["risk"]["centered"] is True
+    assert (
+        result.manifest["risk_metric_convention"]
+        == "centered-equity-ratio-and-penalty-v2"
+    )
     assert result.manifest["bootstrap_resamples"] == 100
     assert result.paired_intervals
     assert all(
@@ -88,9 +120,22 @@ def test_locked_evaluation_uses_disjoint_common_test_paths_and_writes_manifest(
         for interval in result.paired_intervals
         if interval.metric == "annualized_return"
     )
-    assert annualized_pair.status == "unavailable"
-    assert annualized_pair.reason
+    if any(
+        report["annualized_return"]["status"] == "unavailable"
+        for report in result.reports.values()
+    ):
+        assert annualized_pair.status == "unavailable"
+        assert annualized_pair.reason
+    else:
+        assert annualized_pair.status == "available"
     assert manifest_path.is_file()
+
+    legacy = torch.load(reference.checkpoint_path, weights_only=False)
+    legacy["code_identity"].pop("financial_semantics_version", None)
+    legacy_path = tmp_path / "legacy-cash-bug.pt"
+    torch.save(legacy, legacy_path)
+    with pytest.raises(LockedEvaluationError, match="financial semantics"):
+        evaluator.evaluate((PolicyCheckpoint("legacy", legacy_path),))
 
     with pytest.raises(LockedEvaluationError, match="at least 100"):
         evaluator.evaluate(
