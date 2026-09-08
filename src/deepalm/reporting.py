@@ -35,6 +35,140 @@ class CompactReportArtifacts:
     reference_bank_summary: dict[str, object]
 
 
+@dataclass(frozen=True)
+class PairedPilotReportArtifacts:
+    """The immutable evidence assembled into the bounded paired-pilot report."""
+
+    report: dict[str, object]
+
+
+def build_paired_convention_pilot_report(
+    *, pilot_run_directory: Path, evaluation_directory: Path
+) -> PairedPilotReportArtifacts:
+    """Build a descriptive report from completed, identity-linked pilot evidence."""
+
+    pilot_manifest_path = pilot_run_directory / "manifest.json"
+    evaluation_path = evaluation_directory / "paired-evaluation.json"
+    pilot_manifest = _read_report_object(pilot_manifest_path, "pilot manifest")
+    evaluation = _read_report_object(evaluation_path, "paired evaluation")
+    pilot = pilot_manifest.get("paired_convention_pilot")
+    if (
+        pilot_manifest.get("status") != "completed"
+        or not isinstance(pilot, dict)
+        or pilot.get("status") != "completed"
+        or pilot.get("label") != "paired-convention-research-pilot"
+    ):
+        raise ReportingError("Paired-pilot report requires a completed pilot bundle")
+    if (
+        evaluation.get("format_version") != 1
+        or evaluation.get("kind") != "paired-convention-pilot-evaluation"
+        or evaluation.get("status") != "completed"
+        or evaluation.get("label") != "paired-convention-research-pilot"
+        or evaluation.get("source_run") != str(pilot_run_directory.resolve())
+        or evaluation.get("source_manifest_sha256") != _sha256(pilot_manifest_path)
+    ):
+        raise ReportingError("Paired evaluation is not identity-linked to the completed pilot")
+    jobs = pilot.get("completed_training_jobs")
+    reports = evaluation.get("reports")
+    locked_manifests = evaluation.get("locked_evaluation_manifests")
+    truncations = evaluation.get("mm_fifteen_year_truncation")
+    intervals = evaluation.get("paired_intervals")
+    if not all(
+        isinstance(value, dict) for value in (reports, locked_manifests, truncations)
+    ) or not isinstance(jobs, list) or not isinstance(intervals, list):
+        raise ReportingError("Paired evaluation lacks report, identity, or interval evidence")
+    conventions: dict[str, dict[str, object]] = {}
+    for convention in ("paper", "corrected"):
+        convention_jobs = [
+            job for job in jobs if isinstance(job, dict) and job.get("convention") == convention
+        ]
+        convention_reports = reports.get(convention)
+        locked = locked_manifests.get(convention)
+        truncation = truncations.get(convention)
+        expected_labels = {f"{policy}-{horizon}y" for policy in ("BM^D", "MM") for horizon in (5, 15)}
+        if (
+            len(convention_jobs) != 4
+            or not isinstance(convention_reports, dict)
+            or set(convention_reports) != expected_labels
+            or not isinstance(locked, dict)
+            or not isinstance(truncation, dict)
+        ):
+            raise ReportingError(f"Paired report lacks complete {convention} evidence")
+        formula_choices = (
+            {
+                "pca_loading_scale": "eigenvalue",
+                "loan_interest_annualization": "unannualized",
+            }
+            if convention == "paper"
+            else {
+                "pca_loading_scale": "sqrt_eigenvalue",
+                "loan_interest_annualization": "monthly",
+            }
+        )
+        conventions[convention] = {
+            "formula_choices": formula_choices,
+            "jobs": convention_jobs,
+            "locked_reports": convention_reports,
+            "locked_evaluation_identity": locked,
+            "mm_fifteen_year_truncation": truncation,
+            "resource_use": evaluation.get("resource_measurements"),
+        }
+    report = {
+        "format_version": 1,
+        "kind": "paired-convention-pilot-report",
+        "label": "paired-convention-research-pilot",
+        "pilot_source": {
+            "directory": str(pilot_run_directory.resolve()),
+            "manifest_sha256": _sha256(pilot_manifest_path),
+            "git_revision": pilot_manifest.get("git_revision"),
+            "financial_semantics_version": pilot_manifest.get("financial_semantics_version"),
+            "shared_identities": pilot.get("shared_identities"),
+            "resource_use": pilot.get("resource_measurements"),
+        },
+        "evaluation_source": {
+            "directory": str(evaluation_directory.resolve()),
+            "resource_use": evaluation.get("resource_measurements"),
+        },
+        "conventions": conventions,
+        "paired_intervals": intervals,
+        "numerical_behavior": _paired_pilot_numerical_behavior(pilot_run_directory),
+        "deferred_work": [
+            "paper widths",
+            "three MM seeds",
+            "sensitivity retraining",
+            "10,000 bootstrap",
+            "full paper figures",
+            "Ticket 24 economic acceptance gates",
+        ],
+        "disclosure": (
+            "This is a paired-convention-research-pilot. It is neither convergence "
+            "evidence, paper-result replication, methodologically-reproduced, nor "
+            "bank-model approval."
+        ),
+    }
+    return PairedPilotReportArtifacts(report=report)
+
+
+def _read_report_object(path: Path, label: str) -> dict[str, object]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ReportingError(f"Paired-pilot {label} is unreadable: {path}") from error
+    if not isinstance(value, dict):
+        raise ReportingError(f"Paired-pilot {label} must be a JSON object")
+    return value
+
+
+def _paired_pilot_numerical_behavior(directory: Path) -> list[dict[str, object]]:
+    """Expose recovery probes and failures without treating them as current failures."""
+
+    evidence: list[dict[str, object]] = []
+    for path in sorted(directory.glob("*/*.interruption.json")):
+        contents = _read_report_object(path, "interruption evidence")
+        evidence.append({"path": str(path.relative_to(directory)), "evidence": contents})
+    return evidence
+
+
 def build_compact_no_swap_report(
     configuration: ResolvedRunConfiguration,
     *,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from hashlib import sha256
 from pathlib import Path
 
 import torch
@@ -117,6 +118,116 @@ def test_runner_generates_an_auditable_no_swap_report_and_coverage_inventory(
     assert manifest["compact_report"]["actual_work"]["completed_training_jobs"] == []
     assert manifest["compact_report"]["resource_measurements"]["status"] == "unavailable"
     assert report["actual_work"]["numeric_metrics"]["status"] == "unavailable"
+
+
+def test_runner_publishes_an_atomic_paired_pilot_report_with_separate_conventions(
+    tmp_path: Path,
+) -> None:
+    configuration = _report_configuration(tmp_path)
+    pilot = tmp_path / "paired-pilot"
+    pilot.mkdir()
+    manifest = {
+        "status": "completed",
+        "git_revision": "pilot-revision",
+        "financial_semantics_version": "fixed-rate-cohorts-cash-rollover-v3",
+        "paired_convention_pilot": {
+            "label": "paired-convention-research-pilot",
+            "status": "completed",
+            "resource_measurements": {"elapsed_seconds": 274.0},
+            "shared_identities": {
+                "reference_bank_content_hash": "reference-bank",
+                "market_source_hash": "market",
+                "hjm_calibration_identity": "calibration",
+                "seed_registry": {"bootstrap": 7},
+            },
+            "completed_training_jobs": [
+                {
+                    "convention": convention,
+                    "policy": policy,
+                    "horizon_years": horizon,
+                    "checkpoint": f"{convention}/{policy}-{horizon}.pt",
+                    "checkpoint_sha256": f"{convention}-{policy}-{horizon}",
+                    "baseline_reference": f"{convention}/BM_D-{horizon}.json",
+                    "baseline_reference_identity": f"{convention}-{horizon}",
+                    "optimizer_updates": 4,
+                }
+                for convention in ("paper", "corrected")
+                for policy in ("BM^D", "MM")
+                for horizon in (5, 15)
+            ],
+            "deferred": ["paper widths"],
+        },
+    }
+    manifest_path = pilot / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    evaluation = tmp_path / "paired-evaluation"
+    evaluation.mkdir()
+    (evaluation / "paired-evaluation.json").write_text(
+        json.dumps(
+            {
+                "format_version": 1,
+                "kind": "paired-convention-pilot-evaluation",
+                "status": "completed",
+                "label": "paired-convention-research-pilot",
+                "source_run": str(pilot.resolve()),
+                "source_manifest_sha256": sha256(manifest_path.read_bytes()).hexdigest(),
+                "reports": {
+                    convention: {
+                        f"{policy}-{horizon}y": {
+                            "losses": {"total": float(horizon)}, "constraints": {}
+                        }
+                        for policy in ("BM^D", "MM")
+                        for horizon in (5, 15)
+                    }
+                    for convention in ("paper", "corrected")
+                },
+                "locked_evaluation_manifests": {
+                    convention: {
+                        "test_scenarios": {"5": {"paths": 64}},
+                        "checkpoints": {},
+                    }
+                    for convention in ("paper", "corrected")
+                },
+                "paired_intervals": [
+                    {"metric": "total_loss", "status": "available", "resamples": 100}
+                ],
+                "mm_fifteen_year_truncation": {
+                    convention: {
+                        "status": "available",
+                        "action_steps": 60,
+                        "optimizer_updates": 0,
+                    }
+                    for convention in ("paper", "corrected")
+                },
+                "resource_measurements": {"elapsed_seconds": 50.0},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    bundle = ReproductionRunner().generate_paired_pilot_report(
+        replace(configuration, output=replace(configuration.output, run_name="paired-report")),
+        pilot_run_directory=pilot,
+        evaluation_directory=evaluation,
+    )
+
+    assert bundle.status is RunStatus.COMPLETED
+    assert bundle.artifact_directory is not None
+    report = json.loads(
+        (bundle.artifact_directory / "paired-pilot-report.json").read_text()
+    )
+    assert report["kind"] == "paired-convention-pilot-report"
+    assert set(report["conventions"]) == {"paper", "corrected"}
+    assert report["conventions"]["paper"]["jobs"][0]["convention"] == "paper"
+    assert report["paired_intervals"][0]["resamples"] == 100
+    assert report["deferred_work"] == [
+        "paper widths",
+        "three MM seeds",
+        "sensitivity retraining",
+        "10,000 bootstrap",
+        "full paper figures",
+        "Ticket 24 economic acceptance gates",
+    ]
 
 
 def test_report_rejects_incomplete_source_bundles(tmp_path: Path) -> None:

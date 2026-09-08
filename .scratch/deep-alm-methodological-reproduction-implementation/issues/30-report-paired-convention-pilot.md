@@ -4,7 +4,7 @@
 
 **Blocked by:** 29/Evaluate paired-convention pilot outcomes and failures.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Execution scope:** opt-in-research
 
@@ -19,3 +19,5 @@
 ## Comments
 
 2026-09-08 — Created from Ticket 20’s confirmed M5 pilot plan. The report is intentionally smaller than the full research reporting and economic assessment deferred to Ticket 24.
+
+2026-09-08 — Published `artifacts/paired-convention-pilot-report/paired-pilot-report.json` from the completed Ticket 28 pilot and Ticket 29 evaluation. It has separate Paper/Corrected four-job sections, 16 available 100-resample paired intervals, both zero-update 60-step MM(15y|5y) results, the two recovery-probe interruption records, shared identities and resource observations. The mandatory deferred-work inventory and non-replication disclosure are included verbatim.

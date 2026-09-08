@@ -1789,6 +1789,73 @@ class ReproductionRunner:
                 else (),
             )
 
+    def generate_paired_pilot_report(
+        self,
+        configuration: ResolvedRunConfiguration,
+        *,
+        pilot_run_directory: Path,
+        evaluation_directory: Path,
+    ) -> RunBundle:
+        """Publish a separate, atomic report from completed paired-pilot evidence."""
+
+        try:
+            from deepalm.reporting import (
+                ReportingError,
+                build_paired_convention_pilot_report,
+            )
+
+            artifacts = build_paired_convention_pilot_report(
+                pilot_run_directory=pilot_run_directory,
+                evaluation_directory=evaluation_directory,
+            )
+            report_configuration = replace(
+                configuration,
+                output=replace(
+                    configuration.output,
+                    directory=pilot_run_directory.resolve().parent,
+                    run_name=f"{pilot_run_directory.name}-report",
+                ),
+            )
+            manifest = _build_manifest(
+                report_configuration,
+                RunStatus.COMPLETED,
+                AcceptanceStatus.PAIRED_CONVENTION_RESEARCH_PILOT,
+            )
+            manifest["paired_pilot_report"] = {
+                "kind": artifacts.report["kind"],
+                "label": artifacts.report["label"],
+                "pilot_source": artifacts.report["pilot_source"],
+                "evaluation_source": artifacts.report["evaluation_source"],
+                "conventions": list(artifacts.report["conventions"]),
+                "paired_interval_count": len(artifacts.report["paired_intervals"]),
+                "deferred_work": artifacts.report["deferred_work"],
+            }
+            artifact_directory = _write_bundle_atomically(
+                report_configuration,
+                manifest,
+                extra_artifacts={"paired-pilot-report.json": artifacts.report},
+            )
+            return RunBundle(
+                status=RunStatus.COMPLETED,
+                acceptance_status=AcceptanceStatus.PAIRED_CONVENTION_RESEARCH_PILOT,
+                artifact_directory=artifact_directory,
+                artifacts=(
+                    artifact_directory / "manifest.json",
+                    artifact_directory / "paired-pilot-report.json",
+                ),
+            )
+        except (ReportingError, OSError, ValueError, KeyError) as error:
+            failure_directory = _write_failure_bundle(configuration, error)
+            return RunBundle(
+                status=RunStatus.FAILED,
+                acceptance_status=AcceptanceStatus.PENDING,
+                artifact_directory=failure_directory,
+                error=str(error),
+                artifacts=(failure_directory / "manifest.json",)
+                if failure_directory is not None
+                else (),
+            )
+
 
 def _validate_local_workflow_configuration(
     configuration: ResolvedRunConfiguration,

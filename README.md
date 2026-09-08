@@ -91,6 +91,17 @@ diagnostic and returns nonzero; a finite but weaker Paper result is evidence,
 not a Corrected failure. This is a `paired-convention-research-pilot`, not a
 convergence result, paper-result replication, or bank-model approval.
 
+Evaluate and report a completed paired pilot without retraining:
+
+```bash
+uv run deepalm paired-evaluate --config configs/paired-convention-pilot.yaml --source-run artifacts/paired-convention-pilot
+uv run deepalm paired-report --config configs/paired-convention-pilot.yaml --source-run artifacts/paired-convention-pilot --evaluation-run artifacts/paired-convention-pilot-evaluation
+```
+
+The second command publishes a sibling `*-report` bundle. It retains both
+conventions, their identities and resources, paired intervals, numerical
+diagnostics, and a fixed inventory of deferred research work.
+
 ## Compact no-swap report
 
 Create a compact report only from one or more completed run bundles. The report

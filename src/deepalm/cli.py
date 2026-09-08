@@ -138,6 +138,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     paired_evaluation_parser.add_argument(
         "--source-run", type=Path, required=True, help="completed paired-pilot artifact"
     )
+    paired_report_parser = subparsers.add_parser(
+        "paired-report",
+        help="publish an auditable report from paired-pilot evaluation evidence",
+    )
+    paired_report_parser.add_argument(
+        "--config", type=Path, required=True, help="YAML paired-pilot configuration"
+    )
+    paired_report_parser.add_argument(
+        "--source-run", type=Path, required=True, help="completed paired-pilot artifact"
+    )
+    paired_report_parser.add_argument(
+        "--evaluation-run", type=Path, required=True, help="completed paired evaluation artifact"
+    )
     arguments = parser.parse_args(argv)
 
     try:
@@ -175,6 +188,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     elif arguments.command == "paired-evaluate":
         bundle = runner.evaluate_paired_convention_pilot(
             configuration, source_run_directory=arguments.source_run
+        )
+    elif arguments.command == "paired-report":
+        bundle = runner.generate_paired_pilot_report(
+            configuration,
+            pilot_run_directory=arguments.source_run,
+            evaluation_directory=arguments.evaluation_run,
         )
     elif arguments.command == "train":
         bundle = (
