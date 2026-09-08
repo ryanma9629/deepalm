@@ -32,6 +32,10 @@ _Avoid_: 完整资产负债表快照, 通用状态
 与一个已选择 BM^D checkpoint 并列保存的、内容寻址的只读引用；引用文件名内含其内容哈希，并记录 checkpoint 哈希、期限、配置与数据身份。MM 先从引用路径验证该哈希与 checkpoint 身份，再加载为不可训练的策略。
 _Avoid_: 文件名引用, 未验证的 checkpoint
 
+**可恢复训练（Recoverable Training）**:
+只在完整 epoch 的 selection 完成后保存的训练进度；它包含当前模型、优化器、scheduler、selection 历史和语义身份。重启时会重放未完成 epoch，并仅允许设备、输出位置和增加资源预算的覆盖。
+_Avoid_: batch 级别快照, 不经兼容性检查的续训
+
 **期限结构（Term Structure）**:
 某一估值日、同一组月度期限上的连续复利即期利率、贴现因子和离散远期利率，它们是同一条利率曲线的三种一致表示。
 _Avoid_: 三条独立曲线

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -8,14 +9,25 @@ import torch
 
 from deepalm.baselines import BaselineReferenceError, FrozenDateBenchmarkReference
 from deepalm.config import (
+    ArchitectureConfiguration,
     ExperimentConfiguration,
     PolicyConfiguration,
     RunScaleConfiguration,
     resolve_configuration,
 )
 from deepalm.reference_bank import ReferenceBankProvider
+from deepalm.resources import BudgetExceeded, ResourceSnapshot
 from deepalm.term_structures import MarketScenarioModel
-from deepalm.training import BMConstantTrainer, BMDateTrainer, BMETrainer
+from deepalm.training import (
+    BMConstantTrainer,
+    BMDateTrainer,
+    BMETrainer,
+    SelectionSchedule,
+    SelectionTracker,
+    TrainingControl,
+    TrainingError,
+    TrainingInterrupted,
+)
 
 SOURCE = (
     Path(__file__).resolve().parents[1]
@@ -235,3 +247,218 @@ def test_date_benchmark_freezes_each_selected_horizon_with_verified_identity(
     first.checkpoint_path.write_bytes(first.checkpoint_path.read_bytes() + b"changed")
     with pytest.raises(BaselineReferenceError, match="identity"):
         reference.load_policy(device="cpu", dtype=torch.float64)
+
+
+def test_epoch_boundary_recovery_matches_an_uninterrupted_cpu_training_run(
+    tmp_path: Path,
+) -> None:
+    configuration = replace(
+        _configuration(tmp_path),
+        run_scale=RunScaleConfiguration(
+            profile="recovery-fixture",
+            epochs=4,
+            training_paths_per_epoch=2,
+            selection_paths=2,
+            test_paths=2,
+            batch_size=2,
+        ),
+    )
+    model = MarketScenarioModel()
+    historical = model.load_historical_term_structures(SOURCE)
+    calibration = model.calibrate_hjm_pca(historical)
+    snapshot = ReferenceBankProvider().build_canonical(historical)
+
+    uninterrupted = BMETrainer(
+        replace(
+            configuration,
+            output=replace(configuration.output, run_name="uninterrupted"),
+        ),
+        snapshot=snapshot,
+        historical=historical,
+        calibration=calibration,
+    ).fit(horizon_years=5)
+    interrupted_trainer = BMETrainer(
+        replace(
+            configuration,
+            output=replace(configuration.output, run_name="interrupted"),
+        ),
+        snapshot=snapshot,
+        historical=historical,
+        calibration=calibration,
+    )
+    with pytest.raises(TrainingInterrupted, match="cancelled") as captured:
+        interrupted_trainer.fit(
+            horizon_years=5,
+            control=TrainingControl(stop_after_completed_epoch=2),
+        )
+
+    interruption = captured.value
+    assert interruption.recovery_path.is_file()
+    resumed_configuration = replace(
+        configuration,
+        output=replace(configuration.output, run_name="resumed-with-overrides"),
+        resources=replace(
+            configuration.resources,
+            wall_clock_budget_seconds=configuration.resources.wall_clock_budget_seconds
+            * 2,
+            process_rss_limit_bytes=configuration.resources.process_rss_limit_bytes * 2,
+            accelerator_memory_limit_bytes=(
+                configuration.resources.accelerator_memory_limit_bytes * 2
+            ),
+        ),
+    )
+    recovered = BMETrainer(
+        resumed_configuration,
+        snapshot=snapshot,
+        historical=historical,
+        calibration=calibration,
+    ).fit(
+        horizon_years=5,
+        control=TrainingControl(resume=True, resume_from=interruption.recovery_path),
+    )
+    expected = torch.load(uninterrupted.checkpoint_path, weights_only=False)
+    actual = torch.load(recovered.checkpoint_path, weights_only=False)
+
+    assert recovered.optimizer_updates == uninterrupted.optimizer_updates == 4
+    assert actual["selection_history"] == expected["selection_history"]
+    assert actual["scheduler_state"] == expected["scheduler_state"]
+    assert actual["learning_rates"] == expected["learning_rates"]
+    for name, value in expected["policy_state"].items():
+        torch.testing.assert_close(actual["policy_state"][name], value)
+    recovery = torch.load(interruption.recovery_path, weights_only=False)
+    assert len(recovery["resume_lineage"]) == 1
+    override = recovery["resume_lineage"][0]
+    assert override["source_recovery_path"] == str(interruption.recovery_path)
+    assert override["source_completed_epoch"] == 2
+    assert override["resumed_at_unix_seconds"] > 0
+    assert override["previous_execution"]["run_name"] == "interrupted"
+    assert override["current_execution"]["run_name"] == "resumed-with-overrides"
+    assert (
+        override["current_execution"]["resource_limits"]["wall_clock_budget_seconds"]
+        == override["previous_execution"]["resource_limits"]["wall_clock_budget_seconds"]
+        * 2
+    )
+
+
+def test_recovery_replays_initial_state_and_rejects_semantic_mismatches(
+    tmp_path: Path,
+) -> None:
+    configuration = replace(
+        _configuration(tmp_path),
+        run_scale=RunScaleConfiguration(
+            profile="recovery-fixture",
+            epochs=2,
+            training_paths_per_epoch=2,
+            selection_paths=2,
+            test_paths=2,
+            batch_size=2,
+        ),
+    )
+    model = MarketScenarioModel()
+    historical = model.load_historical_term_structures(SOURCE)
+    calibration = model.calibrate_hjm_pca(historical)
+    snapshot = ReferenceBankProvider().build_canonical(historical)
+    trainer = BMETrainer(
+        configuration,
+        snapshot=snapshot,
+        historical=historical,
+        calibration=calibration,
+    )
+
+    with pytest.raises(TrainingInterrupted, match="cancelled") as captured:
+        trainer.fit(
+            horizon_years=5,
+            control=TrainingControl(stop_after_completed_epoch=0),
+        )
+    assert not captured.value.recovery_path.exists()
+    assert captured.value.interruption_path.is_file()
+
+    with pytest.raises(TrainingInterrupted):
+        trainer.fit(
+            horizon_years=5,
+            control=TrainingControl(stop_after_completed_epoch=1),
+        )
+    incompatible = replace(
+        configuration,
+        architecture=ArchitectureConfiguration(
+            profile="paper", widths=(512, 512, 256, 128)
+        ),
+    )
+    with pytest.raises(TrainingError, match="incompatible"):
+        BMETrainer(
+            incompatible,
+            snapshot=snapshot,
+            historical=historical,
+            calibration=calibration,
+        ).fit(horizon_years=5, control=TrainingControl(resume=True))
+
+
+class _ExhaustedMonitor:
+    def check(self, stage: str) -> ResourceSnapshot:
+        raise BudgetExceeded(
+            f"wall-clock budget exceeded at {stage}",
+            diagnostics={"reason": "budget_exhausted", "stage": stage},
+        )
+
+    def snapshot(self) -> ResourceSnapshot:
+        return ResourceSnapshot(
+            elapsed_seconds=1.0,
+            process_rss_bytes=1,
+            accelerator_allocated_bytes=None,
+        )
+
+
+def test_budget_exhaustion_is_recorded_as_recoverable_interruption(tmp_path: Path) -> None:
+    configuration = _configuration(tmp_path)
+    model = MarketScenarioModel()
+    historical = model.load_historical_term_structures(SOURCE)
+    calibration = model.calibrate_hjm_pca(historical)
+    snapshot = ReferenceBankProvider().build_canonical(historical)
+
+    with pytest.raises(TrainingInterrupted, match="budget_exhausted") as captured:
+        BMETrainer(
+            configuration,
+            snapshot=snapshot,
+            historical=historical,
+            calibration=calibration,
+            resource_monitor=_ExhaustedMonitor(),
+        ).fit(horizon_years=5)
+
+    assert not captured.value.recovery_path.exists()
+    assert captured.value.interruption_path.is_file()
+
+
+def test_training_errors_are_recorded_as_operational_failures(tmp_path: Path) -> None:
+    configuration = _configuration(tmp_path)
+    model = MarketScenarioModel()
+    historical = model.load_historical_term_structures(SOURCE)
+    calibration = model.calibrate_hjm_pca(historical)
+    snapshot = ReferenceBankProvider().build_canonical(historical)
+
+    with pytest.raises(TrainingInterrupted, match="operational_failure") as captured:
+        BMETrainer(
+            configuration,
+            snapshot=snapshot,
+            historical=historical,
+            calibration=calibration,
+        ).fit(horizon_years=7)
+
+    interruption = json.loads(captured.value.interruption_path.read_text())
+    assert interruption["reason"] == "operational_failure"
+    assert interruption["diagnostics"]["error_type"] == "TrainingError"
+
+
+def test_paper_scale_selection_starts_at_epoch_twenty_and_honors_ties_and_patience() -> None:
+    tracker = SelectionTracker(SelectionSchedule.for_profile("paper_scale"))
+
+    assert not tracker.should_select(19)
+    assert tracker.record(20, (100.0, 10.0))
+    assert not tracker.record(21, (99.95, 1.0))
+    assert tracker.best_selection == (100.0, 10.0)
+    assert tracker.record(22, (99.9, 10.0))
+    assert tracker.record(23, (99.9, 9.0))
+    for epoch in range(24, 38):
+        assert not tracker.record(epoch, (99.9, 9.0))
+        assert not tracker.should_stop(epoch)
+    assert not tracker.record(38, (99.9, 9.0))
+    assert tracker.should_stop(38)

@@ -116,6 +116,16 @@ def test_bank_training_requires_explicit_scale_and_bank_purpose(tmp_path: Path) 
         "test_paths": 32,
         "batch_size": 8,
     }
+    with pytest.raises(ConfigurationError, match="early stopping"):
+        resolve_configuration(configuration)
+
+    configuration["run_scale"].update(
+        {
+            "selection_start_epoch": 3,
+            "early_stopping_patience": 4,
+            "minimum_relative_improvement": 0.002,
+        }
+    )
     with pytest.raises(ConfigurationError, match="bank-training"):
         resolve_configuration(configuration)
 
@@ -125,6 +135,9 @@ def test_bank_training_requires_explicit_scale_and_bank_purpose(tmp_path: Path) 
     }
     resolved = resolve_configuration(configuration)
     assert resolved.run_scale.profile == "bank_training"
+    assert resolved.run_scale.selection_start_epoch == 3
+    assert resolved.run_scale.early_stopping_patience == 4
+    assert resolved.run_scale.minimum_relative_improvement == 0.002
     assert resolved.acceptance.purpose == "bank-training"
 
 

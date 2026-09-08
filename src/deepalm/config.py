@@ -31,6 +31,9 @@ class RunScaleConfiguration:
     selection_paths: int
     test_paths: int
     batch_size: int
+    selection_start_epoch: int = 1
+    early_stopping_patience: int | None = None
+    minimum_relative_improvement: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -160,6 +163,9 @@ _RUN_SCALE_PROFILES = {
         "selection_paths": 32,
         "test_paths": 32,
         "batch_size": 8,
+        "selection_start_epoch": 1,
+        "early_stopping_patience": None,
+        "minimum_relative_improvement": 0.0,
     },
     "quick": {
         "epochs": 5,
@@ -167,6 +173,9 @@ _RUN_SCALE_PROFILES = {
         "selection_paths": 128,
         "test_paths": 128,
         "batch_size": 32,
+        "selection_start_epoch": 1,
+        "early_stopping_patience": None,
+        "minimum_relative_improvement": 0.0,
     },
     "paper_scale": {
         "epochs": 100,
@@ -174,6 +183,9 @@ _RUN_SCALE_PROFILES = {
         "selection_paths": 1_600,
         "test_paths": 1_600,
         "batch_size": 32,
+        "selection_start_epoch": 20,
+        "early_stopping_patience": 15,
+        "minimum_relative_improvement": 0.001,
     },
 }
 
@@ -289,6 +301,9 @@ def _resolve_run_scale(raw: object) -> RunScaleConfiguration:
         "selection_paths",
         "test_paths",
         "batch_size",
+        "selection_start_epoch",
+        "early_stopping_patience",
+        "minimum_relative_improvement",
     }
     unknown = sorted(set(section) - allowed)
     if unknown:
@@ -299,18 +314,38 @@ def _resolve_run_scale(raw: object) -> RunScaleConfiguration:
         raise ConfigurationError("Missing configuration keys in run_scale: profile")
     profile = _string(section["profile"], "run_scale.profile")
     if profile == "bank_training":
-        required = allowed - {"profile"}
-        missing = sorted(required - set(section))
+        scale_keys = {
+            "epochs",
+            "training_paths_per_epoch",
+            "selection_paths",
+            "test_paths",
+            "batch_size",
+        }
+        early_stopping_keys = {
+            "selection_start_epoch",
+            "early_stopping_patience",
+            "minimum_relative_improvement",
+        }
+        missing = sorted((scale_keys | early_stopping_keys) - set(section))
         if missing:
+            prefix = (
+                "bank_training requires explicit early stopping values for: "
+                if set(missing) & early_stopping_keys
+                else "bank_training requires explicit values for: "
+            )
             raise ConfigurationError(
-                "bank_training requires explicit values for: " + ", ".join(missing)
+                prefix + ", ".join(missing)
             )
         return RunScaleConfiguration(
             profile=profile,
             **{
                 name: _positive_integer(section[name], f"run_scale.{name}")
-                for name in required
+                for name in scale_keys | {"selection_start_epoch", "early_stopping_patience"}
             },
+            minimum_relative_improvement=_nonnegative_float(
+                section["minimum_relative_improvement"],
+                "run_scale.minimum_relative_improvement",
+            ),
         )
     values = _RUN_SCALE_PROFILES.get(profile)
     if values is None:
@@ -606,3 +641,9 @@ def _positive_integer(raw: object, name: str) -> int:
     if not isinstance(raw, int) or isinstance(raw, bool) or raw <= 0:
         raise ConfigurationError(f"{name} must be a positive integer")
     return raw
+
+
+def _nonnegative_float(raw: object, name: str) -> float:
+    if not isinstance(raw, (int, float)) or isinstance(raw, bool) or raw < 0:
+        raise ConfigurationError(f"{name} must be a non-negative number")
+    return float(raw)
