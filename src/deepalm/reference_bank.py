@@ -12,6 +12,11 @@ from types import MappingProxyType
 import numpy as np
 
 from deepalm.runner import OperationalRunError
+from deepalm.sensitivities import (
+    REFERENCE_BANK_SENSITIVITIES,
+    approved_sensitivity_value,
+    canonical_sensitivity_value,
+)
 from deepalm.term_structures import HistoricalTermStructures
 
 _TARGETS = {
@@ -25,7 +30,7 @@ _TARGETS = {
 }
 _LADDER_NAMES = tuple(name for name in _TARGETS if name != "cash")
 _SCHEMA_VERSION = 1
-_PROFILES = {"canonical", "imported"}
+_PROFILES = {"canonical", "imported", "sensitivity"}
 _CANONICAL_AS_OF_DATE = "2022-07-15"
 _CANONICAL_CURVE_IDENTITY = (
     "f05edd68a673955908c0bf04e5771a64ff70a10f987f27046511bc41f36a2d8f"
@@ -41,6 +46,14 @@ _PROVENANCE_FIELDS = {
 
 class ReferenceBankError(OperationalRunError):
     """Raised when a Reference Bank snapshot is economically inconsistent."""
+
+
+@dataclass(frozen=True)
+class ReferenceBankSensitivity:
+    """One approved, explicit deviation from the canonical Reference Bank."""
+
+    factor: str
+    value: float
 
 
 @dataclass(frozen=True)
@@ -165,6 +178,138 @@ class ReferenceBankProvider:
                     str(historical.initial_curve.as_of_date.astype("datetime64[D]")),
                 ),
             },
+            currency="CHF",
+            unit="mCHF",
+        )
+        self.validate(snapshot, discounts=discounts)
+        return snapshot
+
+    def build_sensitivity(
+        self,
+        historical: HistoricalTermStructures,
+        sensitivity: ReferenceBankSensitivity,
+    ) -> ReferenceBankSnapshot:
+        """Build one validated one-factor variant without modifying the canonical bank.
+
+        The approved values mirror the explicit scale, duration-weight, spread,
+        and operating-cost alternatives in the specification.  A variant is a
+        separately content-addressed ``sensitivity`` snapshot, never a relaxed
+        canonical snapshot.
+        """
+
+        discounts = np.asarray(
+            historical.initial_curve.discount_factors, dtype=np.float64
+        )
+        if discounts.shape != (180,) or not np.all(np.isfinite(discounts)):
+            raise ReferenceBankError(
+                "Sensitivity initial curve must contain 180 finite discounts"
+            )
+        factor, value = sensitivity.factor, float(sensitivity.value)
+        try:
+            approved = approved_sensitivity_value(factor, value)
+            baseline_value = canonical_sensitivity_value(factor)
+        except ValueError as error:
+            raise ReferenceBankError(str(error)) from error
+        scale = value / 10_000 if factor == "total_assets_mchf" else 1.0
+        targets = {name: target * scale for name, target in _TARGETS.items()}
+        mortgage_weights = [0.06] * 11
+        mortgage_weights[8] = 0.40
+        non_maturity_weights = [0.40, 0.30, 0.25, 0.05]
+        term_deposit_weights = [0.10, 0.10, 0.50, 0.30]
+        loan_spread = 0.015
+        cost_multiplier = 1.0
+        if factor == "mortgage_ten_year_weight":
+            mortgage_weights = [(1.0 - value) / 10] * 11
+            mortgage_weights[8] = value
+        elif factor == "non_maturity_ten_year_weight":
+            non_maturity_weights[2] += non_maturity_weights[3] - value
+            non_maturity_weights[3] = value
+        elif factor == "term_deposit_ten_year_weight":
+            term_deposit_weights[2] += term_deposit_weights[3] - value
+            term_deposit_weights[3] = value
+        elif factor == "loan_spread_decimal":
+            loan_spread = value
+        elif factor == "operating_cost_multiplier":
+            cost_multiplier = value
+        raw = {
+            "mortgages": _seasoned_ladder(
+                tuple(range(24, 145, 12)), mortgage_weights, loan_spread
+            ),
+            "enterprise_loans": _seasoned_ladder(
+                (1, 2, 3), (1 / 3,) * 3, loan_spread
+            ),
+            "investments": _seasoned_ladder(
+                tuple(range(36, 181, 12)), (1 / 13,) * 13, 0.01
+            ),
+            "funding": _seasoned_ladder(
+                (3, *range(12, 181, 12)), (1 / 16,) * 16, 0.01
+            ),
+            "non_maturity_deposits": _seasoned_ladder(
+                (1, 2, 12, 120), non_maturity_weights, 0.005
+            ),
+            "term_deposits": _seasoned_ladder(
+                (1, 2, 12, 120), term_deposit_weights, 0.01
+            ),
+        }
+        ladders = {
+            name: _readonly(raw[name] * (targets[name] / float(raw[name] @ discounts)))
+            for name in _LADDER_NAMES
+        }
+        durations = {
+            name: _duration(ladder, discounts) for name, ladder in ladders.items()
+        }
+        assumptions: dict[str, object] = {
+            "mortgage_terms_months": list(range(24, 145, 12)),
+            "mortgage_weights": mortgage_weights,
+            "enterprise_terms_months": [1, 2, 3],
+            "deposit_reference_terms_months": [1, 2, 12, 120],
+            "non_maturity_weights": non_maturity_weights,
+            "term_deposit_weights": term_deposit_weights,
+            "loan_spread_decimal": loan_spread,
+            "personnel_growth_annual": 0.02,
+            "loan_duration_years": _weighted_duration(
+                durations, ("mortgages", "enterprise_loans")
+            ),
+            "deposit_duration_years": _weighted_duration(
+                durations, ("non_maturity_deposits", "term_deposits")
+            ),
+            "legacy_coupon_pricing": "project assumption: fixed 1% synthetic legacy bond coupons",
+            "sensitivity_factor": factor,
+            "sensitivity_baseline_value": baseline_value,
+            "sensitivity_value": approved,
+        }
+        snapshot = _make_snapshot(
+            profile="sensitivity",
+            as_of_date=str(historical.initial_curve.as_of_date.astype("datetime64[D]")),
+            initial_curve_identity=historical.source_hash,
+            cash=targets["cash"],
+            ladders=ladders,
+            target_economic_values=targets,
+            equity=targets["cash"]
+            + targets["investments"]
+            + targets["mortgages"]
+            + targets["enterprise_loans"]
+            - targets["non_maturity_deposits"]
+            - targets["term_deposits"]
+            - targets["funding"],
+            assumptions=assumptions,
+            target_value_errors={
+                name: abs(float(ladder @ discounts) - targets[name]) / targets[name]
+                for name, ladder in ladders.items()
+            },
+            provenance={
+                "source_system": "synthetic Reference Bank sensitivity",
+                "product_mapping": "seasoned six-ladder project mapping",
+                "assumptions": "one-factor canonical sensitivity",
+                "valuation": "initial SNB curve discounted cash-flow values",
+                "market": _market_provenance(
+                    historical.source_hash,
+                    str(historical.initial_curve.as_of_date.astype("datetime64[D]")),
+                ),
+                "sensitivity": f"{factor}: {baseline_value} -> {approved}",
+            },
+            personnel_cost=3.0 * cost_multiplier,
+            material_cost=1.0 * cost_multiplier,
             currency="CHF",
             unit="mCHF",
         )
@@ -303,6 +448,8 @@ class ReferenceBankProvider:
             )
         if snapshot.profile == "canonical":
             self._validate_canonical(snapshot)
+        if snapshot.profile == "sensitivity":
+            self._validate_sensitivity(snapshot)
 
     @staticmethod
     def schema() -> dict[str, object]:
@@ -315,6 +462,13 @@ class ReferenceBankProvider:
             "ladder_length_months": 180,
             "required_provenance": sorted(_PROVENANCE_FIELDS),
             "unit_rule": "unit must be m followed by the declared ISO currency",
+            "sensitivity_factors": {
+                factor: {
+                    "canonical_value": definition.canonical_value,
+                    "approved_values": list(definition.approved_values),
+                }
+                for factor, definition in REFERENCE_BANK_SENSITIVITIES.items()
+            },
         }
 
     @staticmethod
@@ -342,6 +496,27 @@ class ReferenceBankProvider:
         if snapshot.loan_duration_years >= 5 or snapshot.deposit_duration_years >= 3:
             raise ReferenceBankError(
                 "Canonical Reference Bank duration targets are invalid"
+            )
+
+    @staticmethod
+    def _validate_sensitivity(snapshot: ReferenceBankSnapshot) -> None:
+        """Require an auditable, registered declaration for every variant."""
+
+        try:
+            factor = str(snapshot.product_assumptions["sensitivity_factor"])
+            baseline = float(snapshot.product_assumptions["sensitivity_baseline_value"])
+            value = float(snapshot.product_assumptions["sensitivity_value"])
+            approved = approved_sensitivity_value(factor, value)
+            expected_baseline = canonical_sensitivity_value(factor)
+        except (KeyError, TypeError, ValueError) as error:
+            raise ReferenceBankError(
+                "Sensitivity Reference Bank lacks an approved one-factor declaration"
+            ) from error
+        if baseline != expected_baseline or snapshot.provenance.get("sensitivity") != (
+            f"{factor}: {baseline} -> {approved}"
+        ):
+            raise ReferenceBankError(
+                "Sensitivity Reference Bank declaration does not match its approved factor"
             )
 
     def save(self, snapshot: ReferenceBankSnapshot, path: Path) -> None:

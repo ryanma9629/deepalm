@@ -15,11 +15,16 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from deepalm.config import ResolvedRunConfiguration
 from deepalm.planning import build_execution_plan
 from deepalm.resources import BudgetExceeded, ResourceMonitor
+
+if TYPE_CHECKING:
+    from deepalm.evaluation import PolicyCheckpoint
+    from deepalm.reference_bank import ReferenceBankSensitivity, ReferenceBankSnapshot
+    from deepalm.term_structures import HistoricalTermStructures, HjmPcaCalibration
 
 
 class RunStatus(StrEnum):
@@ -239,7 +244,10 @@ class ReproductionRunner:
         """Build or import a reviewable Reference Bank without policy training."""
 
         try:
-            from deepalm.reference_bank import ReferenceBankProvider
+            from deepalm.reference_bank import (
+                ReferenceBankProvider,
+                ReferenceBankSensitivity,
+            )
             from deepalm.term_structures import MarketScenarioModel
 
             provider = ReferenceBankProvider()
@@ -249,6 +257,14 @@ class ReproductionRunner:
                     beta_unit=configuration.source_data.nss_beta_unit,
                 )
                 snapshot = provider.build_canonical(historical)
+                sensitivity = configuration.reference_bank.sensitivity
+                if sensitivity is not None:
+                    snapshot = provider.build_sensitivity(
+                        historical,
+                        ReferenceBankSensitivity(
+                            factor=sensitivity.factor, value=sensitivity.value
+                        ),
+                    )
             else:
                 snapshot = provider.load(snapshot_path)
             manifest = _build_manifest(
@@ -267,6 +283,7 @@ class ReproductionRunner:
                 "unit": snapshot.unit,
                 "loan_duration_years": snapshot.loan_duration_years,
                 "deposit_duration_years": snapshot.deposit_duration_years,
+                "sensitivity": dict(snapshot.provenance).get("sensitivity"),
             }
             artifact_directory = _write_bundle_atomically(
                 configuration,
@@ -287,6 +304,97 @@ class ReproductionRunner:
                 ),
             )
         except (OperationalRunError, OSError, ValueError) as error:
+            failure_directory = _write_failure_bundle(configuration, error)
+            return RunBundle(
+                status=RunStatus.FAILED,
+                acceptance_status=AcceptanceStatus.PENDING,
+                artifact_directory=failure_directory,
+                error=str(error),
+                artifacts=(failure_directory / "manifest.json",)
+                if failure_directory is not None
+                else (),
+            )
+
+    def evaluate_reference_bank_sensitivity(
+        self,
+        configuration: ResolvedRunConfiguration,
+        *,
+        canonical_snapshot: ReferenceBankSnapshot,
+        historical: HistoricalTermStructures,
+        calibration: HjmPcaCalibration,
+        checkpoints: tuple[PolicyCheckpoint, ...],
+        validation_requests: tuple[ReferenceBankSensitivity, ...] = (),
+    ) -> RunBundle:
+        """Atomically record the bounded, frozen-policy 5,000 mCHF sensitivity.
+
+        This stage deliberately has no trainer dependency.  The optional
+        configuration request may explicitly repeat the required local 5,000
+        mCHF scale demonstration; all other registered variants require the
+        separately budgeted research plan.
+        """
+
+        try:
+            from deepalm.evaluation import (
+                FrozenPolicySensitivityEvaluator,
+                LockedEvaluationError,
+            )
+            from deepalm.reference_bank import ReferenceBankSensitivity
+
+            configured = configuration.reference_bank.sensitivity
+            sensitivity = (
+                ReferenceBankSensitivity(configured.factor, configured.value)
+                if configured is not None
+                else ReferenceBankSensitivity("total_assets_mchf", 5_000.0)
+            )
+            representative = ReferenceBankSensitivity("total_assets_mchf", 5_000.0)
+            if sensitivity != representative:
+                raise OperationalRunError(
+                    "Local sensitivity evaluation is limited to the representative "
+                    "total_assets_mchf=5000 variant; broader variants require the "
+                    "explicitly budgeted research plan"
+                )
+            evaluator = FrozenPolicySensitivityEvaluator(
+                configuration,
+                canonical_snapshot=canonical_snapshot,
+                historical=historical,
+                calibration=calibration,
+            )
+            result = evaluator.evaluate(
+                checkpoints,
+                sensitivity=sensitivity,
+                validation_requests=validation_requests,
+            )
+            sensitivity_manifest = evaluator.manifest_data(result)
+            manifest = _build_manifest(
+                configuration, RunStatus.COMPLETED, AcceptanceStatus.PENDING
+            )
+            manifest["reference_bank_sensitivity"] = {
+                "representative_sensitivity": sensitivity_manifest[
+                    "representative_sensitivity"
+                ],
+                "representative_variant_content_hash": sensitivity_manifest[
+                    "representative_variant_content_hash"
+                ],
+                "training_triggered": False,
+                "interpretation": sensitivity_manifest["interpretation"],
+            }
+            artifact_directory = _write_bundle_atomically(
+                configuration,
+                manifest,
+                extra_artifacts={
+                    "reference-bank-sensitivity.json": sensitivity_manifest
+                },
+            )
+            return RunBundle(
+                status=RunStatus.COMPLETED,
+                acceptance_status=AcceptanceStatus.PENDING,
+                artifact_directory=artifact_directory,
+                artifacts=(
+                    artifact_directory / "manifest.json",
+                    artifact_directory / "reference-bank-sensitivity.json",
+                ),
+            )
+        except (OperationalRunError, LockedEvaluationError, OSError, ValueError) as error:
             failure_directory = _write_failure_bundle(configuration, error)
             return RunBundle(
                 status=RunStatus.FAILED,

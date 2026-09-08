@@ -10,6 +10,8 @@ from typing import Any, cast
 import torch
 import yaml
 
+from deepalm.sensitivities import approved_sensitivity_value
+
 
 class ConfigurationError(ValueError):
     """Raised when a run configuration is incomplete or internally inconsistent."""
@@ -54,9 +56,18 @@ class SourceDataConfiguration:
 
 
 @dataclass(frozen=True)
+class ReferenceBankSensitivityConfiguration:
+    """One optional, approved one-factor Reference Bank sensitivity request."""
+
+    factor: str
+    value: float
+
+
+@dataclass(frozen=True)
 class ReferenceBankConfiguration:
     profile: str
     initial_assets_mchf: float
+    sensitivity: ReferenceBankSensitivityConfiguration | None = None
 
 
 @dataclass(frozen=True)
@@ -397,7 +408,12 @@ def _resolve_architecture(raw: object) -> ArchitectureConfiguration:
 
 
 def _resolve_reference_bank(raw: object) -> ReferenceBankConfiguration:
-    section = _section(raw, "reference_bank", {"profile", "initial_assets"})
+    section = _section(
+        raw,
+        "reference_bank",
+        {"profile", "initial_assets", "sensitivity"},
+        required_keys={"profile", "initial_assets"},
+    )
     profile = _string(section["profile"], "reference_bank.profile")
     if profile != "canonical":
         raise ConfigurationError("reference_bank.profile must be 'canonical'")
@@ -417,7 +433,41 @@ def _resolve_reference_bank(raw: object) -> ReferenceBankConfiguration:
             "reference_bank.initial_assets.value must be 10,000 mCHF for the canonical profile"
         )
 
-    return ReferenceBankConfiguration(profile=profile, initial_assets_mchf=float(value))
+    sensitivity = None
+    if "sensitivity" in section:
+        sensitivity_section = _section(
+            section["sensitivity"],
+            "reference_bank.sensitivity",
+            {"factor", "value"},
+        )
+        factor = _string(
+            sensitivity_section["factor"], "reference_bank.sensitivity.factor"
+        )
+        sensitivity_value = sensitivity_section["value"]
+        if (
+            not isinstance(sensitivity_value, (int, float))
+            or isinstance(sensitivity_value, bool)
+        ):
+            raise ConfigurationError(
+                "reference_bank.sensitivity.value must be a number"
+            )
+        try:
+            approved_value = approved_sensitivity_value(
+                factor, float(sensitivity_value)
+            )
+        except ValueError as error:
+            raise ConfigurationError(
+                "reference_bank.sensitivity must select an approved one-factor value"
+            ) from error
+        sensitivity = ReferenceBankSensitivityConfiguration(
+            factor=factor, value=approved_value
+        )
+
+    return ReferenceBankConfiguration(
+        profile=profile,
+        initial_assets_mchf=float(value),
+        sensitivity=sensitivity,
+    )
 
 
 def _resolve_experiment(raw: object) -> ExperimentConfiguration:

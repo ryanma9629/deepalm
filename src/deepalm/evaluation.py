@@ -17,7 +17,12 @@ from deepalm.policies import (
     BMEqualPolicy,
     TreasuryPolicy,
 )
-from deepalm.reference_bank import ReferenceBankSnapshot
+from deepalm.reference_bank import (
+    ReferenceBankError,
+    ReferenceBankProvider,
+    ReferenceBankSensitivity,
+    ReferenceBankSnapshot,
+)
 from deepalm.runoff import ALMSimulator, PassiveRunoffResult
 from deepalm.term_structures import (
     HistoricalTermStructures,
@@ -64,6 +69,27 @@ class LockedEvaluationResult:
     markets: dict[int, MarketScenarioBatch]
     manifest: dict[str, object]
     paired_intervals: tuple[PairedInterval, ...]
+
+
+@dataclass(frozen=True)
+class SensitivityVariantStatus:
+    """Visible construction outcome for one requested Reference Bank variant."""
+
+    sensitivity: ReferenceBankSensitivity
+    status: str
+    snapshot_content_hash: str | None
+    reason: str | None
+
+
+@dataclass(frozen=True)
+class FrozenPolicySensitivityResult:
+    """A descriptive, no-retraining evaluation of a single bank sensitivity."""
+
+    sensitivity: ReferenceBankSensitivity
+    variant: ReferenceBankSnapshot
+    variant_statuses: tuple[SensitivityVariantStatus, ...]
+    evaluation: LockedEvaluationResult
+    training_triggered: bool = False
 
 
 def signed_tail_metrics(
@@ -132,11 +158,22 @@ class LockedEvaluator:
         calibration: HjmPcaCalibration,
         simulator: ALMSimulator | None = None,
         market_model: MarketScenarioModel | None = None,
+        frozen_policy_snapshot: ReferenceBankSnapshot | None = None,
     ) -> None:
         self._configuration = configuration
         self._snapshot = snapshot
+        self._frozen_policy_snapshot = frozen_policy_snapshot or snapshot
+        if frozen_policy_snapshot is not None and (
+            snapshot.profile != "sensitivity"
+            or frozen_policy_snapshot.profile != "canonical"
+        ):
+            raise LockedEvaluationError(
+                "A different frozen-policy snapshot requires a sensitivity variant and canonical source"
+            )
         self._historical = historical
         self._calibration = calibration
+        if frozen_policy_snapshot is not None:
+            _validate_one_factor_sensitivity_snapshot(snapshot, historical)
         self._simulator = simulator or ALMSimulator()
         self._market_model = market_model or MarketScenarioModel()
         self._device = torch.device(configuration.optimization.device)
@@ -170,7 +207,7 @@ class LockedEvaluator:
                 configuration=self._configuration,
                 historical=self._historical,
                 calibration=self._calibration,
-                snapshot=self._snapshot,
+                snapshot=self._frozen_policy_snapshot,
             )
             if (
                 checkpoint["horizon_years"]
@@ -265,13 +302,19 @@ class LockedEvaluator:
     ) -> dict[str, object]:
         return {
             "format_version": 1,
-            "kind": "locked-final-test-evaluation",
+            "kind": (
+                "frozen-policy-reference-bank-sensitivity"
+                if self._frozen_policy_snapshot.content_hash != self._snapshot.content_hash
+                else "locked-final-test-evaluation"
+            ),
             "convention": self._configuration.convention.profile,
+            "reference_bank_content_hash": self._snapshot.content_hash,
             "data_identities": {
                 "market_source_hash": self._historical.source_hash,
                 "hjm_calibration_identity": self._calibration.calibration_identity,
                 "reference_bank_content_hash": self._snapshot.content_hash,
             },
+            "frozen_policy_reference_bank_content_hash": self._frozen_policy_snapshot.content_hash,
             "test_seed": self._configuration.seeds["market_scenarios"],
             "bootstrap_seed": self._configuration.seeds["bootstrap"],
             "bootstrap_resamples": resamples,
@@ -295,6 +338,168 @@ class LockedEvaluator:
             },
             "statistical_status": "small-sample demonstration; intervals do not gate superiority",
         }
+
+
+class FrozenPolicySensitivityEvaluator:
+    """Evaluate approved bank variants with canonical checkpoints and no training.
+
+    This explicitly separates a changed balance-sheet input from the immutable
+    canonical policy source.  It is a descriptive local demonstration: neither
+    an invalid variant nor an observed metric can select a checkpoint, adjust a
+    hyperparameter, or start retraining.
+    """
+
+    def __init__(
+        self,
+        configuration: ResolvedRunConfiguration,
+        *,
+        canonical_snapshot: ReferenceBankSnapshot,
+        historical: HistoricalTermStructures,
+        calibration: HjmPcaCalibration,
+        provider: ReferenceBankProvider | None = None,
+        simulator: ALMSimulator | None = None,
+        market_model: MarketScenarioModel | None = None,
+    ) -> None:
+        if configuration.convention.profile != "corrected":
+            raise LockedEvaluationError(
+                "Representative Reference Bank sensitivity requires the Corrected convention"
+            )
+        if canonical_snapshot.profile != "canonical":
+            raise LockedEvaluationError(
+                "Frozen-policy sensitivity requires a canonical policy source snapshot"
+            )
+        self._configuration = configuration
+        self._canonical_snapshot = canonical_snapshot
+        self._historical = historical
+        self._calibration = calibration
+        self._provider = provider or ReferenceBankProvider()
+        self._simulator = simulator
+        self._market_model = market_model
+        self._provider.validate(canonical_snapshot)
+
+    def evaluate(
+        self,
+        checkpoints: tuple[PolicyCheckpoint, ...],
+        *,
+        sensitivity: ReferenceBankSensitivity,
+        validation_requests: tuple[ReferenceBankSensitivity, ...] = (),
+        bootstrap_resamples: int = 100,
+    ) -> FrozenPolicySensitivityResult:
+        """Evaluate one valid variant and retain visible status for all requests."""
+
+        requested = (sensitivity, *validation_requests)
+        variants: dict[ReferenceBankSensitivity, ReferenceBankSnapshot] = {}
+        statuses: list[SensitivityVariantStatus] = []
+        for request in requested:
+            try:
+                variant = self._provider.build_sensitivity(self._historical, request)
+            except ReferenceBankError as error:
+                statuses.append(
+                    SensitivityVariantStatus(
+                        sensitivity=request,
+                        status="invalid",
+                        snapshot_content_hash=None,
+                        reason=str(error),
+                    )
+                )
+                continue
+            variants[request] = variant
+            statuses.append(
+                SensitivityVariantStatus(
+                    sensitivity=request,
+                    status="available",
+                    snapshot_content_hash=variant.content_hash,
+                    reason=None,
+                )
+            )
+        if sensitivity not in variants:
+            raise LockedEvaluationError(
+                "Representative sensitivity is invalid; inspect variant statuses before evaluation"
+            )
+        evaluator = LockedEvaluator(
+            self._configuration,
+            snapshot=variants[sensitivity],
+            frozen_policy_snapshot=self._canonical_snapshot,
+            historical=self._historical,
+            calibration=self._calibration,
+            simulator=self._simulator,
+            market_model=self._market_model,
+        )
+        evaluation = evaluator.evaluate(
+            checkpoints, bootstrap_resamples=bootstrap_resamples
+        )
+        return FrozenPolicySensitivityResult(
+            sensitivity=sensitivity,
+            variant=variants[sensitivity],
+            variant_statuses=tuple(statuses),
+            evaluation=evaluation,
+        )
+
+    def write_manifest(
+        self, result: FrozenPolicySensitivityResult, path: Path
+    ) -> None:
+        """Persist the variant, invalid requests, and frozen-evaluation evidence."""
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                self.manifest_data(result), indent=2, sort_keys=True
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    def manifest_data(self, result: FrozenPolicySensitivityResult) -> dict[str, object]:
+        """Return JSON-ready sensitivity evidence for an atomic run bundle."""
+
+        return {
+            "format_version": 1,
+            "kind": "frozen-policy-reference-bank-sensitivity",
+            "canonical_reference_bank_content_hash": self._canonical_snapshot.content_hash,
+            "representative_sensitivity": asdict(result.sensitivity),
+            "representative_variant_content_hash": result.variant.content_hash,
+            "variant_statuses": [asdict(item) for item in result.variant_statuses],
+            "training_triggered": result.training_triggered,
+            "evaluation": {
+                "manifest": result.evaluation.manifest,
+                "reports": result.evaluation.reports,
+                "paired_intervals": [
+                    asdict(item) for item in result.evaluation.paired_intervals
+                ],
+            },
+            "interpretation": (
+                "small-sample frozen-policy demonstration; it does not establish "
+                "generalization or structural conclusions"
+            ),
+        }
+
+
+def _validate_one_factor_sensitivity_snapshot(
+    snapshot: ReferenceBankSnapshot, historical: HistoricalTermStructures
+) -> None:
+    """Rebuild the declared variant and reject any undeclared financial change."""
+
+    provider = ReferenceBankProvider()
+    try:
+        provider.validate(snapshot)
+    except ReferenceBankError as error:
+        raise LockedEvaluationError(
+            "Sensitivity snapshot contains undeclared changes"
+        ) from error
+    try:
+        sensitivity = ReferenceBankSensitivity(
+            factor=str(snapshot.product_assumptions["sensitivity_factor"]),
+            value=float(snapshot.product_assumptions["sensitivity_value"]),
+        )
+        expected = provider.build_sensitivity(historical, sensitivity)
+    except (KeyError, TypeError, ValueError, ReferenceBankError) as error:
+        raise LockedEvaluationError(
+            "Sensitivity snapshot cannot be rebuilt from its declared one-factor input"
+        ) from error
+    if snapshot.content_hash != expected.content_hash:
+        raise LockedEvaluationError(
+            "Sensitivity snapshot differs from the declared canonical one-factor variant"
+        )
 
 
 def _report_outcome(
