@@ -149,7 +149,9 @@ class ReproductionRunner:
                 manifest, configuration=configuration, stage=stage
             )
             required = _workflow_stage_artifacts(stage)
-            missing = [name for name in required if not (artifact_directory / name).is_file()]
+            missing = [
+                name for name in required if not (artifact_directory / name).is_file()
+            ]
             if missing:
                 raise OperationalRunError(
                     f"Reusable workflow is missing {stage} evidence: {missing}"
@@ -469,7 +471,12 @@ class ReproductionRunner:
                     artifact_directory / "reference-bank-sensitivity.json",
                 ),
             )
-        except (OperationalRunError, LockedEvaluationError, OSError, ValueError) as error:
+        except (
+            OperationalRunError,
+            LockedEvaluationError,
+            OSError,
+            ValueError,
+        ) as error:
             failure_directory = _write_failure_bundle(configuration, error)
             return RunBundle(
                 status=RunStatus.FAILED,
@@ -704,7 +711,9 @@ class ReproductionRunner:
                     f"Run artifact directory already exists: {final_directory}"
                 )
             staging_directory = Path(
-                tempfile.mkdtemp(prefix=f".{configuration.output.run_name}-", dir=output_root)
+                tempfile.mkdtemp(
+                    prefix=f".{configuration.output.run_name}-", dir=output_root
+                )
             )
             staged_configuration = replace(
                 configuration,
@@ -765,7 +774,9 @@ class ReproductionRunner:
             provider.save(snapshot, bank_path)
             replayed_snapshot = provider.load(bank_path)
             if replayed_snapshot.content_hash != snapshot.content_hash:
-                raise OperationalRunError("Reference Bank replay changed its content hash")
+                raise OperationalRunError(
+                    "Reference Bank replay changed its content hash"
+                )
             monitor.check("after-local-reference-bank")
 
             replay = _workflow_replay_evidence(
@@ -833,9 +844,7 @@ class ReproductionRunner:
                             "Short recovery verification did not interrupt BM^E 5y"
                         )
                 else:
-                    training_results[("BM^E", horizon)] = bme.fit(
-                        horizon_years=horizon
-                    )
+                    training_results[("BM^E", horizon)] = bme.fit(horizon_years=horizon)
             recovery_oracle_configuration = replace(
                 staged_configuration,
                 output=replace(
@@ -926,8 +935,7 @@ class ReproductionRunner:
                 for horizon in staged_configuration.experiment.horizons_years
             )
             if not all(
-                item.finite and item.updated and item.clipped
-                for item in width_checks
+                item.finite and item.updated and item.clipped for item in width_checks
             ):
                 raise OperationalRunError("A paper-width MM check did not complete")
             monitor.check("after-local-paper-width-checks")
@@ -944,7 +952,9 @@ class ReproductionRunner:
                 market_model=market_model,
             )
             locked = locked_evaluator.evaluate(checkpoints)
-            locked_evaluator.write_manifest(locked, staging_directory / "locked-evaluation.json")
+            locked_evaluator.write_manifest(
+                locked, staging_directory / "locked-evaluation.json"
+            )
             monitor.check("after-local-locked-evaluation")
 
             fifteen_market = market_model.generate_hjm_scenarios(
@@ -956,7 +966,9 @@ class ReproductionRunner:
                 seed=staged_configuration.seeds["market_scenarios"],
                 split="horizon-analysis",
                 epoch=0,
-                global_path_indices=tuple(range(staged_configuration.run_scale.test_paths)),
+                global_path_indices=tuple(
+                    range(staged_configuration.run_scale.test_paths)
+                ),
             )
             five_market = fifteen_market.prefix(horizon_years=5)
             truncation = mm_trainers[15].evaluate_five_year_truncation(
@@ -982,9 +994,7 @@ class ReproductionRunner:
                     "checkpoint_sha256": _sha256(
                         training_results[("MM", 15)].checkpoint_path
                     ),
-                    "report": _report_outcome(
-                        truncation.outcome, horizon_years=5
-                    )[0],
+                    "report": _report_outcome(truncation.outcome, horizon_years=5)[0],
                 },
             )
             simulator = ALMSimulator()
@@ -1026,7 +1036,9 @@ class ReproductionRunner:
                 or mm_fifteen_outcome.treasury_actions is None
                 or truncation.outcome.treasury_actions is None
             ):
-                raise OperationalRunError("Horizon analysis requires complete MM actions")
+                raise OperationalRunError(
+                    "Horizon analysis requires complete MM actions"
+                )
             financial_rollout = _financial_rollout_evidence(
                 five_year=mm_five_outcome,
                 fifteen_year=mm_fifteen_outcome,
@@ -1048,7 +1060,9 @@ class ReproductionRunner:
                         actions=mm_five_outcome.treasury_actions,
                         source_horizon_years=5,
                         evaluation_market=five_market,
-                        checkpoint_identity=_sha256(training_results[("MM", 5)].checkpoint_path),
+                        checkpoint_identity=_sha256(
+                            training_results[("MM", 5)].checkpoint_path
+                        ),
                         optimizer_updates=training_results[("MM", 5)].optimizer_updates,
                         time_feature_horizon_years=5,
                     ),
@@ -1057,8 +1071,12 @@ class ReproductionRunner:
                         actions=mm_fifteen_outcome.treasury_actions,
                         source_horizon_years=15,
                         evaluation_market=fifteen_market,
-                        checkpoint_identity=_sha256(training_results[("MM", 15)].checkpoint_path),
-                        optimizer_updates=training_results[("MM", 15)].optimizer_updates,
+                        checkpoint_identity=_sha256(
+                            training_results[("MM", 15)].checkpoint_path
+                        ),
+                        optimizer_updates=training_results[
+                            ("MM", 15)
+                        ].optimizer_updates,
                         time_feature_horizon_years=15,
                     ),
                     mm_fifteen_year_truncated=FrozenPolicyTrajectory(
@@ -1066,7 +1084,9 @@ class ReproductionRunner:
                         actions=truncation.outcome.treasury_actions,
                         source_horizon_years=15,
                         evaluation_market=five_market,
-                        checkpoint_identity=_sha256(training_results[("MM", 15)].checkpoint_path),
+                        checkpoint_identity=_sha256(
+                            training_results[("MM", 15)].checkpoint_path
+                        ),
                         optimizer_updates=0,
                         time_feature_horizon_years=15,
                     ),
@@ -1099,7 +1119,11 @@ class ReproductionRunner:
                 market_model=market_model,
             )
             sensitivity = sensitivity_evaluator.evaluate(
-                (PolicyCheckpoint("BM^E-5y", training_results[("BM^E", 5)].checkpoint_path),),
+                (
+                    PolicyCheckpoint(
+                        "BM^E-5y", training_results[("BM^E", 5)].checkpoint_path
+                    ),
+                ),
                 sensitivity=ReferenceBankSensitivity("total_assets_mchf", 5_000.0),
             )
             sensitivity_evaluator.write_manifest(
@@ -1175,7 +1199,8 @@ class ReproductionRunner:
                 staged_configuration, source_run_directories=(staging_directory,)
             )
             _write_json_artifact(
-                staging_directory / "compact-no-swap-report.json", report_artifacts.report
+                staging_directory / "compact-no-swap-report.json",
+                report_artifacts.report,
             )
             _write_json_artifact(
                 staging_directory / "paper-coverage-inventory.json",
@@ -1206,7 +1231,9 @@ class ReproductionRunner:
                 recovery=recovery_evidence,
                 report=report_artifacts.report,
             )
-            _write_json_artifact(staging_directory / "acceptance-report.json", acceptance)
+            _write_json_artifact(
+                staging_directory / "acceptance-report.json", acceptance
+            )
             accepted = acceptance["status"] == "passed"
             workflow["development_validation_status"] = (
                 "development-validated" if accepted else "acceptance-failed"
@@ -1224,7 +1251,9 @@ class ReproductionRunner:
             workflow["generated_artifacts"] = sorted(
                 path.name for path in staging_directory.iterdir() if path.is_file()
             )
-            workflow["deferred_artifacts"] = report_artifacts.report["deferred_research"]
+            workflow["deferred_artifacts"] = report_artifacts.report[
+                "deferred_research"
+            ]
             workflow["resource_measurements"] = monitor.snapshot().to_dict()
             workflow["overshoot_seconds"] = max(
                 0.0,
@@ -1251,7 +1280,9 @@ class ReproductionRunner:
             _write_json_artifact(staging_directory / "manifest.json", source_manifest)
             monitor.check("after-local-report")
             os.replace(staging_directory, final_directory)
-            artifact_names = tuple(sorted(path for path in final_directory.iterdir() if path.is_file()))
+            artifact_names = tuple(
+                sorted(path for path in final_directory.iterdir() if path.is_file())
+            )
             return RunBundle(
                 status=_status_for(
                     AcceptanceStatus.PASSED if accepted else AcceptanceStatus.FAILED
@@ -1350,7 +1381,9 @@ class ReproductionRunner:
             )
             calibration = market_model.calibrate_hjm_pca(historical)
             snapshot = ReferenceBankProvider().build_canonical(historical)
-            ReferenceBankProvider().save(snapshot, staging_directory / "reference-bank.json")
+            ReferenceBankProvider().save(
+                snapshot, staging_directory / "reference-bank.json"
+            )
             monitor.check("after-paired-pilot-inputs")
 
             convention_configurations = _paired_pilot_convention_configurations(
@@ -1453,7 +1486,9 @@ class ReproductionRunner:
                 if result.baseline_reference_path is None:
                     raise OperationalRunError("BM^D 5y did not freeze a baseline")
                 training_results[(label, "BM^D", 5)] = result
-                baseline = FrozenDateBenchmarkReference.load(result.baseline_reference_path)
+                baseline = FrozenDateBenchmarkReference.load(
+                    result.baseline_reference_path
+                )
                 mm = MMTrainer(
                     convention_configuration,
                     snapshot=snapshot,
@@ -1469,8 +1504,13 @@ class ReproductionRunner:
             jobs = _paired_pilot_training_jobs(
                 training_results, artifact_root=staging_directory
             )
-            if len(jobs) != 8 or sum(int(job["optimizer_updates"]) for job in jobs) != 32:
-                raise OperationalRunError("Paired pilot did not complete its 8-job matrix")
+            if (
+                len(jobs) != 8
+                or sum(int(job["optimizer_updates"]) for job in jobs) != 32
+            ):
+                raise OperationalRunError(
+                    "Paired pilot did not complete its 8-job matrix"
+                )
             manifest = _build_manifest(
                 staged_configuration,
                 RunStatus.COMPLETED,
@@ -1497,9 +1537,9 @@ class ReproductionRunner:
                 "mm_fifteen_year_truncation": {
                     label: {
                         "source_checkpoint": str(
-                            training_results[(label, "MM", 15)].checkpoint_path.relative_to(
-                                staging_directory
-                            )
+                            training_results[
+                                (label, "MM", 15)
+                            ].checkpoint_path.relative_to(staging_directory)
                         ),
                         "source_horizon_years": 15,
                         "evaluation_horizon_years": 5,
@@ -1570,6 +1610,7 @@ class ReproductionRunner:
         """
 
         staging_directory: Path | None = None
+        source: Path | None = None
         try:
             _validate_paired_pilot_configuration(configuration)
             source = source_run_directory.resolve()
@@ -1658,6 +1699,7 @@ class ReproductionRunner:
                 truncations[label] = {
                     "artifact_semantics": artifact_semantics("evaluation"),
                     "status": "available",
+                    "convention": label,
                     "source_checkpoint": str(mm_job["checkpoint"]),
                     "source_checkpoint_sha256": str(mm_job["checkpoint_sha256"]),
                     "source_horizon_years": 15,
@@ -1678,12 +1720,16 @@ class ReproductionRunner:
                 "source_run": str(source),
                 "source_manifest_sha256": _sha256(source / "manifest.json"),
                 "source_git_revision": manifest["git_revision"],
-                "financial_semantics_version": manifest.get("financial_semantics_version"),
+                "financial_semantics_version": manifest.get(
+                    "financial_semantics_version"
+                ),
                 "reports": {
-                    label: evaluation.reports for label, evaluation in evaluations.items()
+                    label: evaluation.reports
+                    for label, evaluation in evaluations.items()
                 },
                 "locked_evaluation_manifests": {
-                    label: evaluation.manifest for label, evaluation in evaluations.items()
+                    label: evaluation.manifest
+                    for label, evaluation in evaluations.items()
                 },
                 "paired_intervals": comparisons,
                 "mm_fifteen_year_truncation": truncations,
@@ -1702,13 +1748,27 @@ class ReproductionRunner:
                 artifact_directory=final_directory,
                 artifacts=(final_directory / "paired-evaluation.json",),
             )
-        except (OperationalRunError, OSError, RuntimeError, ValueError, KeyError) as error:
+        except (
+            OperationalRunError,
+            OSError,
+            RuntimeError,
+            ValueError,
+            KeyError,
+        ) as error:
             return _paired_pilot_failure_bundle(
                 configuration,
                 staging_directory=staging_directory,
                 staged_configuration=configuration,
                 error=error,
                 status=RunStatus.FAILED,
+                evaluation_source=(
+                    {
+                        "source_run": str(source),
+                        "source_manifest_sha256": _sha256(source / "manifest.json"),
+                    }
+                    if source is not None and (source / "manifest.json").is_file()
+                    else None
+                ),
             )
 
     def generate_compact_report(
@@ -1824,9 +1884,14 @@ class ReproductionRunner:
                     run_name=f"{pilot_run_directory.name}-report",
                 ),
             )
+            report_status = (
+                RunStatus.COMPLETED
+                if artifacts.report["status"] == "completed"
+                else RunStatus.INCOMPLETE
+            )
             manifest = _build_manifest(
                 report_configuration,
-                RunStatus.COMPLETED,
+                report_status,
                 AcceptanceStatus.PAIRED_CONVENTION_RESEARCH_PILOT,
             )
             manifest["paired_pilot_report"] = {
@@ -1844,7 +1909,7 @@ class ReproductionRunner:
                 extra_artifacts={"paired-pilot-report.json": artifacts.report},
             )
             return RunBundle(
-                status=RunStatus.COMPLETED,
+                status=report_status,
                 acceptance_status=AcceptanceStatus.PAIRED_CONVENTION_RESEARCH_PILOT,
                 artifact_directory=artifact_directory,
                 artifacts=(
@@ -1879,7 +1944,9 @@ def _validate_local_workflow_configuration(
             "Local workflow requires development-validated as its requested status"
         )
     if configuration.experiment.horizons_years != (5, 15):
-        raise OperationalRunError("Local workflow requires both 5- and 15-year horizons")
+        raise OperationalRunError(
+            "Local workflow requires both 5- and 15-year horizons"
+        )
     if set(configuration.policy.names) != {"BM^E", "BM^C", "BM^D", "MM"}:
         raise OperationalRunError(
             "Local workflow requires BM^E, BM^C, BM^D, and MM exactly once"
@@ -1934,7 +2001,9 @@ def _validate_paired_pilot_configuration(
         scale.test_paths,
         scale.batch_size,
     ) != (2, 16, 16, 64, 8):
-        raise OperationalRunError("Paired pilot scale differs from its locked M5 budget")
+        raise OperationalRunError(
+            "Paired pilot scale differs from its locked M5 budget"
+        )
     if configuration.resources.wall_clock_budget_seconds != 600:
         raise OperationalRunError("Paired pilot requires a 600-second total budget")
     limit = 12 * 1024**3
@@ -2027,7 +2096,9 @@ def _completed_paired_pilot_jobs(
         or pilot.get("label") != AcceptanceStatus.PAIRED_CONVENTION_RESEARCH_PILOT.value
         or pilot.get("completed_primary_optimizer_updates") != 32
     ):
-        raise OperationalRunError("Paired evaluation requires a completed 32-update pilot")
+        raise OperationalRunError(
+            "Paired evaluation requires a completed 32-update pilot"
+        )
     raw_jobs = pilot.get("completed_training_jobs")
     if not isinstance(raw_jobs, list) or len(raw_jobs) != 8:
         raise OperationalRunError("Paired pilot lacks its complete eight-job matrix")
@@ -2042,7 +2113,9 @@ def _completed_paired_pilot_jobs(
             checkpoint = source / str(job["checkpoint"])
             expected_hash = str(job["checkpoint_sha256"])
         except (KeyError, TypeError, ValueError) as error:
-            raise OperationalRunError("Paired pilot job is missing identity fields") from error
+            raise OperationalRunError(
+                "Paired pilot job is missing identity fields"
+            ) from error
         if (
             label not in grouped
             or policy not in {"BM^D", "MM"}
@@ -2053,7 +2126,9 @@ def _completed_paired_pilot_jobs(
             or not checkpoint.is_file()
             or _sha256(checkpoint) != expected_hash
         ):
-            raise OperationalRunError("Paired pilot checkpoint is incomplete or incompatible")
+            raise OperationalRunError(
+                "Paired pilot checkpoint is incomplete or incompatible"
+            )
         grouped[label].append(job)
     for label, jobs in grouped.items():
         if len(jobs) != 4 or {
@@ -2063,11 +2138,9 @@ def _completed_paired_pilot_jobs(
         for horizon in (5, 15):
             bmd = _paired_job(jobs, policy="BM^D", horizon_years=horizon)
             mm = _paired_job(jobs, policy="MM", horizon_years=horizon)
-            if (
-                mm.get("baseline_reference") != bmd.get("baseline_reference")
-                or mm.get("baseline_reference_identity")
-                != bmd.get("baseline_reference_identity")
-            ):
+            if mm.get("baseline_reference") != bmd.get("baseline_reference") or mm.get(
+                "baseline_reference_identity"
+            ) != bmd.get("baseline_reference_identity"):
                 raise OperationalRunError(
                     f"Paired pilot {label} MM {horizon}y lacks its matching frozen BM^D baseline"
                 )
@@ -2119,7 +2192,9 @@ def _paired_convention_intervals(
                     reason="missing, non-finite, or identity-incompatible locked path metric",
                 )
             else:
-                point, lower, upper = paired_bootstrap(left, right, seed=seed, resamples=100)
+                point, lower, upper = paired_bootstrap(
+                    left, right, seed=seed, resamples=100
+                )
                 record.update(
                     status="available",
                     point_difference=point,
@@ -2148,7 +2223,9 @@ def _workflow_stage_artifacts(stage: str) -> tuple[str, ...]:
     try:
         return artifacts[stage]
     except KeyError as error:
-        raise OperationalRunError(f"Unknown reusable workflow stage: {stage}") from error
+        raise OperationalRunError(
+            f"Unknown reusable workflow stage: {stage}"
+        ) from error
 
 
 def _validate_reusable_workflow_manifest(
@@ -2176,7 +2253,9 @@ def _validate_reusable_workflow_manifest(
     source_configuration = manifest.get("requested_configuration")
     if not isinstance(source_configuration, dict):
         raise OperationalRunError("Reusable workflow lacks its requested configuration")
-    if _configuration_hash(source_configuration) != _configuration_hash(configuration.to_dict()):
+    if _configuration_hash(source_configuration) != _configuration_hash(
+        configuration.to_dict()
+    ):
         raise OperationalRunError(
             "Reusable workflow configuration differs in data, convention, seed, or semantics"
         )
@@ -2184,7 +2263,9 @@ def _validate_reusable_workflow_manifest(
         if manifest.get("acceptance_status") != AcceptanceStatus.PASSED.value:
             raise OperationalRunError("Reusable workflow was not development-validated")
         if workflow.get("development_validation_status") != "development-validated":
-            raise OperationalRunError("Reusable workflow has no passed development validation")
+            raise OperationalRunError(
+                "Reusable workflow has no passed development validation"
+            )
 
 
 def _validate_reusable_stage_evidence(
@@ -2205,13 +2286,17 @@ def _validate_reusable_stage_evidence(
         raise OperationalRunError("Reusable workflow runtime identity differs")
 
     workflow = manifest["local_workflow"]
-    assert isinstance(workflow, Mapping)  # Validated by _validate_reusable_workflow_manifest.
+    assert isinstance(
+        workflow, Mapping
+    )  # Validated by _validate_reusable_workflow_manifest.
     hashes = workflow.get("stage_artifact_sha256")
     if not isinstance(hashes, Mapping):
         raise OperationalRunError("Reusable workflow lacks artifact checksums")
     for name in _workflow_stage_artifacts(stage):
         if hashes.get(name) != _sha256(artifact_directory / name):
-            raise OperationalRunError(f"Reusable workflow artifact hash differs: {name}")
+            raise OperationalRunError(
+                f"Reusable workflow artifact hash differs: {name}"
+            )
 
     if stage in {"train", "resume"}:
         _validate_reusable_checkpoints(
@@ -2229,7 +2314,9 @@ def _validate_reusable_stage_evidence(
             or evaluation.get("convention") != configuration.convention.profile
             or evaluation.get("data_identities") != expected_data
         ):
-            raise OperationalRunError("Reusable locked evaluation has incompatible semantics")
+            raise OperationalRunError(
+                "Reusable locked evaluation has incompatible semantics"
+            )
         truncation = _read_json_artifact(artifact_directory / "mm-truncation.json")
         if error := artifact_semantics_error(truncation, "evaluation"):
             raise OperationalRunError(error)
@@ -2240,7 +2327,9 @@ def _validate_reusable_stage_evidence(
             or truncation.get("convention") != configuration.convention.profile
             or truncation.get("data_identities") != expected_data
         ):
-            raise OperationalRunError("Reusable MM truncation has incompatible semantics")
+            raise OperationalRunError(
+                "Reusable MM truncation has incompatible semantics"
+            )
     if stage == "accept":
         acceptance = _read_json_artifact(artifact_directory / "acceptance-report.json")
         if error := artifact_semantics_error(acceptance, "evaluation"):
@@ -2255,12 +2344,20 @@ def _validate_reusable_stage_evidence(
             or any(
                 not isinstance(check, dict)
                 or check.get("status") != "passed"
-                or not {"purpose", "applicability", "observation", "threshold", "evidence"}
+                or not {
+                    "purpose",
+                    "applicability",
+                    "observation",
+                    "threshold",
+                    "evidence",
+                }
                 <= check.keys()
                 for check in checks
             )
         ):
-            raise OperationalRunError("Reusable acceptance report has incompatible semantics")
+            raise OperationalRunError(
+                "Reusable acceptance report has incompatible semantics"
+            )
 
 
 def _validate_reusable_checkpoints(
@@ -2288,7 +2385,9 @@ def _validate_reusable_checkpoints(
         if name.endswith(".recovery.pt"):
             continue
         policy_tag, horizon_tag = name.removesuffix(".pt").rsplit("_", 1)
-        expected_policy = {"BM_E": "BM^E", "BM_C": "BM^C", "BM_D": "BM^D", "MM": "MM"}[policy_tag]
+        expected_policy = {"BM_E": "BM^E", "BM_C": "BM^C", "BM_D": "BM^D", "MM": "MM"}[
+            policy_tag
+        ]
         expected_horizon = int(horizon_tag.removesuffix("y"))
         if (
             checkpoint.get("policy") != expected_policy
@@ -2299,7 +2398,9 @@ def _validate_reusable_checkpoints(
             != manifest.get("git_revision")
             or checkpoint.get("data_identities") != expected_data
         ):
-            raise OperationalRunError(f"Reusable checkpoint has incompatible semantics: {name}")
+            raise OperationalRunError(
+                f"Reusable checkpoint has incompatible semantics: {name}"
+            )
 
 
 def _read_json_artifact(path: Path) -> dict[str, object]:
@@ -2307,7 +2408,9 @@ def _read_json_artifact(path: Path) -> dict[str, object]:
 
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
-        raise OperationalRunError(f"Reusable stage artifact is not an object: {path.name}")
+        raise OperationalRunError(
+            f"Reusable stage artifact is not an object: {path.name}"
+        )
     return value
 
 
@@ -2357,12 +2460,18 @@ def _workflow_replay_evidence(
             "epoch": 0,
             "global_path_indices": (0, 1),
         }
-        first = market_model.generate_hjm_scenarios(historical, calibration, **arguments)
-        second = market_model.generate_hjm_scenarios(historical, calibration, **arguments)
+        first = market_model.generate_hjm_scenarios(
+            historical, calibration, **arguments
+        )
+        second = market_model.generate_hjm_scenarios(
+            historical, calibration, **arguments
+        )
         first_hash = _array_sha256(first.spot_rates)
         second_hash = _array_sha256(second.spot_rates)
         if first_hash != second_hash:
-            raise OperationalRunError(f"CPU replay changed the {horizon}-year market path")
+            raise OperationalRunError(
+                f"CPU replay changed the {horizon}-year market path"
+            )
         markets[str(horizon)] = {
             "spot_rates_sha256": first_hash,
             "replay_spot_rates_sha256": second_hash,
@@ -2435,13 +2544,16 @@ def _recovery_equivalence_evidence(
     assert isinstance(recovery, dict)
     resumed_state = resumed.get("policy_state")
     uninterrupted_state = uninterrupted.get("policy_state")
-    same_state = isinstance(resumed_state, dict) and isinstance(
-        uninterrupted_state, dict
-    ) and set(resumed_state) == set(uninterrupted_state) and all(
-        isinstance(resumed_state[name], torch.Tensor)
-        and isinstance(uninterrupted_state[name], torch.Tensor)
-        and torch.equal(resumed_state[name], uninterrupted_state[name])
-        for name in resumed_state
+    same_state = (
+        isinstance(resumed_state, dict)
+        and isinstance(uninterrupted_state, dict)
+        and set(resumed_state) == set(uninterrupted_state)
+        and all(
+            isinstance(resumed_state[name], torch.Tensor)
+            and isinstance(uninterrupted_state[name], torch.Tensor)
+            and torch.equal(resumed_state[name], uninterrupted_state[name])
+            for name in resumed_state
+        )
     )
     same_schedule = (
         resumed.get("selection_history") == uninterrupted.get("selection_history")
@@ -2468,7 +2580,9 @@ def _recovery_equivalence_evidence(
         "recovered_completed_epoch": completed_epoch,
         "resume_lineage_entries": len(lineage) if isinstance(lineage, list) else 0,
         "resume_execution_context": (
-            "same-artifact-location" if isinstance(lineage, list) and not lineage else "changed"
+            "same-artifact-location"
+            if isinstance(lineage, list) and not lineage
+            else "changed"
         ),
     }
 
@@ -2713,7 +2827,9 @@ def _local_workflow_acceptance(
     record(
         purpose="horizon and scenario analysis",
         applicability="mandatory descriptive analysis",
-        observation={"complete_category_and_bootstrap_analysis": horizon_analysis_available},
+        observation={
+            "complete_category_and_bootstrap_analysis": horizon_analysis_available
+        },
         threshold=True,
         passed=horizon_analysis_available,
         evidence="horizon-scenario-analysis.json",
@@ -2732,7 +2848,9 @@ def _local_workflow_acceptance(
         "kind": "local-workflow-acceptance",
         "artifact_semantics": artifact_semantics("evaluation"),
         "purpose": "development-validation",
-        "status": "passed" if all(check["status"] == "passed" for check in checks) else "failed",
+        "status": "passed"
+        if all(check["status"] == "passed" for check in checks)
+        else "failed",
         "checks": checks,
         "non_gating_observations": (
             "loss reduction, economic return, constraint violation rates, strategy "
@@ -2790,7 +2908,9 @@ def _horizon_analysis_evidence(
             }
             for label, metric in analysis.metrics_by_policy.items()
         },
-        "paired_intervals": [asdict(interval) for interval in analysis.paired_intervals],
+        "paired_intervals": [
+            asdict(interval) for interval in analysis.paired_intervals
+        ],
         "category_outputs": [asdict(item) for item in analysis.category_outputs],
         "interpretation": "small-sample descriptive local workflow demonstration",
     }
@@ -2852,7 +2972,9 @@ def _workflow_failure_bundle(
                     if status is RunStatus.INCOMPLETE
                     else "failed",
                     "generated_artifacts": sorted(
-                        path.name for path in staging_directory.iterdir() if path.is_file()
+                        path.name
+                        for path in staging_directory.iterdir()
+                        if path.is_file()
                     ),
                 },
             }
@@ -2884,11 +3006,24 @@ def _paired_pilot_failure_bundle(
     staged_configuration: ResolvedRunConfiguration | None,
     error: Exception,
     status: RunStatus,
+    evaluation_source: Mapping[str, object] | None = None,
 ) -> RunBundle:
     """Preserve pilot-stage diagnostics without labeling a partial matrix complete."""
 
     if staging_directory is None or not staging_directory.is_dir():
-        failure_directory = _write_failure_bundle(configuration, error, status=status)
+        failure_directory = _write_failure_bundle(
+            configuration,
+            error,
+            status=status,
+            extra_manifest=(
+                {
+                    "artifact_semantics": artifact_semantics("evaluation"),
+                    "paired_evaluation_source": dict(evaluation_source),
+                }
+                if evaluation_source is not None
+                else None
+            ),
+        )
     else:
         effective_configuration = staged_configuration or configuration
         manifest = _build_manifest(
@@ -2912,6 +3047,8 @@ def _paired_pilot_failure_bundle(
                 },
             }
         )
+        if evaluation_source is not None:
+            manifest["paired_evaluation_source"] = dict(evaluation_source)
         _write_json_artifact(staging_directory / "manifest.json", manifest)
         suffix = staging_directory.name.rsplit("-", 1)[-1]
         failure_directory = configuration.output.directory / (
@@ -2971,17 +3108,19 @@ def _write_bundle_atomically(
     )
     try:
         (staging_directory / "manifest.json").write_text(
-            json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            json.dumps(manifest, indent=2, sort_keys=True, allow_nan=False) + "\n",
+            encoding="utf-8",
         )
         for name, contents in (extra_artifacts or {}).items():
             artifact_path = staging_directory / name
             if artifact_path.parent != staging_directory or artifact_path.name != name:
                 raise ValueError(f"Artifact name must be a file name: {name}")
             artifact_path.write_text(
-                json.dumps(contents, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+                json.dumps(contents, indent=2, sort_keys=True, allow_nan=False) + "\n",
+                encoding="utf-8",
             )
         os.replace(staging_directory, final_directory)
-    except OSError:
+    except (OSError, ValueError):
         shutil.rmtree(staging_directory, ignore_errors=True)
         raise
     return final_directory
@@ -2992,6 +3131,7 @@ def _write_failure_bundle(
     error: Exception,
     *,
     status: RunStatus = RunStatus.FAILED,
+    extra_manifest: Mapping[str, object] | None = None,
 ) -> Path | None:
     """Best-effort persistence for failures that occur before a completed bundle exists."""
 
@@ -3016,8 +3156,11 @@ def _write_failure_bundle(
             "input_hashes": input_hashes,
             "input_hash_errors": input_hash_errors,
         }
+        if extra_manifest is not None:
+            failure_manifest.update(extra_manifest)
         (staging_directory / "manifest.json").write_text(
-            json.dumps(failure_manifest, indent=2, sort_keys=True) + "\n",
+            json.dumps(failure_manifest, indent=2, sort_keys=True, allow_nan=False)
+            + "\n",
             encoding="utf-8",
         )
         failure_directory = output_root / (
@@ -3025,7 +3168,7 @@ def _write_failure_bundle(
         )
         os.replace(staging_directory, failure_directory)
         return failure_directory
-    except OSError:
+    except (OSError, ValueError):
         if staging_directory is not None:
             shutil.rmtree(staging_directory, ignore_errors=True)
         return None

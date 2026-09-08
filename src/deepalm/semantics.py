@@ -6,7 +6,7 @@ from typing import Literal
 
 FINANCIAL_SEMANTICS_VERSION = "dated-deposit-history-v6"
 POLICY_SEMANTICS_VERSION = "maturity-relative-bmd-v3"
-METRIC_SEMANTICS_VERSION = "population-moments-and-constraint-statistics-v3"
+METRIC_SEMANTICS_VERSION = "population-moments-constraints-and-report-coverage-v4"
 SNAPSHOT_SCHEMA_VERSION = 5
 
 ArtifactScope = Literal["snapshot", "training", "evaluation"]
@@ -17,7 +17,7 @@ _CORRECTIONS = {
 }
 # Activate only alongside a completed formula repair and its regression evidence.
 _IMPLEMENTED_CORRECTIONS: frozenset[str] = frozenset(
-    {"C-1", "C-2", "C-3", "C-5", "C-6", "C-7", "C-8", "R-1"}
+    {"C-1", "C-2", "C-3", "C-5", "C-6", "C-7", "C-8", "R-1", "R-2"}
 )
 
 
@@ -46,11 +46,11 @@ def artifact_semantics(scope: ArtifactScope) -> dict[str, object]:
     return identity
 
 
-def artifact_semantics_error(
-    container: object, scope: ArtifactScope
-) -> str | None:
+def artifact_semantics_error(container: object, scope: ArtifactScope) -> str | None:
     """Return a fail-closed compatibility diagnostic for a persisted envelope."""
-    record = container.get("artifact_semantics") if isinstance(container, Mapping) else None
+    record = (
+        container.get("artifact_semantics") if isinstance(container, Mapping) else None
+    )
     expected = artifact_semantics(scope)
     if not isinstance(record, dict):
         return f"{scope} artifact semantics missing; regenerate compatible evidence"
@@ -61,8 +61,12 @@ def artifact_semantics_error(
     except (TypeError, ValueError):
         matches = False
     if not matches:
-        return f"{scope} artifact semantics incompatible; regenerate compatible evidence"
-    legacy_fields: dict[str, object] = {"financial_semantics_version": FINANCIAL_SEMANTICS_VERSION}
+        return (
+            f"{scope} artifact semantics incompatible; regenerate compatible evidence"
+        )
+    legacy_fields: dict[str, object] = {
+        "financial_semantics_version": FINANCIAL_SEMANTICS_VERSION
+    }
     if scope == "evaluation":
         legacy_fields["risk_metric_convention"] = METRIC_SEMANTICS_VERSION
     if scope == "snapshot":

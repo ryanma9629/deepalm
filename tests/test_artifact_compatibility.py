@@ -25,8 +25,12 @@ from deepalm.training import (
 )
 
 
-@pytest.mark.parametrize("mutation", ["missing", "unknown", "claimed-correction", "boolean-version"])
-def test_freezing_checkpoint_rejects_unknown_artifact_semantics(tmp_path: Path, mutation: str) -> None:
+@pytest.mark.parametrize(
+    "mutation", ["missing", "unknown", "claimed-correction", "boolean-version"]
+)
+def test_freezing_checkpoint_rejects_unknown_artifact_semantics(
+    tmp_path: Path, mutation: str
+) -> None:
     reference = _frozen_reference(tmp_path)
     checkpoint = torch.load(reference.checkpoint_path, weights_only=False)
     identity = checkpoint["code_identity"]
@@ -61,7 +65,11 @@ def test_training_records_actual_completed_policy_repairs_without_metric_couplin
     semantics = checkpoint["code_identity"]["artifact_semantics"]
     assert semantics["repair_status"] == "complete"
     assert semantics["corrections"] == {
-        "C-1": True, "C-2": True, "C-3": True, "C-5": True, "C-6": True,
+        "C-1": True,
+        "C-2": True,
+        "C-3": True,
+        "C-5": True,
+        "C-6": True,
     }
     assert "metric_version" not in semantics
     assert "R-1" not in semantics["corrections"]
@@ -80,9 +88,9 @@ def test_training_records_actual_completed_policy_repairs_without_metric_couplin
         calibration=model.calibrate_hjm_pca(historical),
     )
     evaluation = evaluator.evaluate((PolicyCheckpoint("BM^E", result.checkpoint_path),))
-    assert evaluation.manifest["artifact_semantics"]["repair_status"] == "pending"
+    assert evaluation.manifest["artifact_semantics"]["repair_status"] == "complete"
     assert evaluation.manifest["artifact_semantics"]["corrections"]["R-1"] is True
-    assert evaluation.manifest["artifact_semantics"]["corrections"]["R-2"] is False
+    assert evaluation.manifest["artifact_semantics"]["corrections"]["R-2"] is True
     with pytest.raises(LockedEvaluationError, match="artifact semantics"):
         evaluator.evaluate((PolicyCheckpoint("incompatible", incompatible),))
 
@@ -98,17 +106,26 @@ def test_recovery_rejects_missing_semantics_before_resuming(tmp_path: Path) -> N
         calibration=model.calibrate_hjm_pca(historical),
     )
     with pytest.raises(TrainingInterrupted) as stopped:
-        trainer.fit(horizon_years=5, control=TrainingControl(stop_after_completed_epoch=1))
+        trainer.fit(
+            horizon_years=5, control=TrainingControl(stop_after_completed_epoch=1)
+        )
     path = stopped.value.recovery_path
     recovery = torch.load(path, weights_only=False)
-    assert recovery["recovery_identity"]["artifact_semantics"]["repair_status"] == "complete"
+    assert (
+        recovery["recovery_identity"]["artifact_semantics"]["repair_status"]
+        == "complete"
+    )
     recovery["recovery_identity"].pop("artifact_semantics")
     torch.save(recovery, path)
     with pytest.raises(TrainingError, match="artifact semantics"):
-        trainer.fit(horizon_years=5, control=TrainingControl(resume=True, resume_from=path))
+        trainer.fit(
+            horizon_years=5, control=TrainingControl(resume=True, resume_from=path)
+        )
 
 
-def test_snapshot_persists_its_actual_schema_and_rejects_claimed_future_repair(tmp_path: Path) -> None:
+def test_snapshot_persists_its_actual_schema_and_rejects_claimed_future_repair(
+    tmp_path: Path,
+) -> None:
     provider = ReferenceBankProvider()
     historical = MarketScenarioModel().load_historical_term_structures(SOURCE)
     bank = provider.build_canonical(historical)
@@ -125,7 +142,9 @@ def test_snapshot_persists_its_actual_schema_and_rejects_claimed_future_repair(t
         provider.load(path)
 
 
-def test_frozen_reference_rejects_semantically_wrong_but_hash_valid_sidecar(tmp_path: Path) -> None:
+def test_frozen_reference_rejects_semantically_wrong_but_hash_valid_sidecar(
+    tmp_path: Path,
+) -> None:
     reference = _frozen_reference(tmp_path)
     payload = json.loads(reference.reference_path.read_text())
     payload["artifact_semantics"] = {"contract_version": 999}
@@ -137,35 +156,51 @@ def test_frozen_reference_rejects_semantically_wrong_but_hash_valid_sidecar(tmp_
         FrozenDateBenchmarkReference.load(path)
 
 
-def test_report_rejects_stale_source_semantics_and_preserves_pending_status(tmp_path: Path) -> None:
+def test_report_rejects_stale_source_semantics_and_preserves_current_status(
+    tmp_path: Path,
+) -> None:
     configuration = _report_configuration(tmp_path)
     runner = ReproductionRunner()
-    source = runner.run(replace(configuration, output=replace(configuration.output, run_name="source")))
+    source = runner.run(
+        replace(configuration, output=replace(configuration.output, run_name="source"))
+    )
     assert source.artifact_directory is not None
     source_path = source.artifact_directory / "manifest.json"
     manifest = json.loads(source_path.read_text())
-    assert manifest["artifact_semantics"]["repair_status"] == "pending"
+    assert manifest["artifact_semantics"]["repair_status"] == "complete"
     report = runner.generate_compact_report(
-        replace(configuration, output=replace(configuration.output, run_name="compatible")),
+        replace(
+            configuration, output=replace(configuration.output, run_name="compatible")
+        ),
         source_run_directories=(source.artifact_directory,),
     )
     assert report.status is RunStatus.COMPLETED
     assert report.artifact_directory is not None
-    contents = json.loads((report.artifact_directory / "compact-no-swap-report.json").read_text())
-    assert contents["artifact_semantics"]["repair_status"] == "pending"
+    contents = json.loads(
+        (report.artifact_directory / "compact-no-swap-report.json").read_text()
+    )
+    assert contents["artifact_semantics"]["repair_status"] == "complete"
     stale_child = source.artifact_directory / "locked-evaluation.json"
-    stale_child.write_text(json.dumps({
-        "format_version": 1,
-        "kind": "locked-final-test-evaluation",
-        "artifact_semantics": {"contract_version": 999},
-    }))
+    stale_child.write_text(
+        json.dumps(
+            {
+                "format_version": 1,
+                "kind": "locked-final-test-evaluation",
+                "artifact_semantics": {"contract_version": 999},
+            }
+        )
+    )
     with pytest.raises(ReportingError, match="artifact semantics"):
-        build_compact_no_swap_report(configuration, source_run_directories=(source.artifact_directory,))
+        build_compact_no_swap_report(
+            configuration, source_run_directories=(source.artifact_directory,)
+        )
     stale_child.unlink()
     manifest["artifact_semantics"]["metric_version"] = "stale-metric"
     source_path.write_text(json.dumps(manifest))
     rejected = runner.generate_compact_report(
-        replace(configuration, output=replace(configuration.output, run_name="incompatible")),
+        replace(
+            configuration, output=replace(configuration.output, run_name="incompatible")
+        ),
         source_run_directories=(source.artifact_directory,),
     )
     assert rejected.status is RunStatus.FAILED

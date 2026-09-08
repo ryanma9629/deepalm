@@ -81,7 +81,9 @@ def test_evaluation_dividend_yield_uses_nonterminal_dividend_years(
     }
 
 
-def test_evaluation_marks_dividend_yield_unavailable_without_nonterminal_years() -> None:
+def test_evaluation_marks_dividend_yield_unavailable_without_nonterminal_years() -> (
+    None
+):
     months = 12
     outcome = _outcome_for_report(
         horizon_years=1, dividends=torch.zeros((1, months), dtype=torch.float64)
@@ -217,7 +219,7 @@ def test_locked_evaluation_uses_disjoint_common_test_paths_and_writes_manifest(
     assert result.reports["BM^D"]["risk"]["centered"] is True
     assert (
         result.manifest["risk_metric_convention"]
-        == "population-moments-and-constraint-statistics-v3"
+        == "population-moments-constraints-and-report-coverage-v4"
     )
     assert result.manifest["artifact_semantics"]["corrections"] == {
         "C-1": True,
@@ -228,7 +230,7 @@ def test_locked_evaluation_uses_disjoint_common_test_paths_and_writes_manifest(
         "C-7": True,
         "C-8": True,
         "R-1": True,
-        "R-2": False,
+        "R-2": True,
     }
     assert result.manifest["bootstrap_resamples"] == 100
     assert result.paired_intervals

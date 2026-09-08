@@ -42,6 +42,12 @@ and Corrected. No production/pilot training is required to validate these fixes.
   counts. Equity distribution statistics use Equation 51 population central
   moments, including skewness and excess kurtosis; undefined metrics are
   explicit JSON-safe availability records rather than NaN or Infinity.
+- R-2 reporting: every Table 1–5 and Figure 3–17 entry is identified by its
+  printed page and subject. Local diagnostic artifacts are explicitly related
+  evidence, never a substitute for the printed output. Incomplete paired
+  experiments retain their member evidence and diagnostics, while their paired
+  intervals are marked unavailable. Report JSON rejects non-finite values and
+  is written atomically.
 
 The numerical tests include a zero-rate/zero-growth rollover oracle: monthly
 equity changes by -4 mCHF operating costs only. Previously the first month lost
@@ -53,7 +59,7 @@ and preserves the action gradient against a central finite difference.
 
 Financial semantics are identified by
 `dated-deposit-history-v6`; evaluation metrics by
-`population-moments-and-constraint-statistics-v3`. Selected checkpoints, frozen baselines,
+`population-moments-constraints-and-report-coverage-v4`. Selected checkpoints, frozen baselines,
 and epoch recovery identities must match the financial semantics version.
 Missing/older versions require fresh training, not a metadata-only upgrade.
 Historical checkpoints and reports are retained, not rewritten or deleted.

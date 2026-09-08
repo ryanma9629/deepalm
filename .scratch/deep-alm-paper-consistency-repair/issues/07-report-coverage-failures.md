@@ -4,7 +4,7 @@
 
 **Blocked by:** 06.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 来源：Deep ALM 论文一致性修复增量规格 Revision 1；本专项独立编号，旧专项票不变。
 
@@ -15,3 +15,12 @@
 ## Comments
 
 2026-09-08 — 用户已确认十票拆分与阻塞关系；按本地 Markdown tracker 发布。
+
+## Answer
+
+2026-09-08 — 已完成 R-2：报告库存按 PDF 的 Table 1–5、Figure 3–17
+页码和主题固定映射；本地诊断只能作为相关证据，所有未生成的印刷项均明确为
+missing，且披露无 swap 的范围。配对报告可发布 identity-linked 的 incomplete 或
+failed evidence，保留分支作业、诊断、失败 bundle 与证据引用，并将缺失配对的区间
+标为 not_applicable。报告输入与输出拒绝非有限 JSON，写入保持原子；评估/报告语义
+升级至 v4，使旧报告证据失效。已通过 239 项全量测试及后续定向回归。

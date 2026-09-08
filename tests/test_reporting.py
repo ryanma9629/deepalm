@@ -10,6 +10,8 @@ import torch
 import yaml
 from test_run_skeleton import configuration_data
 
+from deepalm import reporting
+from deepalm import runner as runner_module
 from deepalm.cli import main
 from deepalm.config import resolve_configuration
 from deepalm.reporting import ReportingError, build_paired_convention_pilot_report
@@ -27,7 +29,9 @@ def _report_configuration(tmp_path: Path):
             "snb_csv": str(
                 repository / "data/snb-data-rendopar-en-all_19880401-20250731.csv"
             ),
-            "paper_pdf": str(repository / "docs/Deep treasury management for banks.pdf"),
+            "paper_pdf": str(
+                repository / "docs/Deep treasury management for banks.pdf"
+            ),
         }
     )
     return resolve_configuration(raw)
@@ -86,6 +90,53 @@ def test_runner_generates_an_auditable_no_swap_report_and_coverage_inventory(
         *(f"Table {number}" for number in range(1, 6)),
         *(f"Figure {number}" for number in range(3, 18)),
     }
+    assert {
+        (entry["paper_item"], entry["paper_page"], entry["subject"])
+        for entry in inventory["entries"]
+    } == {
+        ("Table 1", 7, "Economic balance sheet"),
+        ("Table 2", 16, "Hyperparameters"),
+        (
+            "Table 3",
+            21,
+            "Main results: losses, equity distribution, returns and dividends",
+        ),
+        ("Table 4", 26, "Constraint statistics"),
+        ("Table 5", 34, "Category statistics; disclose covered policy columns"),
+        ("Figure 3", 17, "Simulated one-month yields under HJM-PCA"),
+        (
+            "Figure 4",
+            17,
+            "Terminal five-year yield curves, HJM-PCA versus Hull-White",
+        ),
+        ("Figure 5", 20, "Decision-network architecture"),
+        ("Figure 6", 24, "Equity-ratio histograms"),
+        ("Figure 7", 24, "Constant benchmark strategies"),
+        ("Figure 8", 25, "Investment and financing volume"),
+        ("Figure 9", 26, "LCR and CMR"),
+        ("Figure 10", 27, "Equity/RWA"),
+        ("Figure 11", 28, "Interest-rate sensitivity and portfolio durations"),
+        ("Figure 12", 29, "Five-year yield-curve scenarios"),
+        ("Figure 13", 30, "Five-year decisions"),
+        ("Figure 14", 30, "Five-year sensitivity gaps"),
+        ("Figure 15", 31, "Fifteen-year yield-curve scenarios"),
+        ("Figure 16", 32, "Fifteen-year decisions"),
+        ("Figure 17", 32, "Fifteen-year sensitivity gaps"),
+    }
+    assert {entry["status"] for entry in inventory["entries"]} == {"missing"}
+    assert {entry["source_pdf_sha256"] for entry in inventory["entries"]} == {
+        sha256(configuration.source_data.paper_pdf.read_bytes()).hexdigest()
+    }
+    assert all(
+        entry["matching_output_evidence"]["status"] == "missing"
+        for entry in inventory["entries"]
+    )
+    table_five = next(
+        entry for entry in inventory["entries"] if entry["paper_item"] == "Table 5"
+    )
+    assert table_five["supported_policy_scope"]["excluded_policy_columns"] == [
+        "swap strategies"
+    ]
     assert all(
         {
             "policy",
@@ -112,14 +163,17 @@ def test_runner_generates_an_auditable_no_swap_report_and_coverage_inventory(
         "volatility": 0.01,
     }
     assert comparison["presentation_metadata"]["seed_registry"]
-    assert manifest["compact_report"]["calibration_identity"] == calibration[
-        "calibration_identity"
-    ]
+    assert (
+        manifest["compact_report"]["calibration_identity"]
+        == calibration["calibration_identity"]
+    )
     assert manifest["compact_report"]["reference_bank_content_hash"]
     assert manifest["compact_report"]["weekly_dates"] == calibration["weekly_dates"]
     assert manifest["compact_report"]["acceptance_evidence"]
     assert manifest["compact_report"]["actual_work"]["completed_training_jobs"] == []
-    assert manifest["compact_report"]["resource_measurements"]["status"] == "unavailable"
+    assert (
+        manifest["compact_report"]["resource_measurements"]["status"] == "unavailable"
+    )
     assert report["actual_work"]["numeric_metrics"]["status"] == "unavailable"
 
 
@@ -176,11 +230,14 @@ def test_runner_publishes_an_atomic_paired_pilot_report_with_separate_convention
                 "status": "completed",
                 "label": "paired-convention-research-pilot",
                 "source_run": str(pilot.resolve()),
-                "source_manifest_sha256": sha256(manifest_path.read_bytes()).hexdigest(),
+                "source_manifest_sha256": sha256(
+                    manifest_path.read_bytes()
+                ).hexdigest(),
                 "reports": {
                     convention: {
                         f"{policy}-{horizon}y": {
-                            "losses": {"total": float(horizon)}, "constraints": {}
+                            "losses": {"total": float(horizon)},
+                            "constraints": {},
                         }
                         for policy in ("BM^D", "MM")
                         for horizon in (5, 15)
@@ -189,10 +246,24 @@ def test_runner_publishes_an_atomic_paired_pilot_report_with_separate_convention
                 },
                 "locked_evaluation_manifests": {
                     convention: {
+                        "kind": "locked-final-test-evaluation",
+                        "convention": convention,
                         "financial_semantics_version": FINANCIAL_SEMANTICS_VERSION,
                         "artifact_semantics": artifact_semantics("evaluation"),
-                        "test_scenarios": {"5": {"paths": 64}},
-                        "checkpoints": {},
+                        "data_identities": {
+                            "reference_bank_content_hash": "reference-bank",
+                            "market_source_hash": "market",
+                            "hjm_calibration_identity": "calibration",
+                        },
+                        "checkpoints": {
+                            f"{policy}-{horizon}y": {
+                                "policy": policy,
+                                "horizon_years": horizon,
+                                "sha256": f"{convention}-{policy}-{horizon}",
+                            }
+                            for policy in ("BM^D", "MM")
+                            for horizon in (5, 15)
+                        },
                     }
                     for convention in ("paper", "corrected")
                 },
@@ -203,8 +274,14 @@ def test_runner_publishes_an_atomic_paired_pilot_report_with_separate_convention
                     convention: {
                         "artifact_semantics": artifact_semantics("evaluation"),
                         "status": "available",
+                        "convention": convention,
+                        "source_horizon_years": 15,
+                        "evaluation_horizon_years": 5,
+                        "source_checkpoint": f"{convention}/MM-15.pt",
+                        "source_checkpoint_sha256": f"{convention}-MM-15",
                         "action_steps": 60,
                         "optimizer_updates": 0,
+                        "report": {"losses": {"total": 15.0}},
                     }
                     for convention in ("paper", "corrected")
                 },
@@ -215,7 +292,10 @@ def test_runner_publishes_an_atomic_paired_pilot_report_with_separate_convention
     )
 
     bundle = ReproductionRunner().generate_paired_pilot_report(
-        replace(configuration, output=replace(configuration.output, run_name="paired-report")),
+        replace(
+            configuration,
+            output=replace(configuration.output, run_name="paired-report"),
+        ),
         pilot_run_directory=pilot,
         evaluation_directory=evaluation,
     )
@@ -246,7 +326,9 @@ def test_runner_publishes_an_atomic_paired_pilot_report_with_separate_convention
             pilot_run_directory=pilot, evaluation_directory=evaluation
         )
     stale["artifact_semantics"] = artifact_semantics("evaluation")
-    stale["locked_evaluation_manifests"]["paper"]["risk_metric_convention"] = "wrong-legacy-metric"
+    stale["locked_evaluation_manifests"]["paper"]["risk_metric_convention"] = (
+        "wrong-legacy-metric"
+    )
     evaluation_path.write_text(json.dumps(stale))
     with pytest.raises(ReportingError, match="artifact semantics"):
         build_paired_convention_pilot_report(
@@ -260,6 +342,257 @@ def test_runner_publishes_an_atomic_paired_pilot_report_with_separate_convention
         "full paper figures",
         "Ticket 24 economic acceptance gates",
     ]
+
+
+def test_paired_pilot_report_preserves_incomplete_branch_without_valid_intervals(
+    tmp_path: Path,
+) -> None:
+    configuration = _report_configuration(tmp_path)
+    pilot = tmp_path / "incomplete-pilot"
+    pilot.mkdir()
+    manifest = {
+        "training_identity": {"artifact_semantics": artifact_semantics("training")},
+        "status": "incomplete",
+        "paired_convention_pilot": {
+            "label": "paired-convention-research-pilot",
+            "status": "incomplete",
+            "shared_identities": {
+                "reference_bank_content_hash": "reference-bank",
+                "market_source_hash": "market",
+                "hjm_calibration_identity": "calibration",
+            },
+            "completed_training_jobs": [
+                {
+                    "convention": "paper",
+                    "policy": "BM^D",
+                    "horizon_years": 5,
+                    "checkpoint": "paper/BM^D-5.pt",
+                    "checkpoint_sha256": "paper-bmd-5",
+                }
+            ],
+        },
+    }
+    manifest_path = pilot / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    evaluation = tmp_path / "incomplete-evaluation"
+    evaluation.mkdir()
+    (evaluation / "paired-evaluation.json").write_text(
+        json.dumps(
+            {
+                "format_version": 1,
+                "kind": "paired-convention-pilot-evaluation",
+                "artifact_semantics": artifact_semantics("evaluation"),
+                "status": "incomplete",
+                "label": "paired-convention-research-pilot",
+                "source_run": str(pilot.resolve()),
+                "source_manifest_sha256": sha256(
+                    manifest_path.read_bytes()
+                ).hexdigest(),
+                "reports": {"paper": {"BM^D-5y": {"losses": {"total": 1.0}}}},
+                "locked_evaluation_manifests": {
+                    "paper": {
+                        "kind": "locked-final-test-evaluation",
+                        "convention": "paper",
+                        "artifact_semantics": artifact_semantics("evaluation"),
+                        "data_identities": {
+                            "reference_bank_content_hash": "reference-bank",
+                            "market_source_hash": "market",
+                            "hjm_calibration_identity": "calibration",
+                        },
+                        "checkpoints": {
+                            "BM^D-5y": {
+                                "policy": "BM^D",
+                                "horizon_years": 5,
+                                "sha256": "paper-bmd-5",
+                            }
+                        },
+                    }
+                },
+                "paired_intervals": [
+                    {"metric": "total_loss", "status": "available", "resamples": 100}
+                ],
+                "diagnostics": {
+                    "stage": "MM-15y",
+                    "reason": "resource budget exceeded",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    bundle = ReproductionRunner().generate_paired_pilot_report(
+        replace(
+            configuration,
+            output=replace(configuration.output, run_name="partial-report"),
+        ),
+        pilot_run_directory=pilot,
+        evaluation_directory=evaluation,
+    )
+
+    assert bundle.status is RunStatus.INCOMPLETE
+    assert bundle.artifact_directory is not None
+    report = json.loads(
+        (bundle.artifact_directory / "paired-pilot-report.json").read_text()
+    )
+    assert report["status"] == "incomplete"
+    assert report["conventions"]["paper"]["members"][0]["status"] == "available"
+    missing = report["conventions"]["paper"]["members"][1]
+    assert missing["status"] == "missing"
+    assert missing["policy"] == "BM^D"
+    assert missing["horizon_years"] == 15
+    assert report["paired_intervals"][0]["status"] == "not_applicable"
+    assert report["paired_intervals"][0]["reason"]
+    assert report["diagnostics"]["evaluation"] == {
+        "stage": "MM-15y",
+        "reason": "resource budget exceeded",
+    }
+
+
+def test_paired_pilot_report_exposes_identity_linked_failure_bundle(
+    tmp_path: Path,
+) -> None:
+    configuration = _report_configuration(tmp_path)
+    pilot = tmp_path / "failed-pilot"
+    pilot.mkdir()
+    pilot_manifest = {
+        "training_identity": {"artifact_semantics": artifact_semantics("training")},
+        "status": "failed",
+        "error": "MM-15y interrupted",
+        "diagnostics": {"stage": "MM-15y", "month": 31},
+        "paired_convention_pilot": {
+            "label": "paired-convention-research-pilot",
+            "status": "failed",
+            "generated_artifacts": ["paper/MM-15y.interruption.json"],
+        },
+    }
+    pilot_manifest_path = pilot / "manifest.json"
+    pilot_manifest_path.write_text(json.dumps(pilot_manifest), encoding="utf-8")
+    evaluation = tmp_path / "failed-evaluation"
+    evaluation.mkdir()
+    (evaluation / "manifest.json").write_text(
+        json.dumps(
+            {
+                "artifact_semantics": artifact_semantics("evaluation"),
+                "status": "failed",
+                "diagnostics": {"stage": "locked-evaluation", "month": 31},
+                "paired_evaluation_source": {
+                    "source_run": str(pilot.resolve()),
+                    "source_manifest_sha256": sha256(
+                        pilot_manifest_path.read_bytes()
+                    ).hexdigest(),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    bundle = ReproductionRunner().generate_paired_pilot_report(
+        replace(
+            configuration,
+            output=replace(configuration.output, run_name="failed-report"),
+        ),
+        pilot_run_directory=pilot,
+        evaluation_directory=evaluation,
+    )
+
+    assert bundle.status is RunStatus.INCOMPLETE
+    assert bundle.artifact_directory is not None
+    report = json.loads(
+        (bundle.artifact_directory / "paired-pilot-report.json").read_text()
+    )
+    assert report["evaluation_source"]["failure_bundle"] == str(
+        (evaluation / "manifest.json").resolve()
+    )
+    assert report["diagnostics"]["pilot_error"] == "MM-15y interrupted"
+    missing = report["conventions"]["paper"]["members"][0]
+    assert missing["convention"] == "paper"
+    assert missing["stage"] == "training-and-locked-evaluation"
+    assert missing["evidence_references"]["training_job"] is None
+    assert report["paired_intervals"][0]["metric"] == "paired-comparison"
+    assert report["paired_intervals"][0]["status"] == "not_applicable"
+    assert report["paired_intervals"][0]["source_interval"] is None
+
+
+def test_early_paired_evaluation_failure_bundle_is_strict_and_reportable(
+    tmp_path: Path,
+) -> None:
+    configuration = _report_configuration(tmp_path)
+    pilot = tmp_path / "source-pilot"
+    pilot.mkdir()
+    pilot_manifest = {
+        "training_identity": {"artifact_semantics": artifact_semantics("training")},
+        "status": "failed",
+        "paired_convention_pilot": {
+            "label": "paired-convention-research-pilot",
+            "status": "failed",
+        },
+    }
+    pilot_manifest_path = pilot / "manifest.json"
+    pilot_manifest_path.write_text(json.dumps(pilot_manifest), encoding="utf-8")
+    failure = runner_module._paired_pilot_failure_bundle(
+        configuration,
+        staging_directory=None,
+        staged_configuration=configuration,
+        error=runner_module.OperationalRunError("pre-staging failure"),
+        status=RunStatus.FAILED,
+        evaluation_source={
+            "source_run": str(pilot.resolve()),
+            "source_manifest_sha256": sha256(
+                pilot_manifest_path.read_bytes()
+            ).hexdigest(),
+        },
+    )
+
+    assert failure.artifact_directory is not None
+    failure_manifest = json.loads(
+        (failure.artifact_directory / "manifest.json").read_text()
+    )
+    assert failure_manifest["artifact_semantics"] == artifact_semantics("evaluation")
+    report = build_paired_convention_pilot_report(
+        pilot_run_directory=pilot, evaluation_directory=failure.artifact_directory
+    ).report
+    assert report["status"] == "incomplete"
+    assert report["evaluation_source"]["failure_bundle"]
+
+
+def test_report_rejects_nonfinite_json_and_cleans_failed_atomic_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    nonfinite = tmp_path / "nonfinite.json"
+    nonfinite.write_text('{"metric": NaN}', encoding="utf-8")
+    with pytest.raises(ReportingError, match="unreadable"):
+        reporting._read_report_object(nonfinite, "nonfinite evidence")
+
+    configuration = _report_configuration(tmp_path)
+    artifacts = reporting.CompactReportArtifacts(
+        report={
+            "kind": "compact-no-swap-local-report",
+            "purpose": "local workflow demonstration",
+            "source_runs": [],
+            "presentation_metadata": {"parameter_counts": []},
+            "actual_work": {"resource_measurements": {}, "numeric_metrics": {}},
+            "nonfinite": float("nan"),
+        },
+        coverage_inventory={},
+        calibration_evidence={
+            "calibration_identity": "calibration",
+            "weekly_dates": [],
+        },
+        market_comparison={},
+        reference_bank_summary={"content_hash": "reference-bank"},
+    )
+    monkeypatch.setattr(
+        reporting, "build_compact_no_swap_report", lambda *_args, **_kwargs: artifacts
+    )
+    output = replace(configuration.output, run_name="nonfinite-report")
+
+    bundle = ReproductionRunner().generate_compact_report(
+        replace(configuration, output=output), source_run_directories=()
+    )
+
+    assert bundle.status is RunStatus.FAILED
+    assert not (output.directory / output.run_name).exists()
+    assert not list(output.directory.glob(f".{output.run_name}-*"))
 
 
 def test_report_rejects_incomplete_source_bundles(tmp_path: Path) -> None:
@@ -474,7 +807,9 @@ def test_report_uses_selected_checkpoint_epoch_after_identity_audit(
     assert report["actual_work"]["completed_optimizer_updates"] == 2
 
 
-def test_report_excludes_checkpoint_with_stale_training_semantics(tmp_path: Path) -> None:
+def test_report_excludes_checkpoint_with_stale_training_semantics(
+    tmp_path: Path,
+) -> None:
     configuration = _report_configuration(tmp_path)
     source = ReproductionRunner().run(
         replace(configuration, output=replace(configuration.output, run_name="source"))
@@ -533,7 +868,9 @@ def test_cli_writes_a_report_from_a_completed_source_bundle(
             "snb_csv": str(
                 repository / "data/snb-data-rendopar-en-all_19880401-20250731.csv"
             ),
-            "paper_pdf": str(repository / "docs/Deep treasury management for banks.pdf"),
+            "paper_pdf": str(
+                repository / "docs/Deep treasury management for banks.pdf"
+            ),
         }
     )
     configuration = resolve_configuration(raw)

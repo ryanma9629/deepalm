@@ -46,42 +46,54 @@ class PairedPilotReportArtifacts:
 def build_paired_convention_pilot_report(
     *, pilot_run_directory: Path, evaluation_directory: Path
 ) -> PairedPilotReportArtifacts:
-    """Build a descriptive report from completed, identity-linked pilot evidence."""
+    """Build a descriptive report from identity-linked paired-pilot evidence."""
 
     pilot_manifest_path = pilot_run_directory / "manifest.json"
     evaluation_path = evaluation_directory / "paired-evaluation.json"
     pilot_manifest = _read_report_object(pilot_manifest_path, "pilot manifest")
-    evaluation = _read_report_object(evaluation_path, "paired evaluation")
-    if error := artifact_semantics_error(pilot_manifest.get("training_identity"), "training"):
+    evaluation = _read_paired_evaluation(
+        evaluation_path, evaluation_directory=evaluation_directory
+    )
+    if error := artifact_semantics_error(
+        pilot_manifest.get("training_identity"), "training"
+    ):
         raise ReportingError(error)
     if error := artifact_semantics_error(evaluation, "evaluation"):
         raise ReportingError(error)
     pilot = pilot_manifest.get("paired_convention_pilot")
     if (
-        pilot_manifest.get("status") != "completed"
+        pilot_manifest.get("status") not in {"completed", "incomplete", "failed"}
         or not isinstance(pilot, dict)
-        or pilot.get("status") != "completed"
+        or pilot.get("status") not in {"completed", "incomplete", "failed"}
         or pilot.get("label") != "paired-convention-research-pilot"
     ):
-        raise ReportingError("Paired-pilot report requires a completed pilot bundle")
+        raise ReportingError(
+            "Paired-pilot report requires an identity-linked pilot bundle"
+        )
     if (
         evaluation.get("format_version") != 1
         or evaluation.get("kind") != "paired-convention-pilot-evaluation"
-        or evaluation.get("status") != "completed"
+        or evaluation.get("status") not in {"completed", "incomplete", "failed"}
         or evaluation.get("label") != "paired-convention-research-pilot"
         or evaluation.get("source_run") != str(pilot_run_directory.resolve())
         or evaluation.get("source_manifest_sha256") != _sha256(pilot_manifest_path)
     ):
-        raise ReportingError("Paired evaluation is not identity-linked to the completed pilot")
-    jobs = pilot.get("completed_training_jobs")
+        raise ReportingError("Paired evaluation is not identity-linked to the pilot")
+    jobs = pilot.get("completed_training_jobs", [])
     reports = evaluation.get("reports")
     locked_manifests = evaluation.get("locked_evaluation_manifests")
     truncations = evaluation.get("mm_fifteen_year_truncation")
     intervals = evaluation.get("paired_intervals")
-    if not all(
-        isinstance(value, dict) for value in (reports, locked_manifests, truncations)
-    ) or not isinstance(jobs, list) or not isinstance(intervals, list):
-        raise ReportingError("Paired evaluation lacks report, identity, or interval evidence")
+    if not isinstance(jobs, list):
+        raise ReportingError("Paired pilot must expose its completed-job evidence")
+    if not isinstance(reports, dict):
+        reports = {}
+    if not isinstance(locked_manifests, dict):
+        locked_manifests = {}
+    if not isinstance(truncations, dict):
+        truncations = {}
+    if not isinstance(intervals, list):
+        intervals = []
     conventions: dict[str, dict[str, object]] = {}
     resolved_configuration = pilot_manifest.get("resolved_configuration")
     runtime = pilot_manifest.get("runtime")
@@ -92,20 +104,37 @@ def build_paired_convention_pilot_report(
     )
     for convention in ("paper", "corrected"):
         convention_jobs = [
-            job for job in jobs if isinstance(job, dict) and job.get("convention") == convention
+            job
+            for job in jobs
+            if isinstance(job, dict) and job.get("convention") == convention
         ]
         convention_reports = reports.get(convention)
         locked = locked_manifests.get(convention)
         truncation = truncations.get(convention)
-        expected_labels = {f"{policy}-{horizon}y" for policy in ("BM^D", "MM") for horizon in (5, 15)}
-        if (
-            len(convention_jobs) != 4
-            or not isinstance(convention_reports, dict)
-            or set(convention_reports) != expected_labels
-            or not isinstance(locked, dict)
-            or not isinstance(truncation, dict)
-        ):
-            raise ReportingError(f"Paired report lacks complete {convention} evidence")
+        expected_members = tuple(
+            (policy, horizon) for policy in ("BM^D", "MM") for horizon in (5, 15)
+        )
+        expected_labels = {
+            f"{policy}-{horizon}y" for policy, horizon in expected_members
+        }
+        reports_for_convention = (
+            convention_reports if isinstance(convention_reports, dict) else {}
+        )
+        jobs_by_member = {
+            (str(job.get("policy")), job.get("horizon_years")): job
+            for job in convention_jobs
+            if isinstance(job.get("horizon_years"), int)
+        }
+        members = [
+            _paired_member_evidence(
+                convention=convention,
+                policy=policy,
+                horizon_years=horizon,
+                job=jobs_by_member.get((policy, horizon)),
+                report=reports_for_convention.get(f"{policy}-{horizon}y"),
+            )
+            for policy, horizon in expected_members
+        ]
         formula_choices = (
             {
                 "pca_loading_scale": "eigenvalue",
@@ -118,22 +147,74 @@ def build_paired_convention_pilot_report(
             }
         )
         for evidence in (locked, truncation):
-            if error := artifact_semantics_error(evidence, "evaluation"):
+            if isinstance(evidence, dict) and (
+                error := artifact_semantics_error(evidence, "evaluation")
+            ):
                 raise ReportingError(error)
+        if isinstance(locked, dict) and not _compatible_locked_pilot_evaluation(
+            locked,
+            convention=convention,
+            jobs=jobs_by_member,
+            shared_identities=pilot.get("shared_identities"),
+        ):
+            raise ReportingError(
+                f"Paired report has incompatible {convention} locked evidence"
+            )
+        if isinstance(truncation, dict) and not _compatible_pilot_truncation(
+            truncation,
+            convention=convention,
+            jobs=jobs_by_member,
+        ):
+            raise ReportingError(
+                f"Paired report has incompatible {convention} truncation evidence"
+            )
+        convention_complete = (
+            all(member["status"] == "available" for member in members)
+            and set(reports_for_convention) == expected_labels
+            and isinstance(locked, dict)
+            and _complete_locked_pilot_evaluation(
+                locked,
+                convention=convention,
+                jobs=jobs_by_member,
+                shared_identities=pilot.get("shared_identities"),
+            )
+            and isinstance(truncation, dict)
+            and _complete_pilot_truncation(
+                truncation,
+                convention=convention,
+                jobs=jobs_by_member,
+            )
+        )
         conventions[convention] = {
+            "status": "completed" if convention_complete else "incomplete",
             "formula_choices": formula_choices,
             "architecture": architecture,
             "runtime": runtime,
-            "financial_semantics_version": locked.get("financial_semantics_version"),
+            "financial_semantics_version": (
+                locked.get("financial_semantics_version")
+                if isinstance(locked, dict)
+                else None
+            ),
             "jobs": convention_jobs,
-            "locked_reports": convention_reports,
+            "members": members,
+            "locked_reports": reports_for_convention,
             "locked_evaluation_identity": locked,
             "mm_fifteen_year_truncation": truncation,
             "resource_use": evaluation.get("resource_measurements"),
         }
+    report_complete = (
+        pilot_manifest.get("status") == "completed"
+        and pilot.get("status") == "completed"
+        and evaluation.get("status") == "completed"
+        and all(details["status"] == "completed" for details in conventions.values())
+    )
+    normalized_intervals = _paired_intervals_with_availability(
+        intervals, complete=report_complete, conventions=conventions
+    )
     report = {
         "format_version": 1,
         "kind": "paired-convention-pilot-report",
+        "status": "completed" if report_complete else "incomplete",
         "artifact_semantics": artifact_semantics("evaluation"),
         "label": "paired-convention-research-pilot",
         "pilot_source": {
@@ -150,10 +231,21 @@ def build_paired_convention_pilot_report(
         "evaluation_source": {
             "directory": str(evaluation_directory.resolve()),
             "resource_use": evaluation.get("resource_measurements"),
+            "failure_bundle": evaluation.get("failure_bundle"),
         },
         "conventions": conventions,
-        "paired_intervals": intervals,
+        "paired_intervals": normalized_intervals,
         "numerical_behavior": _paired_pilot_numerical_behavior(pilot_run_directory),
+        "diagnostics": {
+            "pilot_error": pilot_manifest.get("error"),
+            "pilot": pilot_manifest.get("diagnostics"),
+            "evaluation": evaluation.get("diagnostics"),
+            "source_statuses": {
+                "pilot_manifest": pilot_manifest.get("status"),
+                "pilot": pilot.get("status"),
+                "evaluation": evaluation.get("status"),
+            },
+        },
         "deferred_work": [
             "paper widths",
             "three MM seeds",
@@ -161,6 +253,11 @@ def build_paired_convention_pilot_report(
             "10,000 bootstrap",
             "full paper figures",
             "Ticket 24 economic acceptance gates",
+        ],
+        "scope_gaps": [
+            "New-loan originations use one shared six-month reference rate rather than a maturity-specific curve.",
+            "The compact pilot does not establish formal fit at paper network widths.",
+            "BM^E and BM^C have regression and integration coverage only; their historical trained results are not newly certified by this paired pilot.",
         ],
         "disclosure": (
             "This is a paired-convention-research-pilot. It is neither convergence "
@@ -173,12 +270,241 @@ def build_paired_convention_pilot_report(
 
 def _read_report_object(path: Path, label: str) -> dict[str, object]:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        value = json.loads(
+            path.read_text(encoding="utf-8"), parse_constant=_reject_nonfinite_json
+        )
+    except (OSError, ValueError, json.JSONDecodeError) as error:
         raise ReportingError(f"Paired-pilot {label} is unreadable: {path}") from error
     if not isinstance(value, dict):
         raise ReportingError(f"Paired-pilot {label} must be a JSON object")
     return value
+
+
+def _read_paired_evaluation(
+    evaluation_path: Path, *, evaluation_directory: Path
+) -> dict[str, object]:
+    if evaluation_path.is_file():
+        return _read_report_object(evaluation_path, "paired evaluation")
+    failure_path = evaluation_directory / "manifest.json"
+    failure = _read_report_object(failure_path, "paired-evaluation failure bundle")
+    source = failure.get("paired_evaluation_source")
+    if not isinstance(source, dict):
+        raise ReportingError(
+            "Paired evaluation is missing and its failure bundle has no source identity"
+        )
+    return {
+        "format_version": 1,
+        "kind": "paired-convention-pilot-evaluation",
+        "artifact_semantics": failure.get("artifact_semantics"),
+        "status": failure.get("status"),
+        "label": "paired-convention-research-pilot",
+        "source_run": source.get("source_run"),
+        "source_manifest_sha256": source.get("source_manifest_sha256"),
+        "reports": {},
+        "paired_intervals": [],
+        "diagnostics": failure.get("diagnostics"),
+        "failure_bundle": str(failure_path.resolve()),
+    }
+
+
+def _reject_nonfinite_json(token: str) -> object:
+    raise ValueError(f"Non-finite JSON token is not permitted: {token}")
+
+
+def _paired_member_evidence(
+    *, convention: str, policy: str, horizon_years: int, job: object, report: object
+) -> dict[str, object]:
+    job_record = job if isinstance(job, dict) else None
+    report_record = report if isinstance(report, dict) else None
+    job_status = job_record.get("status") if job_record is not None else None
+    report_status = report_record.get("status") if report_record is not None else None
+    if report_status in {"failed", "incomplete", "unavailable"}:
+        status = "missing" if report_status == "unavailable" else str(report_status)
+        reason = "Locked-evaluation member did not produce finite paired evidence."
+    elif job_status in {"failed", "incomplete"}:
+        status = str(job_status)
+        reason = "Training job did not complete; no paired evaluation is available."
+    elif job_record is None or report_record is None:
+        status = "missing"
+        reason = "Required training-job or locked-evaluation member is absent."
+    else:
+        status = "available"
+        reason = None
+    return {
+        "convention": convention,
+        "stage": (
+            job_record.get("stage")
+            if job_record is not None and isinstance(job_record.get("stage"), str)
+            else "training-and-locked-evaluation"
+        ),
+        "policy": policy,
+        "horizon_years": horizon_years,
+        "status": status,
+        "reason": reason,
+        "job": job_record,
+        "locked_report": report_record,
+        "evidence_references": {
+            "training_job": job_record.get("checkpoint") if job_record else None,
+            "locked_report_key": (
+                f"{policy}-{horizon_years}y" if report_record is not None else None
+            ),
+        },
+        "diagnostics": {
+            "job": job_record.get("diagnostics") if job_record is not None else None,
+            "locked_report": (
+                report_record.get("diagnostics") if report_record is not None else None
+            ),
+        },
+    }
+
+
+def _compatible_locked_pilot_evaluation(
+    locked: dict[str, object],
+    *,
+    convention: str,
+    jobs: dict[tuple[str, int], dict[str, object]],
+    shared_identities: object,
+) -> bool:
+    expected_members = {
+        f"{policy}-{horizon}y": (policy, horizon)
+        for policy in ("BM^D", "MM")
+        for horizon in (5, 15)
+    }
+    checkpoints = locked.get("checkpoints")
+    data_identities = locked.get("data_identities")
+    if (
+        locked.get("kind") != "locked-final-test-evaluation"
+        or locked.get("convention") != convention
+        or not isinstance(checkpoints, dict)
+        or not set(checkpoints).issubset(expected_members)
+        or not isinstance(data_identities, dict)
+        or not isinstance(shared_identities, dict)
+    ):
+        return False
+    for key in (
+        "market_source_hash",
+        "hjm_calibration_identity",
+        "reference_bank_content_hash",
+    ):
+        if data_identities.get(key) != shared_identities.get(key):
+            return False
+    for label, (policy, horizon_years) in expected_members.items():
+        if label not in checkpoints:
+            continue
+        checkpoint = checkpoints[label]
+        job = jobs.get((policy, horizon_years))
+        if not isinstance(checkpoint, dict) or job is None:
+            return False
+        if (
+            checkpoint.get("policy") != policy
+            or checkpoint.get("horizon_years") != horizon_years
+            or checkpoint.get("sha256") != job.get("checkpoint_sha256")
+        ):
+            return False
+    return True
+
+
+def _complete_locked_pilot_evaluation(
+    locked: dict[str, object],
+    *,
+    convention: str,
+    jobs: dict[tuple[str, int], dict[str, object]],
+    shared_identities: object,
+) -> bool:
+    expected_labels = {
+        f"{policy}-{horizon}y" for policy in ("BM^D", "MM") for horizon in (5, 15)
+    }
+    checkpoints = locked.get("checkpoints")
+    return bool(
+        _compatible_locked_pilot_evaluation(
+            locked,
+            convention=convention,
+            jobs=jobs,
+            shared_identities=shared_identities,
+        )
+        and isinstance(checkpoints, dict)
+        and set(checkpoints) == expected_labels
+    )
+
+
+def _compatible_pilot_truncation(
+    truncation: dict[str, object],
+    *,
+    convention: str,
+    jobs: dict[tuple[str, int], dict[str, object]],
+) -> bool:
+    job = jobs.get(("MM", 15))
+    if truncation.get("convention") != convention:
+        return False
+    if truncation.get("status") in {"unavailable", "incomplete", "failed"}:
+        return isinstance(truncation.get("reason"), str)
+    return bool(
+        truncation.get("status") == "available"
+        and truncation.get("source_horizon_years") == 15
+        and truncation.get("evaluation_horizon_years") == 5
+        and truncation.get("source_checkpoint") == (job or {}).get("checkpoint")
+        and truncation.get("source_checkpoint_sha256")
+        == (job or {}).get("checkpoint_sha256")
+    )
+
+
+def _complete_pilot_truncation(
+    truncation: dict[str, object],
+    *,
+    convention: str,
+    jobs: dict[tuple[str, int], dict[str, object]],
+) -> bool:
+    return bool(
+        _compatible_pilot_truncation(truncation, convention=convention, jobs=jobs)
+        and truncation.get("status") == "available"
+        and isinstance(truncation.get("report"), dict)
+    )
+
+
+def _paired_intervals_with_availability(
+    intervals: list[object],
+    *,
+    complete: bool,
+    conventions: dict[str, dict[str, object]],
+) -> list[dict[str, object]]:
+    missing_members = [
+        {
+            "convention": convention,
+            "policy": member["policy"],
+            "horizon_years": member["horizon_years"],
+            "status": member["status"],
+        }
+        for convention, details in conventions.items()
+        for member in details["members"]
+        if member["status"] != "available"
+    ]
+    normalized: list[dict[str, object]] = []
+    for interval in intervals:
+        if not isinstance(interval, dict):
+            continue
+        if complete:
+            normalized.append(interval)
+        else:
+            normalized.append(
+                {
+                    "metric": interval.get("metric", "unidentified"),
+                    "status": "not_applicable",
+                    "reason": "Paired interval is unavailable because one or more paired members are incomplete.",
+                    "missing_members": missing_members,
+                    "source_interval": interval,
+                }
+            )
+    if not normalized and missing_members:
+        normalized.append(
+            {
+                "metric": "paired-comparison",
+                "status": "not_applicable",
+                "reason": "Paired intervals are unavailable because paired members are missing.",
+                "missing_members": missing_members,
+                "source_interval": None,
+            }
+        )
+    return normalized
 
 
 def _paired_pilot_numerical_behavior(directory: Path) -> list[dict[str, object]]:
@@ -187,7 +513,9 @@ def _paired_pilot_numerical_behavior(directory: Path) -> list[dict[str, object]]
     evidence: list[dict[str, object]] = []
     for path in sorted(directory.glob("*/*.interruption.json")):
         contents = _read_report_object(path, "interruption evidence")
-        evidence.append({"path": str(path.relative_to(directory)), "evidence": contents})
+        evidence.append(
+            {"path": str(path.relative_to(directory)), "evidence": contents}
+        )
     return evidence
 
 
@@ -204,7 +532,9 @@ def build_compact_no_swap_report(
     """
 
     if not source_run_directories:
-        raise ReportingError("Compact report requires at least one completed source bundle")
+        raise ReportingError(
+            "Compact report requires at least one completed source bundle"
+        )
     expected_input_hashes = {
         "snb_csv": _sha256(configuration.source_data.snb_csv),
         "paper_pdf": _sha256(configuration.source_data.paper_pdf),
@@ -243,6 +573,7 @@ def build_compact_no_swap_report(
         metadata=metadata,
         local_evidence=local_evidence,
         long_end_status=calibration_evidence["long_end_extrapolation"]["status"],
+        source_pdf_sha256=expected_input_hashes["paper_pdf"],
     )
     report = {
         "format_version": 1,
@@ -291,6 +622,10 @@ def build_compact_no_swap_report(
             "visual_similarity_is_acceptance_test": False,
             "cubic_fit_reference_levels": "waived diagnostic; see calibration evidence",
             "local_result_is_not": "a reproduction of trained paper economic results",
+            "model_scope_gaps": [
+                "New-loan originations use one shared six-month reference rate rather than a maturity-specific curve.",
+                "Formal fit at paper network widths remains deferred to the bank-side training environment.",
+            ],
         },
     }
     return CompactReportArtifacts(
@@ -302,7 +637,9 @@ def build_compact_no_swap_report(
     )
 
 
-def _local_evidence(sources: tuple[_CompletedSource, ...]) -> dict[str, dict[str, object]]:
+def _local_evidence(
+    sources: tuple[_CompletedSource, ...],
+) -> dict[str, dict[str, object]]:
     """State whether supplied bundles actually contain each local report topic."""
 
     required = {
@@ -333,7 +670,9 @@ def _local_evidence(sources: tuple[_CompletedSource, ...]) -> dict[str, dict[str
     }
     return {
         name: {
-            "status": "included" if (included := _validated_artifacts(sources, validator)) else "deferred",
+            "status": "included"
+            if (included := _validated_artifacts(sources, validator))
+            else "deferred",
             "source_artifacts": [artifact.summary for artifact in included],
             "observations": [artifact.contents for artifact in included],
             "reason": reason,
@@ -373,7 +712,9 @@ def _is_sensitivity_evaluation(
 ) -> bool:
     contents = artifact.contents
     evaluation = contents.get("evaluation") if isinstance(contents, dict) else None
-    evaluation_manifest = evaluation.get("manifest") if isinstance(evaluation, dict) else None
+    evaluation_manifest = (
+        evaluation.get("manifest") if isinstance(evaluation, dict) else None
+    )
     return (
         artifact.name == "reference-bank-sensitivity.json"
         and isinstance(contents, dict)
@@ -421,17 +762,14 @@ def _is_recovery_diagnostic(
     data_identities = identity.get("data_identities")
     if not isinstance(data_identities, dict):
         return False
-    return (
-        data_identities.get("market_source_hash")
-        == source.manifest["input_hashes"]["snb_csv"]
-        and identity.get("semantic_configuration_identity")
-        == _semantic_configuration_identity(source.manifest["resolved_configuration"])
-    )
+    return data_identities.get("market_source_hash") == source.manifest["input_hashes"][
+        "snb_csv"
+    ] and identity.get(
+        "semantic_configuration_identity"
+    ) == _semantic_configuration_identity(source.manifest["resolved_configuration"])
 
 
-def _is_mm_truncation(
-    source: _CompletedSource, artifact: _EvidenceArtifact
-) -> bool:
+def _is_mm_truncation(source: _CompletedSource, artifact: _EvidenceArtifact) -> bool:
     contents = artifact.contents
     return (
         artifact.name in {"mm-truncation.json", "mm-fifteen-truncation.json"}
@@ -449,7 +787,8 @@ def _is_horizon_scenario_analysis(
 ) -> bool:
     contents = artifact.contents
     return (
-        artifact.name in {"horizon-scenario-analysis.json", "scenario-bootstrap-analysis.json"}
+        artifact.name
+        in {"horizon-scenario-analysis.json", "scenario-bootstrap-analysis.json"}
         and isinstance(contents, dict)
         and contents.get("format_version") == 1
         and contents.get("kind") == "horizon-scenario-analysis"
@@ -490,9 +829,7 @@ def _semantic_configuration_identity(configuration: object) -> str | None:
     return hashlib.sha256(serialized).hexdigest()
 
 
-def _long_end_extrapolation(
-    sources: tuple[_CompletedSource, ...]
-) -> dict[str, object]:
+def _long_end_extrapolation(sources: tuple[_CompletedSource, ...]) -> dict[str, object]:
     evidence = _validated_artifacts(sources, _is_long_end_extrapolation)
     if evidence:
         return {
@@ -563,9 +900,14 @@ def _load_completed_source(
         raise ReportingError(f"Report source directory does not exist: {directory}")
     manifest_path = directory / "manifest.json"
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise ReportingError(f"Report source manifest is unreadable: {manifest_path}") from error
+        manifest = json.loads(
+            manifest_path.read_text(encoding="utf-8"),
+            parse_constant=_reject_nonfinite_json,
+        )
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        raise ReportingError(
+            f"Report source manifest is unreadable: {manifest_path}"
+        ) from error
     if not isinstance(manifest, dict) or manifest.get("status") != "completed":
         raise ReportingError(f"Report source bundle is not completed: {directory}")
     if error := artifact_semantics_error(manifest, "evaluation"):
@@ -579,9 +921,7 @@ def _load_completed_source(
         not isinstance(source_configuration, dict)
         or source_configuration.get("convention") != expected_convention
     ):
-        raise ReportingError(
-            f"Report source convention does not match: {directory}"
-        )
+        raise ReportingError(f"Report source convention does not match: {directory}")
     return _CompletedSource(
         directory=directory,
         manifest=manifest,
@@ -595,20 +935,27 @@ def _load_completed_source(
 
 def _load_evidence_artifact(path: Path) -> _EvidenceArtifact:
     try:
-        contents = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        contents = None
+        contents = json.loads(
+            path.read_text(encoding="utf-8"), parse_constant=_reject_nonfinite_json
+        )
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        raise ReportingError(f"Evidence artifact is not strict JSON: {path}") from error
     if isinstance(contents, dict) and contents.get("kind") in {
-        "locked-final-test-evaluation", "frozen-policy-reference-bank-sensitivity",
-        "mm-fifteen-year-truncation", "horizon-scenario-analysis",
-        "local-workflow-acceptance", "compact-no-swap-local-report",
+        "locked-final-test-evaluation",
+        "frozen-policy-reference-bank-sensitivity",
+        "mm-fifteen-year-truncation",
+        "horizon-scenario-analysis",
+        "local-workflow-acceptance",
+        "compact-no-swap-local-report",
         "no-swap-paper-coverage-inventory",
     }:
         if error := artifact_semantics_error(contents, "evaluation"):
             raise ReportingError(f"{path.name}: {error}")
         if contents.get("kind") == "frozen-policy-reference-bank-sensitivity":
             evaluation = contents.get("evaluation")
-            manifest = evaluation.get("manifest") if isinstance(evaluation, dict) else None
+            manifest = (
+                evaluation.get("manifest") if isinstance(evaluation, dict) else None
+            )
             if error := artifact_semantics_error(manifest, "evaluation"):
                 raise ReportingError(f"{path.name}: {error}")
     return _EvidenceArtifact(
@@ -636,7 +983,9 @@ def _calibration_evidence(
             "observed": float(np.sum(calibration.explained_variance[:3])),
             "threshold": 0.9,
             "status": (
-                "passed" if float(np.sum(calibration.explained_variance[:3])) >= 0.9 else "failed"
+                "passed"
+                if float(np.sum(calibration.explained_variance[:3])) >= 0.9
+                else "failed"
             ),
         },
         "cubic_fit_reference_levels": {
@@ -682,7 +1031,9 @@ def _hjm_hull_white_comparison(
 ) -> dict[str, object]:
     paths = min(32, configuration.run_scale.test_paths)
     if paths <= 0:
-        raise ReportingError("Report HJM/Hull-White comparison requires at least one path")
+        raise ReportingError(
+            "Report HJM/Hull-White comparison requires at least one path"
+        )
     horizon_years = 5
     hjm = market_model.generate_hjm_scenarios(
         historical,
@@ -695,7 +1046,9 @@ def _hjm_hull_white_comparison(
         epoch=0,
         global_path_indices=tuple(range(paths)),
     )
-    hull_white_configuration = HullWhiteConfiguration(mean_reversion=0.2, volatility=0.01)
+    hull_white_configuration = HullWhiteConfiguration(
+        mean_reversion=0.2, volatility=0.01
+    )
     hull_white = market_model.generate_hull_white_scenarios(
         historical,
         horizon_years=horizon_years,
@@ -705,7 +1058,9 @@ def _hjm_hull_white_comparison(
     )
     diversity = market_model.summarize_terminal_curve_diversity(hjm, hull_white)
     result = asdict(diversity)
-    result["hjm_terminal_standard_deviation"] = diversity.hjm_terminal_standard_deviation.tolist()
+    result["hjm_terminal_standard_deviation"] = (
+        diversity.hjm_terminal_standard_deviation.tolist()
+    )
     result["hull_white_terminal_standard_deviation"] = (
         diversity.hull_white_terminal_standard_deviation.tolist()
     )
@@ -720,32 +1075,87 @@ def _hjm_hull_white_comparison(
 @dataclass(frozen=True)
 class _CoverageItem:
     paper_item: str
+    paper_page: int
     subject: str
-    report_artifact: str | None = None
     evidence_topic: str | None = None
+    related_artifact: str | None = None
 
 
 _COVERAGE_ITEMS = (
-    _CoverageItem("Table 1", "Reference Bank assumptions and balance-sheet summary", "reference-bank-summary.json"),
-    _CoverageItem("Table 2", "No-swap policy outcome summary", evidence_topic="policy_metrics"),
-    _CoverageItem("Table 3", "No-swap policy risk and constraint summary", evidence_topic="equity_and_constraints"),
-    _CoverageItem("Table 4", "Horizon and truncation comparison", evidence_topic="mm_truncation"),
-    _CoverageItem("Table 5", "Reference Bank sensitivity summary", evidence_topic="durations_and_sensitivities"),
-    _CoverageItem("Figure 3", "Term-structure calibration and PCA evidence", "calibration-evidence.json"),
-    _CoverageItem("Figure 4", "HJM and Hull-White scenario diversity comparison", "hjm-hull-white-comparison.json"),
-    _CoverageItem("Figure 5", "Long-end extrapolation diagnostics", evidence_topic="long_end_extrapolation"),
-    _CoverageItem("Figure 6", "PCA loading diagnostics", "calibration-evidence.json"),
-    _CoverageItem("Figure 7", "Policy actions", evidence_topic="policy_metrics"),
-    _CoverageItem("Figure 8", "Equity outcomes", evidence_topic="equity_and_constraints"),
-    _CoverageItem("Figure 9", "Constraint trajectories", evidence_topic="equity_and_constraints"),
-    _CoverageItem("Figure 10", "Duration evidence", "reference-bank-summary.json"),
-    _CoverageItem("Figure 11", "Interest-rate sensitivity evidence", evidence_topic="durations_and_sensitivities"),
-    _CoverageItem("Figure 12", "Representative path evidence", evidence_topic="policy_metrics"),
-    _CoverageItem("Figure 13", "Scenario-category policy actions", evidence_topic="scenario_categories_and_bootstrap"),
-    _CoverageItem("Figure 14", "Scenario-category constraint evidence", evidence_topic="scenario_categories_and_bootstrap"),
-    _CoverageItem("Figure 15", "Horizon action-turnover evidence", evidence_topic="scenario_categories_and_bootstrap"),
-    _CoverageItem("Figure 16", "Terminal-concentration evidence", evidence_topic="scenario_categories_and_bootstrap"),
-    _CoverageItem("Figure 17", "Bootstrap and sensitivity evidence", evidence_topic="scenario_categories_and_bootstrap"),
+    _CoverageItem(
+        "Table 1",
+        7,
+        "Economic balance sheet",
+        related_artifact="reference-bank-summary.json",
+    ),
+    _CoverageItem("Table 2", 16, "Hyperparameters"),
+    _CoverageItem(
+        "Table 3",
+        21,
+        "Main results: losses, equity distribution, returns and dividends",
+        "policy_metrics",
+    ),
+    _CoverageItem("Table 4", 26, "Constraint statistics", "equity_and_constraints"),
+    _CoverageItem(
+        "Table 5",
+        34,
+        "Category statistics; disclose covered policy columns",
+        "scenario_categories_and_bootstrap",
+    ),
+    _CoverageItem(
+        "Figure 3",
+        17,
+        "Simulated one-month yields under HJM-PCA",
+        related_artifact="calibration-evidence.json",
+    ),
+    _CoverageItem(
+        "Figure 4",
+        17,
+        "Terminal five-year yield curves, HJM-PCA versus Hull-White",
+        related_artifact="hjm-hull-white-comparison.json",
+    ),
+    _CoverageItem("Figure 5", 20, "Decision-network architecture"),
+    _CoverageItem("Figure 6", 24, "Equity-ratio histograms", "equity_and_constraints"),
+    _CoverageItem("Figure 7", 24, "Constant benchmark strategies", "policy_metrics"),
+    _CoverageItem("Figure 8", 25, "Investment and financing volume", "policy_metrics"),
+    _CoverageItem("Figure 9", 26, "LCR and CMR", "equity_and_constraints"),
+    _CoverageItem("Figure 10", 27, "Equity/RWA", "equity_and_constraints"),
+    _CoverageItem(
+        "Figure 11",
+        28,
+        "Interest-rate sensitivity and portfolio durations",
+        "durations_and_sensitivities",
+    ),
+    _CoverageItem(
+        "Figure 12",
+        29,
+        "Five-year yield-curve scenarios",
+        "scenario_categories_and_bootstrap",
+    ),
+    _CoverageItem(
+        "Figure 13", 30, "Five-year decisions", "scenario_categories_and_bootstrap"
+    ),
+    _CoverageItem(
+        "Figure 14",
+        30,
+        "Five-year sensitivity gaps",
+        "scenario_categories_and_bootstrap",
+    ),
+    _CoverageItem(
+        "Figure 15",
+        31,
+        "Fifteen-year yield-curve scenarios",
+        "scenario_categories_and_bootstrap",
+    ),
+    _CoverageItem(
+        "Figure 16", 32, "Fifteen-year decisions", "scenario_categories_and_bootstrap"
+    ),
+    _CoverageItem(
+        "Figure 17",
+        32,
+        "Fifteen-year sensitivity gaps",
+        "scenario_categories_and_bootstrap",
+    ),
 )
 
 
@@ -755,6 +1165,7 @@ def _coverage_inventory(
     metadata: dict[str, object],
     local_evidence: dict[str, dict[str, object]],
     long_end_status: object,
+    source_pdf_sha256: str,
 ) -> dict[str, object]:
     entries = []
     for item in _COVERAGE_ITEMS:
@@ -763,23 +1174,48 @@ def _coverage_inventory(
             if item.evidence_topic == "long_end_extrapolation"
             else local_evidence.get(item.evidence_topic or "", {})
         )
-        generated = item.report_artifact is not None or evidence.get("status") == "included"
+        scope_disclosure = (
+            "Table 5 has mixed policy columns. Only the named no-swap local policy "
+            "columns are covered; swap results are unavailable and not inferred."
+            if item.paper_item == "Table 5"
+            else (
+                "Table 3 swap columns are excluded; no swap result is inferred."
+                if item.paper_item == "Table 3"
+                else (
+                    "The printed item may contain a wider policy scope; this no-swap "
+                    "local report does not infer excluded columns."
+                )
+            )
+        )
         entries.append(
             {
                 "paper_item": item.paper_item,
+                "paper_page": item.paper_page,
                 "subject": item.subject,
-                "status": "generated" if generated else "deferred",
-                "reason": (
-                    "Generated as a compact local workflow evidence artifact."
-                    if generated
-                    else evidence.get(
-                        "reason",
-                        "Requires completed policy-evaluation or extended-research evidence.",
-                    )
-                ),
-                "report_artifacts": [item.report_artifact]
-                if item.report_artifact is not None
-                else [],
+                "status": "missing",
+                "reason": "No local artifact reproduces this printed paper table or figure.",
+                "source_pdf_sha256": source_pdf_sha256,
+                "matching_output_evidence": {
+                    "status": "missing",
+                    "artifacts": [],
+                    "reason": "The compact workflow does not generate this printed item.",
+                },
+                "related_evidence": {
+                    "status": evidence.get("status", "unavailable"),
+                    "report_artifacts": [item.related_artifact]
+                    if item.related_artifact is not None
+                    else [],
+                    "source_artifacts": evidence.get("source_artifacts", []),
+                    "reason": (
+                        "Related local evidence is diagnostic only and does not complete "
+                        f"{item.paper_item}."
+                    ),
+                },
+                "supported_policy_scope": {
+                    "covered_policy_columns": metadata["policy"],
+                    "excluded_policy_columns": ["swap strategies"],
+                    "paper_scope_disclosure": scope_disclosure,
+                },
                 "source_artifacts": evidence.get("source_artifacts", []),
                 "metadata": metadata,
                 "caption_number_disclosure": {
@@ -800,6 +1236,10 @@ def _coverage_inventory(
         "entries": entries,
         "presentation_metadata": metadata,
         "swaps_included": False,
+        "excluded_paper_scope": {
+            "items": ["Figures 18-19"],
+            "columns": ["Table 3 swap columns", "Table 5 swap strategies"],
+        },
         "visual_similarity_is_acceptance_test": False,
     }
 
@@ -827,12 +1267,17 @@ def _presentation_metadata(sources: tuple[_CompletedSource, ...]) -> dict[str, o
         if isinstance(policy, dict):
             policies.update(str(name) for name in policy.get("names", []))
         if isinstance(experiment, dict):
-            horizons.update(int(value) for value in experiment.get("horizons_years", []))
+            horizons.update(
+                int(value) for value in experiment.get("horizons_years", [])
+            )
         if isinstance(convention, dict) and convention.get("profile") is not None:
             conventions.add(str(convention["profile"]))
         if isinstance(reference_bank, dict):
             initial_assets = reference_bank.get("initial_assets", {})
-            if isinstance(initial_assets, dict) and initial_assets.get("unit") is not None:
+            if (
+                isinstance(initial_assets, dict)
+                and initial_assets.get("unit") is not None
+            ):
                 units.add(str(initial_assets["unit"]))
         if isinstance(run_scale, dict):
             sample_sizes.append(
@@ -870,7 +1315,7 @@ def _presentation_metadata(sources: tuple[_CompletedSource, ...]) -> dict[str, o
 
 
 def _checkpoint_parameter_counts(
-    sources: tuple[_CompletedSource, ...]
+    sources: tuple[_CompletedSource, ...],
 ) -> list[dict[str, object]]:
     return [
         {
@@ -920,7 +1365,9 @@ def _actual_work_ledger(sources: tuple[_CompletedSource, ...]) -> dict[str, obje
         "resource_measurements": {
             "status": "included" if profiles else "unavailable",
             "observations": profiles,
-            "reason": None if profiles else "No valid resource-profile artifact was supplied.",
+            "reason": None
+            if profiles
+            else "No valid resource-profile artifact was supplied.",
         },
         "numeric_metrics": {
             "status": "included" if selection_metrics else "unavailable",
@@ -951,7 +1398,9 @@ def _checkpoint_audit(sources: tuple[_CompletedSource, ...]) -> list[dict[str, o
                 if not isinstance(state, dict):
                     raise TypeError("missing policy state")
                 count = sum(
-                    value.numel() for value in state.values() if isinstance(value, torch.Tensor)
+                    value.numel()
+                    for value in state.values()
+                    if isinstance(value, torch.Tensor)
                 )
                 history = checkpoint.get("selection_history")
                 selected_epoch = checkpoint.get("selected_epoch")
@@ -961,7 +1410,8 @@ def _checkpoint_audit(sources: tuple[_CompletedSource, ...]) -> list[dict[str, o
                     (
                         record
                         for record in history
-                        if isinstance(record, dict) and record.get("epoch") == selected_epoch
+                        if isinstance(record, dict)
+                        and record.get("epoch") == selected_epoch
                     ),
                     None,
                 )
@@ -1030,7 +1480,9 @@ def _source_checkpoint_data_identities(
     preflight = source.manifest.get("market_preflight")
     calibration = preflight.get("calibration") if isinstance(preflight, dict) else None
     reference_bank = source.manifest.get("reference_bank")
-    market_hash = input_hashes.get("snb_csv") if isinstance(input_hashes, dict) else None
+    market_hash = (
+        input_hashes.get("snb_csv") if isinstance(input_hashes, dict) else None
+    )
     calibration_identity = (
         calibration.get("identity") if isinstance(calibration, dict) else None
     )
@@ -1049,7 +1501,9 @@ def _source_checkpoint_data_identities(
     }
 
 
-def _resource_profiles(sources: tuple[_CompletedSource, ...]) -> list[dict[str, object]]:
+def _resource_profiles(
+    sources: tuple[_CompletedSource, ...],
+) -> list[dict[str, object]]:
     required = {
         "horizon_years",
         "device",
@@ -1059,7 +1513,11 @@ def _resource_profiles(sources: tuple[_CompletedSource, ...]) -> list[dict[str, 
         "peak_process_rss_bytes",
     }
     return [
-        {"source_run": str(source.directory), "artifact": artifact.name, **artifact.contents}
+        {
+            "source_run": str(source.directory),
+            "artifact": artifact.name,
+            **artifact.contents,
+        }
         for source in sources
         for artifact in source.artifacts
         if artifact.name.endswith(".profile.json")
