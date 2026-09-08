@@ -81,6 +81,33 @@ def test_local_workflow_runs_every_required_stage_and_publishes_one_bundle(
     checks = {check["purpose"]: check for check in acceptance["checks"]}
     assert checks["finite gradients and financial rollout"]["status"] == "passed"
     assert checks["epoch-boundary recovery equivalence"]["status"] == "passed"
+    ledger = acceptance["financial_correction_ledger"]
+    assert ledger["status"] == "implemented-and-evidence-linked"
+    assert ledger["artifact_semantics"] == acceptance["artifact_semantics"]
+    assert {item["id"] for item in ledger["corrections"]} == {
+        "C-1/C-2",
+        "C-3",
+        "C-5/C-6",
+        "E-03/Equation 8/E-10",
+        "C-7/C-8/R-1",
+        "R-2",
+    }
+    assert set(ledger["execution_paths"]) == {
+        "training_and_selection",
+        "import",
+        "sensitivity",
+        "truncation",
+        "recovery",
+        "report",
+    }
+    assert ledger["cpu_float64"] == {
+        "status": "covered",
+        "dtype": "float64",
+        "horizons_years": [5, 15],
+        "tolerance_policy": "existing dtype-aware ledger tolerances",
+    }
+    assert ledger["accelerator_boundary"]["mps"] == "runtime-dependent"
+    assert ledger["accelerator_boundary"]["cuda"] == "not validated locally"
     assert (bundle.artifact_directory / "locked-evaluation.json").is_file()
     assert (bundle.artifact_directory / "reference-bank-sensitivity.json").is_file()
     assert (bundle.artifact_directory / "horizon-scenario-analysis.json").is_file()
@@ -180,6 +207,21 @@ def test_workflow_command_dispatches_to_the_public_workflow_seam(
 
     assert main(["workflow", "--config", str(config_path)]) == 0
     assert capsys.readouterr().out.strip() == str(artifact_directory)
+
+
+def test_local_workflow_rejects_non_cpu_float64_validation(tmp_path: Path) -> None:
+    configuration = _workflow_configuration(tmp_path)
+
+    bundle = ReproductionRunner().run_local_workflow(
+        replace(
+            configuration,
+            optimization=replace(configuration.optimization, dtype="float32"),
+        )
+    )
+
+    assert bundle.status is RunStatus.FAILED
+    assert bundle.acceptance_status is AcceptanceStatus.PENDING
+    assert bundle.error == "Local workflow requires CPU float64"
 
 
 def test_local_workflow_preserves_incomplete_diagnostics_without_success(

@@ -102,3 +102,31 @@ The new-loan rate remains a single six-month-yield rate for all maturities. This
 is an explicit shared simplification; a later maturity-specific origination-curve
 extension would create several new cohorts per product/month and requires its own
 resource budget and validation.
+
+## Integrated consistency acceptance
+
+The `acceptance-report.json` written by the bounded local workflow contains a
+`financial_correction_ledger`. It is an implementation and evidence register,
+not an economic-performance claim. Its source basis is the paper, the
+user-specified independent errata review, and the worked examples below.
+
+| Requirement | Source / independent expectation | Public execution evidence |
+| --- | --- | --- |
+| C-1/C-2 MM observation | Paper Equation 45: pre-action economic ratios in the stated order; constraints are shifted by their raw bounds. | Selected checkpoints and `locked-evaluation.json`; `tests/test_policies.py`, `tests/test_mm.py`. |
+| C-3 BM^D allocation | At each of 60/180 decision dates, total transaction notional is the live first maturing bucket plus the learned date adjustment. | Selected checkpoints and frozen BM^D references; `tests/test_policies.py`, `tests/test_mm_training.py`. |
+| C-5/C-6 deposits | Original reference-term ownership survives rollover; Equation 11c uses dated historical six-month yields rather than repeated Y0. | `reference-bank.json`, workflow replay; `tests/test_deposits.py`, `tests/test_reference_bank.py`. |
+| E-03, Equation 8, E-10 | Errata: negative-rate cash charge is a non-negative cost; loan growth starts from the pre-roll balance; tail selection uses raw quantiles before centering. | Financial rollout diagnostics and `locked-evaluation.json`; `tests/test_deposits.py`, `tests/test_loans.py`, `tests/test_evaluation.py`. |
+| C-7/C-8/R-1 metrics | Dividend denominator is `E0 × (T − 1)`; constraint counts distinguish raw and penalty units; moments are population moments with explicit undefined values. | `locked-evaluation.json`, `mm-truncation.json`; `tests/test_evaluation.py`. |
+| R-2 reporting | Printed Table 1–5/Figure 3–17 mapping is explicit; missing output, failed branches and unavailable paired intervals remain non-promotional. | `compact-no-swap-report.json` and `paper-coverage-inventory.json`; `tests/test_reporting.py`. |
+
+The workflow covers training/selection, Reference Bank import, frozen-policy
+sensitivity, zero-update MM(15y|5y) truncation, recovery and reporting through
+one immutable bundle. `tests/test_workflow.py` exercises both 5- and 15-year
+CPU float64 paths (60 and 180 steps) with the existing dtype-aware accounting
+tolerances. Device commissioning tests exercise the same public seam and report
+MPS/CUDA as `not-run` when unavailable; a missing accelerator is never treated
+as validation.
+
+This acceptance does not start the paired pilot, certify convergence, recreate
+the paper's private results, or approve a bank model. BM^E/BM^C historical
+weights remain historical unless separately retrained under an approved plan.

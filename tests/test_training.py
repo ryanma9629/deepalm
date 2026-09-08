@@ -198,10 +198,14 @@ def test_bme_checkpoint_loader_rejects_incompatible_semantic_contract(
         trainer.load_selected_checkpoint(incompatible_path)
 
 
+@pytest.mark.parametrize("horizon_years", [5, 15])
 def test_bme_device_validation_records_cpu_mps_and_cuda_truthfully(
-    tmp_path: Path,
+    tmp_path: Path, horizon_years: int
 ) -> None:
-    configuration = _configuration(tmp_path)
+    configuration = replace(
+        _configuration(tmp_path),
+        experiment=ExperimentConfiguration(horizons_years=(5, 15), include_swaps=False),
+    )
     model = MarketScenarioModel()
     historical = model.load_historical_term_structures(SOURCE)
     calibration = model.calibrate_hjm_pca(historical)
@@ -212,7 +216,7 @@ def test_bme_device_validation_records_cpu_mps_and_cuda_truthfully(
         snapshot=snapshot,
         historical=historical,
         calibration=calibration,
-    ).validate_devices(horizon_years=5)
+    ).validate_devices(horizon_years=horizon_years)
 
     records_by_device = {record.device: record for record in records}
     assert set(records_by_device) == {"cpu", "mps", "cuda"}

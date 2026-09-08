@@ -4,7 +4,7 @@
 
 **Blocked by:** 02, 03, 04, 05, 07.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 来源：Deep ALM 论文一致性修复增量规格 Revision 1；本专项独立编号，旧专项票不变。
 
@@ -15,3 +15,14 @@
 ## Comments
 
 2026-09-08 — 用户已确认十票拆分与阻塞关系；按本地 Markdown tracker 发布。
+
+## Answer
+
+2026-09-08 — 已完成 02–07 修复的全链路验收登记。受限 local
+workflow 现在只接受 CPU float64；其 acceptance-report 记录修复—证据清单、
+当前 evaluation artifact semantics、训练/选择、导入、敏感性、截断、恢复及
+报告路径，并明确不宣称配对训练、收敛或银行模型批准。BM^E 与 MM 的真实
+device-validation 都覆盖 5/15 年小样本 CPU/MPS/CUDA 更新、恢复及不可用状态。
+
+验证：`uv run pytest -q` 为 243 passed（114.70s）；Ruff 定向检查通过。以
+`097836b` 为实施前基线的 Standards 与 Spec 双轴复审均无未解决实质发现。

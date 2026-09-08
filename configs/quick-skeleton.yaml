@@ -26,8 +26,8 @@ policy:
   names: [BM^E, BM^C, BM^D, MM]
 
 optimization:
-  device: auto
-  dtype: float32
+  device: cpu
+  dtype: float64
 
 resources:
   wall_clock_budget_seconds: 1800

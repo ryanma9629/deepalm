@@ -11,6 +11,7 @@ from deepalm.baselines import FrozenDateBenchmarkReference
 from deepalm.config import (
     ArchitectureConfiguration,
     ConventionConfiguration,
+    ExperimentConfiguration,
     PolicyConfiguration,
     RunScaleConfiguration,
     resolve_configuration,
@@ -88,7 +89,11 @@ def _configuration(tmp_path: Path, *, fixture: bool = True):
 
 
 def _frozen_baseline(
-    configuration, model: MarketScenarioModel, tmp_path: Path
+    configuration,
+    model: MarketScenarioModel,
+    tmp_path: Path,
+    *,
+    horizon_years: int = 5,
 ) -> FrozenDateBenchmarkReference:
     historical = model.load_historical_term_structures(SOURCE)
     calibration = model.calibrate_hjm_pca(historical)
@@ -103,7 +108,7 @@ def _frozen_baseline(
         snapshot=snapshot,
         historical=historical,
         calibration=calibration,
-    ).fit(horizon_years=5)
+    ).fit(horizon_years=horizon_years)
     assert result.baseline_reference_path is not None
     return FrozenDateBenchmarkReference.load(result.baseline_reference_path)
 
@@ -205,6 +210,64 @@ def test_mm_trainer_selects_and_reloads_a_compact_five_year_policy(
         and device_records[0].updated
         and device_records[0].clipped
     )
+
+
+@pytest.mark.parametrize("horizon_years", [5, 15])
+def test_mm_device_validation_covers_both_full_horizons_truthfully(
+    tmp_path: Path, horizon_years: int
+) -> None:
+    configuration = replace(
+        _configuration(tmp_path),
+        experiment=ExperimentConfiguration(horizons_years=(5, 15), include_swaps=False),
+        run_scale=RunScaleConfiguration(
+            profile="mm-device-validation-fixture",
+            epochs=2,
+            training_paths_per_epoch=2,
+            selection_paths=2,
+            test_paths=2,
+            batch_size=2,
+        ),
+    )
+    model = MarketScenarioModel()
+    historical = model.load_historical_term_structures(SOURCE)
+    calibration = model.calibrate_hjm_pca(historical)
+    snapshot = ReferenceBankProvider().build_canonical(historical)
+    reference = _frozen_baseline(
+        configuration, model, tmp_path, horizon_years=horizon_years
+    )
+    records = MMTrainer(
+        configuration,
+        snapshot=snapshot,
+        historical=historical,
+        calibration=calibration,
+        baseline_reference=reference,
+    ).validate_devices(horizon_years=horizon_years)
+
+    records_by_device = {record.device: record for record in records}
+    assert set(records_by_device) == {"cpu", "mps", "cuda"}
+    cpu = records_by_device["cpu"]
+    assert cpu.status == "completed"
+    assert cpu.finite and cpu.updated and cpu.clipped
+    assert cpu.checkpoint_loaded and cpu.resumed_from_cpu_recovery
+    assert cpu.recovery_path is not None and cpu.recovery_path.is_file()
+
+    mps = records_by_device["mps"]
+    if torch.backends.mps.is_available():
+        assert mps.status == "completed"
+        assert mps.finite and mps.updated and mps.clipped
+        assert mps.checkpoint_loaded and mps.resumed_from_cpu_recovery
+    else:
+        assert mps.status == "not-run"
+        assert mps.reason == "PyTorch MPS runtime is not available"
+
+    cuda = records_by_device["cuda"]
+    if torch.cuda.is_available():
+        assert cuda.status == "completed"
+        assert cuda.finite and cuda.updated and cuda.clipped
+        assert cuda.checkpoint_loaded and cuda.resumed_from_cpu_recovery
+    else:
+        assert cuda.status == "not-run"
+        assert cuda.reason == "PyTorch CUDA runtime is not available"
 
 
 def test_mm_paper_width_check_is_one_finite_update_and_does_not_replace_compact_checkpoint(
