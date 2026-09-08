@@ -12,7 +12,7 @@ from deepalm.constraints import ConstraintState, ConstraintValues, evaluate_cons
 from deepalm.deposits import (
     DEFAULT_DEPOSIT_CONFIGURATION,
     DepositConfiguration,
-    allocate_deposit_tranches,
+    allocate_reference_term_tranches,
     cash_penalty,
     deposit_rates,
     monthly_deposit_interest,
@@ -64,6 +64,7 @@ class PassiveRunoffResult:
     loan_originations: torch.Tensor | None = None
     loan_interest_cash_flows: torch.Tensor | None = None
     enterprise_impairment_factors: torch.Tensor | None = None
+    deposit_reference_schedules: Mapping[str, torch.Tensor] | None = None
     deposit_growth: torch.Tensor | None = None
     operating_costs: torch.Tensor | None = None
     cash_penalties: torch.Tensor | None = None
@@ -176,6 +177,19 @@ class ALMSimulator:
                 for name in ("mortgages", "enterprise_loans")
             }
             if include_loan_dynamics
+            else None
+        )
+        deposit_reference_schedules = (
+            {
+                name: torch.tensor(
+                    schedule.cash_flows, device=device, dtype=dtype
+                )
+                .unsqueeze(0)
+                .expand(paths, -1, -1)
+                .clone()
+                for name, schedule in snapshot.deposit_reference_schedules.items()
+            }
+            if include_deposit_dynamics
             else None
         )
         if loan_cohorts is not None:
@@ -342,45 +356,46 @@ class ALMSimulator:
                 )
             if include_deposit_dynamics:
                 assert spots is not None
+                assert deposit_reference_schedules is not None
                 history = torch.stack(
                     [spots[:, max(0, transition - offset), 5] for offset in (0, 1, 2)],
                     dim=1,
                 )
                 rates = deposit_rates(history, spots[:, transition + 1, 5])
-                nmd_growth = (
-                    ladders["non_maturity_deposits"].sum(dim=1)
-                    * deposit_configuration.non_maturity_growth
-                    / 12.0
-                )
-                td_growth = (
-                    ladders["term_deposits"].sum(dim=1)
-                    * deposit_configuration.term_growth
-                    / 12.0
-                )
-                nmd_matured, td_matured = (
-                    ladders["non_maturity_deposits"][:, 0],
-                    ladders["term_deposits"][:, 0],
-                )
-                nmd_interest = monthly_deposit_interest(rates.non_maturity) * ladders[
-                    "non_maturity_deposits"
-                ].sum(dim=1)
-                td_interest = monthly_deposit_interest(rates.term) * ladders[
-                    "term_deposits"
-                ].sum(dim=1)
-                ladders["non_maturity_deposits"] = torch.nn.functional.pad(
-                    ladders["non_maturity_deposits"][:, 1:], (0, 1)
-                ) + allocate_deposit_tranches(
-                    nmd_matured + nmd_growth + nmd_interest,
-                    deposit_configuration.reference_terms_months,
-                    deposit_configuration.non_maturity_weights,
-                )
-                ladders["term_deposits"] = torch.nn.functional.pad(
-                    ladders["term_deposits"][:, 1:], (0, 1)
-                ) + allocate_deposit_tranches(
-                    td_matured + td_growth + td_interest,
-                    deposit_configuration.reference_terms_months,
-                    deposit_configuration.term_weights,
-                )
+                product_growth: dict[str, torch.Tensor] = {}
+                product_matured: dict[str, torch.Tensor] = {}
+                for name, annual_growth, rate in (
+                    (
+                        "non_maturity_deposits",
+                        deposit_configuration.non_maturity_growth,
+                        rates.non_maturity,
+                    ),
+                    ("term_deposits", deposit_configuration.term_growth, rates.term),
+                ):
+                    schedule = snapshot.deposit_reference_schedules[name]
+                    class_ladders = deposit_reference_schedules[name]
+                    class_balances = class_ladders.sum(dim=2)
+                    total_balance = class_balances.sum(dim=1)
+                    product_growth[name] = total_balance * annual_growth / 12.0
+                    growth_by_class = product_growth[name].unsqueeze(1) * torch.tensor(
+                        schedule.weights, device=device, dtype=dtype
+                    ).unsqueeze(0)
+                    matured_by_class = class_ladders[:, :, 0]
+                    product_matured[name] = matured_by_class.sum(dim=1)
+                    interest_by_class = (
+                        monthly_deposit_interest(rate).unsqueeze(1) * class_balances
+                    )
+                    deposit_reference_schedules[name] = torch.nn.functional.pad(
+                        class_ladders[:, :, 1:], (0, 1)
+                    ) + allocate_reference_term_tranches(
+                        matured_by_class + growth_by_class + interest_by_class,
+                        schedule.terms_months,
+                    )
+                    ladders[name] = deposit_reference_schedules[name].sum(dim=1)
+                nmd_growth = product_growth["non_maturity_deposits"]
+                td_growth = product_growth["term_deposits"]
+                nmd_matured = product_matured["non_maturity_deposits"]
+                td_matured = product_matured["term_deposits"]
                 deposit_growth[:, transition] = nmd_growth + td_growth
                 costs[:, transition] = operating_cost(
                     personnel_cost=snapshot.personnel_cost,
@@ -574,6 +589,11 @@ class ALMSimulator:
             loan_originations=loan_originations,
             loan_interest_cash_flows=loan_interest,
             enterprise_impairment_factors=impairments,
+            deposit_reference_schedules=(
+                MappingProxyType(deposit_reference_schedules)
+                if deposit_reference_schedules is not None
+                else None
+            ),
             deposit_growth=deposit_growth,
             operating_costs=costs,
             cash_penalties=penalties,

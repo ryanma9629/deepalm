@@ -70,6 +70,16 @@ class LoanCohort:
 
 
 @dataclass(frozen=True)
+class DepositReferenceSchedule:
+    """One product's cash-flow schedules, separated by original reference term."""
+
+    terms_months: tuple[int, ...]
+    weights: tuple[float, ...]
+    cash_flows: np.ndarray
+    provenance: str
+
+
+@dataclass(frozen=True)
 class ReferenceBankSnapshot:
     """Immutable initial bank state shared by the two model horizons."""
 
@@ -81,6 +91,7 @@ class ReferenceBankSnapshot:
     equity: float
     ladders: Mapping[str, np.ndarray]
     loan_cohorts: Mapping[str, tuple[LoanCohort, ...]]
+    deposit_reference_schedules: Mapping[str, DepositReferenceSchedule]
     target_economic_values: Mapping[str, float]
     target_value_errors: Mapping[str, float]
     product_assumptions: Mapping[str, object]
@@ -151,6 +162,16 @@ class ReferenceBankProvider:
                 discounts=discounts,
             ),
         }
+        deposit_reference_schedules = {
+            "non_maturity_deposits": _seasoned_deposit_reference_schedule(
+                (1, 2, 12, 120), (0.40, 0.30, 0.25, 0.05), 0.005,
+                "synthetic seasoned NMD reference-term allocation",
+            ),
+            "term_deposits": _seasoned_deposit_reference_schedule(
+                (1, 2, 12, 120), (0.10, 0.10, 0.50, 0.30), 0.01,
+                "synthetic seasoned term-deposit reference-term allocation",
+            ),
+        }
         raw = {
             "mortgages": _loan_cohort_cash_flows(loan_cohorts["mortgages"]),
             "enterprise_loans": _loan_cohort_cash_flows(
@@ -160,18 +181,25 @@ class ReferenceBankProvider:
                 tuple(range(36, 181, 12)), (1 / 13,) * 13, 0.01
             ),
             "funding": _seasoned_ladder((3, *range(12, 181, 12)), (1 / 16,) * 16, 0.01),
-            "non_maturity_deposits": _seasoned_ladder(
-                (1, 2, 12, 120), (0.40, 0.30, 0.25, 0.05), 0.005
-            ),
-            "term_deposits": _seasoned_ladder(
-                (1, 2, 12, 120), (0.10, 0.10, 0.50, 0.30), 0.01
-            ),
+            **{
+                name: schedule.cash_flows.sum(axis=0)
+                for name, schedule in deposit_reference_schedules.items()
+            },
+        }
+        deposit_scales = {
+            name: _TARGETS[name] / float(raw[name] @ discounts)
+            for name in deposit_reference_schedules
         }
         ladders = {
             name: _readonly(
                 raw[name]
                 if name in loan_cohorts
-                else raw[name] * (_TARGETS[name] / float(raw[name] @ discounts))
+                else raw[name]
+                * (
+                    deposit_scales[name]
+                    if name in deposit_scales
+                    else _TARGETS[name] / float(raw[name] @ discounts)
+                )
             )
             for name in _LADDER_NAMES
         }
@@ -202,6 +230,15 @@ class ReferenceBankProvider:
             cash=_TARGETS["cash"],
             ladders=ladders,
             loan_cohorts=loan_cohorts,
+            deposit_reference_schedules={
+                name: DepositReferenceSchedule(
+                    terms_months=schedule.terms_months,
+                    weights=schedule.weights,
+                    cash_flows=schedule.cash_flows * deposit_scales[name],
+                    provenance=schedule.provenance,
+                )
+                for name, schedule in deposit_reference_schedules.items()
+            },
             target_economic_values=_TARGETS,
             equity=1_000.0,
             assumptions=assumptions,
@@ -294,6 +331,16 @@ class ReferenceBankProvider:
                 discounts=discounts,
             ),
         }
+        deposit_reference_schedules = {
+            "non_maturity_deposits": _seasoned_deposit_reference_schedule(
+                (1, 2, 12, 120), tuple(non_maturity_weights), 0.005,
+                "synthetic sensitivity NMD reference-term allocation",
+            ),
+            "term_deposits": _seasoned_deposit_reference_schedule(
+                (1, 2, 12, 120), tuple(term_deposit_weights), 0.01,
+                "synthetic sensitivity term-deposit reference-term allocation",
+            ),
+        }
         raw = {
             "mortgages": _loan_cohort_cash_flows(loan_cohorts["mortgages"]),
             "enterprise_loans": _loan_cohort_cash_flows(
@@ -305,18 +352,25 @@ class ReferenceBankProvider:
             "funding": _seasoned_ladder(
                 (3, *range(12, 181, 12)), (1 / 16,) * 16, 0.01
             ),
-            "non_maturity_deposits": _seasoned_ladder(
-                (1, 2, 12, 120), non_maturity_weights, 0.005
-            ),
-            "term_deposits": _seasoned_ladder(
-                (1, 2, 12, 120), term_deposit_weights, 0.01
-            ),
+            **{
+                name: schedule.cash_flows.sum(axis=0)
+                for name, schedule in deposit_reference_schedules.items()
+            },
+        }
+        deposit_scales = {
+            name: targets[name] / float(raw[name] @ discounts)
+            for name in deposit_reference_schedules
         }
         ladders = {
             name: _readonly(
                 raw[name]
                 if name in loan_cohorts
-                else raw[name] * (targets[name] / float(raw[name] @ discounts))
+                else raw[name]
+                * (
+                    deposit_scales[name]
+                    if name in deposit_scales
+                    else targets[name] / float(raw[name] @ discounts)
+                )
             )
             for name in _LADDER_NAMES
         }
@@ -350,6 +404,15 @@ class ReferenceBankProvider:
             cash=targets["cash"],
             ladders=ladders,
             loan_cohorts=loan_cohorts,
+            deposit_reference_schedules={
+                name: DepositReferenceSchedule(
+                    terms_months=schedule.terms_months,
+                    weights=schedule.weights,
+                    cash_flows=schedule.cash_flows * deposit_scales[name],
+                    provenance=schedule.provenance,
+                )
+                for name, schedule in deposit_reference_schedules.items()
+            },
             target_economic_values=targets,
             equity=targets["cash"]
             + targets["investments"]
@@ -423,6 +486,63 @@ class ReferenceBankProvider:
             raise ReferenceBankError("Reference Bank ladders have an invalid identity")
         if set(snapshot.loan_cohorts) != {"mortgages", "enterprise_loans"}:
             raise ReferenceBankError("Reference Bank fixed-rate loan cohorts are incomplete")
+        if set(snapshot.deposit_reference_schedules) != {
+            "non_maturity_deposits",
+            "term_deposits",
+        }:
+            raise ReferenceBankError(
+                "Reference Bank deposit reference-term schedules are incomplete"
+            )
+        for name, schedule in snapshot.deposit_reference_schedules.items():
+            if (
+                schedule.terms_months != (1, 2, 12, 120)
+                or any(type(term) is not int for term in schedule.terms_months)
+                or len(schedule.weights) != 4
+                or len(schedule.terms_months) != len(schedule.weights)
+                or not np.all(np.isfinite(schedule.weights))
+                or any(weight < 0 for weight in schedule.weights)
+                or not np.isclose(sum(schedule.weights), 1.0)
+                or schedule.cash_flows.shape != (4, 180)
+                or not np.all(np.isfinite(schedule.cash_flows))
+                or np.any(schedule.cash_flows < 0)
+                or schedule.cash_flows.flags.writeable
+                or not isinstance(schedule.provenance, str)
+                or not schedule.provenance
+            ):
+                raise ReferenceBankError(
+                    f"Reference Bank {name} reference-term schedule is invalid"
+                )
+            if not np.allclose(
+                schedule.cash_flows.sum(axis=0),
+                snapshot.ladders[name],
+                rtol=0.0,
+                atol=1e-8,
+            ):
+                raise ReferenceBankError(
+                    f"Reference Bank {name} reference-term schedule does not match its ladder"
+                )
+            weight_key = (
+                "non_maturity_weights"
+                if name == "non_maturity_deposits"
+                else "term_deposit_weights"
+            )
+            try:
+                declared_terms = tuple(
+                    snapshot.product_assumptions["deposit_reference_terms_months"]
+                )
+                declared_weights = tuple(snapshot.product_assumptions[weight_key])
+            except (KeyError, TypeError) as error:
+                raise ReferenceBankError(
+                    "Reference Bank deposit reference-term assumptions are incomplete"
+                ) from error
+            if (
+                declared_terms != schedule.terms_months
+                or len(declared_weights) != len(schedule.weights)
+                or not np.allclose(declared_weights, schedule.weights)
+            ):
+                raise ReferenceBankError(
+                    f"Reference Bank {name} reference-term schedule does not match declared assumptions"
+                )
         for name, cohorts in snapshot.loan_cohorts.items():
             if not cohorts:
                 raise ReferenceBankError(
@@ -552,6 +672,10 @@ class ReferenceBankProvider:
             "profiles": sorted(_PROFILES),
             "ladder_names": list(_LADDER_NAMES),
             "loan_cohort_products": ["mortgages", "enterprise_loans"],
+            "deposit_reference_schedule_products": [
+                "non_maturity_deposits",
+                "term_deposits",
+            ],
             "ladder_length_months": 180,
             "required_provenance": sorted(_PROVENANCE_FIELDS),
             "unit_rule": "unit must be m followed by the declared ISO currency",
@@ -646,6 +770,15 @@ class ReferenceBankProvider:
                         for cohort in cohorts
                     )
                     for name, cohorts in data["loan_cohorts"].items()
+                },
+                deposit_reference_schedules={
+                    name: DepositReferenceSchedule(
+                        terms_months=tuple(schedule["terms_months"]),
+                        weights=tuple(schedule["weights"]),
+                        cash_flows=np.asarray(schedule["cash_flows"], dtype=np.float64),
+                        provenance=schedule["provenance"],
+                    )
+                    for name, schedule in data["deposit_reference_schedules"].items()
                 },
                 target_economic_values=data["target_economic_values"],
                 equity=data["equity"],
@@ -770,6 +903,22 @@ def _seasoned_ladder(
     return ladder
 
 
+def _seasoned_deposit_reference_schedule(
+    terms: tuple[int, ...], weights: tuple[float, ...], coupon: float, provenance: str
+) -> DepositReferenceSchedule:
+    return DepositReferenceSchedule(
+        terms_months=terms,
+        weights=weights,
+        cash_flows=np.stack(
+            [
+                _seasoned_ladder((term,), (weight,), coupon)
+                for term, weight in zip(terms, weights, strict=True)
+            ]
+        ),
+        provenance=provenance,
+    )
+
+
 def _duration(ladder: np.ndarray, discounts: np.ndarray) -> float:
     value = float(ladder @ discounts)
     return float((ladder * discounts @ (np.arange(1, 181) / 12)) / value)
@@ -789,6 +938,7 @@ def _make_snapshot(
     cash: float,
     ladders: Mapping[str, np.ndarray],
     loan_cohorts: Mapping[str, tuple[LoanCohort, ...]],
+    deposit_reference_schedules: Mapping[str, DepositReferenceSchedule],
     target_economic_values: Mapping[str, float],
     equity: float,
     assumptions: Mapping[str, object],
@@ -820,6 +970,17 @@ def _make_snapshot(
                     for cohort in cohorts
                 )
                 for name, cohorts in loan_cohorts.items()
+            }
+        ),
+        "deposit_reference_schedules": MappingProxyType(
+            {
+                name: DepositReferenceSchedule(
+                    terms_months=tuple(schedule.terms_months),
+                    weights=tuple(float(weight) for weight in schedule.weights),
+                    cash_flows=_readonly(schedule.cash_flows),
+                    provenance=schedule.provenance,
+                )
+                for name, schedule in deposit_reference_schedules.items()
             }
         ),
         "target_economic_values": MappingProxyType(
@@ -856,6 +1017,15 @@ def _to_data(snapshot: ReferenceBankSnapshot) -> dict[str, object]:
                 for cohort in cohorts
             ]
             for name, cohorts in snapshot.loan_cohorts.items()
+        },
+        "deposit_reference_schedules": {
+            name: {
+                "terms_months": list(schedule.terms_months),
+                "weights": list(schedule.weights),
+                "cash_flows": schedule.cash_flows.tolist(),
+                "provenance": schedule.provenance,
+            }
+            for name, schedule in snapshot.deposit_reference_schedules.items()
         },
         "target_economic_values": dict(snapshot.target_economic_values),
         "target_value_errors": dict(snapshot.target_value_errors),

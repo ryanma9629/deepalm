@@ -33,10 +33,20 @@ def test_canonical_reference_bank_matches_balance_sheet_and_curve_values(canonic
     assert all(ladder.shape == (180,) for ladder in bank.ladders.values())
     assert all(np.all(ladder >= 0) for ladder in bank.ladders.values())
     assert all(error <= 1e-8 for error in bank.target_value_errors.values())
-    assert bank.schema_version == 2
+    assert bank.schema_version == 3
     assert tuple(bank.loan_cohorts) == ("mortgages", "enterprise_loans")
     assert len(bank.loan_cohorts["mortgages"]) == 11
     assert len(bank.loan_cohorts["enterprise_loans"]) == 3
+    assert set(bank.deposit_reference_schedules) == {
+        "non_maturity_deposits",
+        "term_deposits",
+    }
+    for name, schedule in bank.deposit_reference_schedules.items():
+        assert schedule.terms_months == (1, 2, 12, 120)
+        assert schedule.cash_flows.shape == (4, 180)
+        assert np.allclose(schedule.cash_flows.sum(axis=0), bank.ladders[name])
+        assert not schedule.cash_flows.flags.writeable
+        assert schedule.provenance
     assert all(
         not cohort.principal_cash_flows.flags.writeable
         for cohorts in bank.loan_cohorts.values()

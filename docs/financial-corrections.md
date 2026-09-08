@@ -8,7 +8,9 @@ and Corrected. No production/pilot training is required to validate these fixes.
 
 - Deposit rollover: settle the old principal, then credit the same principal for
   renewal. The liability is renewed once. Growth is an additional inflow;
-  capitalized interest adds a liability but no net cash flow.
+  capitalized interest adds a liability but no net cash flow. C-5 further keeps
+  the original 1, 2, 12, or 120 month reference-term class through renewal;
+  only new external growth is allocated using the product's global weights.
 - E-03: the negative-rate cash charge is non-negative and subtracted from cash.
   Exempt cash and non-negative short rates produce zero charge, not interest income.
 - Equation 8: loan growth uses the current pre-roll nominal balance rather than
@@ -28,7 +30,7 @@ and preserves the action gradient against a central finite difference.
 ## Artifact compatibility
 
 Financial semantics are identified by
-`fixed-rate-cohorts-cash-rollover-v3`; evaluation metrics by
+`reference-term-deposits-v4`; evaluation metrics by
 `centered-equity-ratio-and-penalty-v2`. Selected checkpoints, frozen baselines,
 and epoch recovery identities must match the financial semantics version.
 Missing/older versions require fresh training, not a metadata-only upgrade.
@@ -49,6 +51,12 @@ principal schedules are rescaled so the mortgage and enterprise economic-value
 targets remain unchanged. Schema v1 aggregate-only snapshots are rejected: a
 bank adapter must provide explicit cohort/contract data instead of reverse
 engineering coupon rates from aggregate cash flows.
+
+Snapshot schema v3 additionally stores the four reference-term schedules for
+both non-maturity and term deposits, together with their allocation weights.
+The schedules must sum exactly to each aggregate deposit ladder. Aggregate v2
+deposit ladders cannot reveal a maturing balance's original reference-term
+class, so they are rejected rather than reconstructed heuristically.
 
 The new-loan rate remains a single six-month-yield rate for all maturities. This
 is an explicit shared simplification; a later maturity-specific origination-curve

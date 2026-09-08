@@ -4,10 +4,10 @@ import json
 from collections.abc import Mapping
 from typing import Literal
 
-FINANCIAL_SEMANTICS_VERSION = "fixed-rate-cohorts-cash-rollover-v3"
+FINANCIAL_SEMANTICS_VERSION = "reference-term-deposits-v4"
 POLICY_SEMANTICS_VERSION = "legacy-nominal-mm-absolute-bmd-v1"
 METRIC_SEMANTICS_VERSION = "centered-equity-ratio-and-penalty-v2"
-SNAPSHOT_SCHEMA_VERSION = 2
+SNAPSHOT_SCHEMA_VERSION = 3
 
 ArtifactScope = Literal["snapshot", "training", "evaluation"]
 _CORRECTIONS = {
@@ -16,7 +16,7 @@ _CORRECTIONS = {
     "evaluation": ("C-1", "C-2", "C-3", "C-5", "C-6", "C-7", "C-8", "R-1", "R-2"),
 }
 # Activate only alongside a completed formula repair and its regression evidence.
-_IMPLEMENTED_CORRECTIONS: frozenset[str] = frozenset()
+_IMPLEMENTED_CORRECTIONS: frozenset[str] = frozenset({"C-5"})
 
 
 def artifact_semantics(scope: ArtifactScope) -> dict[str, object]:

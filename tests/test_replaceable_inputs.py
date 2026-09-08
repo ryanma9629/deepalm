@@ -31,9 +31,24 @@ def _imported_snapshot_data() -> dict[str, object]:
         for name, amount in targets.items()
         if name != "cash"
     }
+    deposit_reference_schedules = {
+        name: {
+            "terms_months": [1, 2, 12, 120],
+            "weights": [1.0, 0.0, 0.0, 0.0],
+            "provenance": "synthetic imported one-month deposit mapping",
+            "cash_flows": [
+                [amount] + [0.0] * 179,
+                *([[0.0] * 180] * 3),
+            ],
+        }
+        for name, amount in (
+            ("non_maturity_deposits", targets["non_maturity_deposits"]),
+            ("term_deposits", targets["term_deposits"]),
+        )
+    }
     data: dict[str, object] = {
         "artifact_semantics": artifact_semantics("snapshot"),
-        "schema_version": 2,
+        "schema_version": 3,
         "profile": "imported",
         "as_of_date": "2024-01-31",
         "initial_curve_identity": "synthetic-usd-2024-01-31",
@@ -52,11 +67,15 @@ def _imported_snapshot_data() -> dict[str, object]:
                 ("enterprise_loans", targets["enterprise_loans"]),
             )
         },
+        "deposit_reference_schedules": deposit_reference_schedules,
         "target_economic_values": targets,
         "target_value_errors": {name: 0.0 for name in ladders},
         "product_assumptions": {
             "loan_duration_years": 7.0,
             "deposit_duration_years": 4.0,
+            "deposit_reference_terms_months": [1, 2, 12, 120],
+            "non_maturity_weights": [1.0, 0.0, 0.0, 0.0],
+            "term_deposit_weights": [1.0, 0.0, 0.0, 0.0],
             "loan_spread_decimal": 0.02,
             "mapping_version": "synthetic-usd-v1",
         },
@@ -142,12 +161,13 @@ def test_imported_snapshot_rejects_incomplete_or_incompatible_contracts(
         )
 
 
-def test_imported_snapshot_rejects_legacy_schema_without_fixed_rate_cohorts(
+def test_imported_snapshot_rejects_legacy_schema_without_complete_contract(
     tmp_path: Path,
 ) -> None:
     data = _imported_snapshot_data()
-    data["schema_version"] = 1
+    data["schema_version"] = 2
     data.pop("loan_cohorts")
+    data.pop("deposit_reference_schedules")
     data["content_hash"] = _content_hash(data)
     source = tmp_path / "legacy-v1.json"
     source.write_text(json.dumps(data), encoding="utf-8")
@@ -176,6 +196,12 @@ def test_imported_snapshot_rejects_legacy_schema_without_fixed_rate_cohorts(
                 {"monthly_coupon_rate": 0.01}
             ),
             "does not match",
+        ),
+        (
+            lambda data: data["deposit_reference_schedules"][
+                "non_maturity_deposits"
+            ]["cash_flows"][0].__setitem__(0, 299.998),
+            "reference-term schedule does not match",
         ),
     ),
 )

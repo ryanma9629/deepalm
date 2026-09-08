@@ -78,6 +78,33 @@ def allocate_deposit_tranches(
     return result
 
 
+def allocate_reference_term_tranches(
+    amounts: torch.Tensor, terms: tuple[int, ...]
+) -> torch.Tensor:
+    """Renew each reference-term class only into its own maturity bucket.
+
+    ``amounts`` can be signed because negative deposit interest remains part of
+    the class balance; exogenous deposit growth is validated separately.
+    """
+
+    if amounts.ndim != 2 or not torch.isfinite(amounts).all():
+        raise DepositDynamicsError(
+            "Reference-term renewal amounts must be finite [paths, classes]"
+        )
+    if not terms or amounts.shape[1] != len(terms):
+        raise DepositDynamicsError("Reference-term renewal classes are invalid")
+    result = torch.zeros(
+        (amounts.shape[0], amounts.shape[1], 180),
+        device=amounts.device,
+        dtype=amounts.dtype,
+    )
+    for index, term in enumerate(terms):
+        if term < 1 or term > 180:
+            raise DepositDynamicsError("Invalid deposit reference maturity")
+        result[:, index, :term] = (amounts[:, index] / term).unsqueeze(1)
+    return result
+
+
 def operating_cost(
     *, personnel_cost: float, material_cost: float, completed_years: int, configuration: DepositConfiguration = DEFAULT_DEPOSIT_CONFIGURATION
 ) -> float:

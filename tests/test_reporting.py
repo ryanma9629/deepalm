@@ -14,7 +14,7 @@ from deepalm.cli import main
 from deepalm.config import resolve_configuration
 from deepalm.reporting import ReportingError, build_paired_convention_pilot_report
 from deepalm.runner import ReproductionRunner, RunStatus
-from deepalm.semantics import artifact_semantics
+from deepalm.semantics import FINANCIAL_SEMANTICS_VERSION, artifact_semantics
 
 
 def _report_configuration(tmp_path: Path):
@@ -189,7 +189,7 @@ def test_runner_publishes_an_atomic_paired_pilot_report_with_separate_convention
                 },
                 "locked_evaluation_manifests": {
                     convention: {
-                        "financial_semantics_version": "fixed-rate-cohorts-cash-rollover-v3",
+                        "financial_semantics_version": FINANCIAL_SEMANTICS_VERSION,
                         "artifact_semantics": artifact_semantics("evaluation"),
                         "test_scenarios": {"5": {"paths": 64}},
                         "checkpoints": {},
@@ -234,7 +234,7 @@ def test_runner_publishes_an_atomic_paired_pilot_report_with_separate_convention
         "dtype": "float32",
     }
     assert report["conventions"]["paper"]["financial_semantics_version"] == (
-        "fixed-rate-cohorts-cash-rollover-v3"
+        FINANCIAL_SEMANTICS_VERSION
     )
     assert report["paired_intervals"][0]["resamples"] == 100
     evaluation_path = evaluation / "paired-evaluation.json"
