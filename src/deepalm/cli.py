@@ -65,6 +65,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=5,
         help="full 5- or 15-year rollout used by the commissioning update",
     )
+    report_parser = subparsers.add_parser(
+        "report",
+        help="generate a compact no-swap local report from completed run bundles",
+    )
+    report_parser.add_argument(
+        "--config", type=Path, required=True, help="YAML report configuration"
+    )
+    report_parser.add_argument(
+        "--source-run",
+        type=Path,
+        action="append",
+        required=True,
+        help="completed source run directory; repeat to combine independent evidence",
+    )
     arguments = parser.parse_args(argv)
 
     try:
@@ -89,6 +103,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             configuration,
             horizon_years=arguments.horizon,
             policy_name=arguments.policy,
+        )
+    elif arguments.command == "report":
+        bundle = runner.generate_compact_report(
+            configuration,
+            source_run_directories=tuple(arguments.source_run),
         )
     else:
         bundle = runner.run(configuration)

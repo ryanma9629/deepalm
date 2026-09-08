@@ -48,6 +48,26 @@ source hashes, Git revision, runtime/device identity, named seed registry, and
 the execution plan. `run` does not yet run market calibration, Reference Bank
 construction, or policy training; its acceptance status is therefore `pending`.
 
+## Compact no-swap report
+
+Create a compact report only from one or more completed run bundles. The report
+adds a bounded five-year (at most 32 paths) HJM-versus-Hull-White diagnostic,
+canonical Reference Bank summary, calibration/PCA evidence, and a Tables 1-5 /
+Figures 3-17 coverage inventory. It labels missing policy, recovery, truncation,
+sensitivity, scenario, and bootstrap evidence as deferred rather than inferring
+results from unrelated runs.
+
+```bash
+uv run deepalm report --config configs/quick-skeleton.yaml \
+  --source-run artifacts/a-completed-run
+```
+
+Source bundles must be `completed` and have the same market/paper input hashes
+and financial convention as the report configuration. Generated JSON artifacts
+identify policy, horizon, convention, sample size, units, source run,
+architecture, and checkpoint parameter counts where evidence exists. They are a
+local workflow demonstration, not paper-result replication or bank approval.
+
 ## Single-device commissioning
 
 Run a bounded, actual device check without starting the full policy matrix:

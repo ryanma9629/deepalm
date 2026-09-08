@@ -617,6 +617,92 @@ class ReproductionRunner:
             policy_name=policy_name,
         )
 
+    def generate_compact_report(
+        self,
+        configuration: ResolvedRunConfiguration,
+        *,
+        source_run_directories: tuple[Path, ...],
+    ) -> RunBundle:
+        """Publish one no-swap local report from completed evidence only.
+
+        The source bundles are immutable evidence inputs.  A failed or
+        incomplete source produces a diagnostic failure bundle rather than a
+        report that could be mistaken for a completed local workflow.
+        """
+
+        try:
+            from deepalm.reporting import ReportingError, build_compact_no_swap_report
+
+            artifacts = build_compact_no_swap_report(
+                configuration, source_run_directories=source_run_directories
+            )
+            manifest = _build_manifest(
+                configuration, RunStatus.COMPLETED, AcceptanceStatus.PENDING
+            )
+            manifest["compact_report"] = {
+                "kind": artifacts.report["kind"],
+                "purpose": artifacts.report["purpose"],
+                "source_runs": artifacts.report["source_runs"],
+                "swaps_included": False,
+                "coverage_inventory": "paper-coverage-inventory.json",
+                "calibration_identity": artifacts.calibration_evidence[
+                    "calibration_identity"
+                ],
+                "weekly_dates": artifacts.calibration_evidence["weekly_dates"],
+                "reference_bank_content_hash": artifacts.reference_bank_summary[
+                    "content_hash"
+                ],
+                "checkpoints": artifacts.report["presentation_metadata"][
+                    "parameter_counts"
+                ],
+                "actual_work": artifacts.report["actual_work"],
+                "resource_measurements": artifacts.report["actual_work"][
+                    "resource_measurements"
+                ],
+                "metrics": artifacts.report["actual_work"]["numeric_metrics"],
+                "acceptance_evidence": [
+                    "calibration-evidence.json",
+                    "hjm-hull-white-comparison.json",
+                    "reference-bank-summary.json",
+                    "paper-coverage-inventory.json",
+                ],
+            }
+            artifact_directory = _write_bundle_atomically(
+                configuration,
+                manifest,
+                extra_artifacts={
+                    "compact-no-swap-report.json": artifacts.report,
+                    "paper-coverage-inventory.json": artifacts.coverage_inventory,
+                    "calibration-evidence.json": artifacts.calibration_evidence,
+                    "hjm-hull-white-comparison.json": artifacts.market_comparison,
+                    "reference-bank-summary.json": artifacts.reference_bank_summary,
+                },
+            )
+            return RunBundle(
+                status=RunStatus.COMPLETED,
+                acceptance_status=AcceptanceStatus.PENDING,
+                artifact_directory=artifact_directory,
+                artifacts=(
+                    artifact_directory / "manifest.json",
+                    artifact_directory / "compact-no-swap-report.json",
+                    artifact_directory / "paper-coverage-inventory.json",
+                    artifact_directory / "calibration-evidence.json",
+                    artifact_directory / "hjm-hull-white-comparison.json",
+                    artifact_directory / "reference-bank-summary.json",
+                ),
+            )
+        except (ReportingError, OSError, ValueError) as error:
+            failure_directory = _write_failure_bundle(configuration, error)
+            return RunBundle(
+                status=RunStatus.FAILED,
+                acceptance_status=AcceptanceStatus.PENDING,
+                artifact_directory=failure_directory,
+                error=str(error),
+                artifacts=(failure_directory / "manifest.json",)
+                if failure_directory is not None
+                else (),
+            )
+
 
 def _build_manifest(
     configuration: ResolvedRunConfiguration,
