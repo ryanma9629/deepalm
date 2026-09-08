@@ -128,6 +128,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     paired_pilot_parser.add_argument(
         "--config", type=Path, required=True, help="YAML paired-pilot configuration"
     )
+    paired_evaluation_parser = subparsers.add_parser(
+        "paired-evaluate",
+        help="evaluate a completed paired-convention pilot on locked paths",
+    )
+    paired_evaluation_parser.add_argument(
+        "--config", type=Path, required=True, help="YAML paired-pilot configuration"
+    )
+    paired_evaluation_parser.add_argument(
+        "--source-run", type=Path, required=True, help="completed paired-pilot artifact"
+    )
     arguments = parser.parse_args(argv)
 
     try:
@@ -162,6 +172,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         bundle = runner.run_local_workflow(configuration)
     elif arguments.command == "paired-pilot":
         bundle = runner.run_paired_convention_pilot(configuration)
+    elif arguments.command == "paired-evaluate":
+        bundle = runner.evaluate_paired_convention_pilot(
+            configuration, source_run_directory=arguments.source_run
+        )
     elif arguments.command == "train":
         bundle = (
             runner.reuse_completed_workflow_stage(

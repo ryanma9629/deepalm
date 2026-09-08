@@ -8,13 +8,20 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import torch
 import yaml
 from test_run_skeleton import configuration_data
 
 from deepalm.cli import main
 from deepalm.config import ConfigurationError, resolve_configuration
 from deepalm.planning import build_execution_plan
-from deepalm.runner import AcceptanceStatus, ReproductionRunner, RunBundle, RunStatus
+from deepalm.runner import (
+    AcceptanceStatus,
+    ReproductionRunner,
+    RunBundle,
+    RunStatus,
+    _paired_convention_intervals,
+)
 
 
 def _paired_pilot_data(tmp_path: Path) -> dict[str, object]:
@@ -119,6 +126,47 @@ def test_paired_pilot_command_dispatches_to_the_public_runner_seam(
 
     assert main(["paired-pilot", "--config", str(config_path)]) == 0
     assert capsys.readouterr().out.strip() == str(artifact_directory)
+
+
+def test_paired_evaluation_command_dispatches_and_keeps_nonfinite_pairs_visible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr("torch.backends.mps.is_available", lambda: True)
+    data = _paired_pilot_data(tmp_path)
+    config_path = tmp_path / "paired-pilot.yaml"
+    config_path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    source = tmp_path / "pilot"
+    artifact_directory = tmp_path / "evaluation"
+
+    def fake_evaluation(
+        self: ReproductionRunner, received: object, *, source_run_directory: Path
+    ) -> RunBundle:
+        assert received == resolve_configuration(data)
+        assert source_run_directory == source
+        return RunBundle(
+            status=RunStatus.COMPLETED,
+            acceptance_status=AcceptanceStatus.PAIRED_CONVENTION_RESEARCH_PILOT,
+            artifact_directory=artifact_directory,
+        )
+
+    monkeypatch.setattr(
+        ReproductionRunner, "evaluate_paired_convention_pilot", fake_evaluation
+    )
+    assert main(
+        ["paired-evaluate", "--config", str(config_path), "--source-run", str(source)]
+    ) == 0
+    assert capsys.readouterr().out.strip() == str(artifact_directory)
+
+    intervals = _paired_convention_intervals(
+        {"MM-5y": {"total_loss": torch.tensor([1.0, 2.0])}},
+        {"MM-5y": {"total_loss": torch.tensor([0.0, 1.0])}},
+        seed=8,
+    )
+    total_loss = next(item for item in intervals if item["metric"] == "total_loss")
+    annualized = next(item for item in intervals if item["metric"] == "annualized_return")
+    assert total_loss["status"] == "available"
+    assert total_loss["paths"] == 2
+    assert annualized["status"] == "not-applicable"
 
 
 @pytest.mark.parametrize(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import torch
@@ -70,6 +70,7 @@ class LockedEvaluationResult:
     markets: dict[int, MarketScenarioBatch]
     manifest: dict[str, object]
     paired_intervals: tuple[PairedInterval, ...]
+    path_metrics: dict[str, dict[str, torch.Tensor]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -276,6 +277,7 @@ class LockedEvaluator:
             markets=markets,
             manifest=manifest,
             paired_intervals=intervals,
+            path_metrics=path_metrics,
         )
 
     def write_manifest(self, result: LockedEvaluationResult, path: Path) -> None:
@@ -560,6 +562,7 @@ def _report_outcome(
         ),
     }
     return report, {
+        "equity_ratio": ratio,
         "annualized_return": annualized,
         "total_loss": outcome.objective.total,
         "penalty": penalty,

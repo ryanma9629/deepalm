@@ -1550,6 +1550,159 @@ class ReproductionRunner:
                 ),
             )
 
+    def evaluate_paired_convention_pilot(
+        self,
+        configuration: ResolvedRunConfiguration,
+        *,
+        source_run_directory: Path,
+    ) -> RunBundle:
+        """Evaluate a completed paired pilot once per frozen checkpoint.
+
+        This deliberately writes a sibling evidence bundle instead of mutating
+        the training bundle.  Paper and Corrected have their own locked market
+        construction, but retain matching split/epoch/path identities.
+        """
+
+        staging_directory: Path | None = None
+        try:
+            _validate_paired_pilot_configuration(configuration)
+            source = source_run_directory.resolve()
+            manifest = _read_json_artifact(source / "manifest.json")
+            jobs = _completed_paired_pilot_jobs(source, manifest)
+            final_directory = source.parent / f"{source.name}-evaluation"
+            if final_directory.exists():
+                raise OperationalRunError(
+                    f"Paired evaluation artifact directory already exists: {final_directory}"
+                )
+            staging_directory = Path(
+                tempfile.mkdtemp(prefix=f".{final_directory.name}-", dir=source.parent)
+            )
+            from deepalm.baselines import FrozenDateBenchmarkReference
+            from deepalm.evaluation import (
+                LockedEvaluator,
+                PolicyCheckpoint,
+                _report_outcome,
+            )
+            from deepalm.reference_bank import ReferenceBankProvider
+            from deepalm.term_structures import MarketScenarioModel
+            from deepalm.training import MMTrainer
+
+            monitor = ResourceMonitor(
+                wall_clock_budget_seconds=configuration.resources.wall_clock_budget_seconds,
+                process_rss_limit_bytes=configuration.resources.process_rss_limit_bytes,
+                accelerator_memory_limit_bytes=configuration.resources.accelerator_memory_limit_bytes,
+                device=configuration.optimization.device,
+            )
+            monitor.check("before-paired-evaluation")
+            market_model = MarketScenarioModel()
+            historical = market_model.load_historical_term_structures(
+                configuration.source_data.snb_csv,
+                beta_unit=configuration.source_data.nss_beta_unit,
+            )
+            calibration = market_model.calibrate_hjm_pca(historical)
+            snapshot = ReferenceBankProvider().load(source / "reference-bank.json")
+            convention_configurations = _paired_pilot_convention_configurations(
+                configuration, staging_directory=staging_directory
+            )
+            evaluations: dict[str, Any] = {}
+            for label, convention_configuration in convention_configurations.items():
+                checkpoints = tuple(
+                    PolicyCheckpoint(
+                        f"{job['policy']}-{job['horizon_years']}y",
+                        source / str(job["checkpoint"]),
+                    )
+                    for job in jobs[label]
+                )
+                evaluations[label] = LockedEvaluator(
+                    convention_configuration,
+                    snapshot=snapshot,
+                    historical=historical,
+                    calibration=calibration,
+                    market_model=market_model,
+                ).evaluate(checkpoints, bootstrap_resamples=100)
+                monitor.check(f"after-{label}-paired-evaluation")
+
+            comparisons = _paired_convention_intervals(
+                evaluations["paper"].path_metrics,
+                evaluations["corrected"].path_metrics,
+                seed=configuration.seeds["bootstrap"],
+            )
+            truncations: dict[str, dict[str, object]] = {}
+            for label, convention_configuration in convention_configurations.items():
+                mm_job = _paired_job(jobs[label], policy="MM", horizon_years=15)
+                bmd_job = _paired_job(jobs[label], policy="BM^D", horizon_years=15)
+                baseline = FrozenDateBenchmarkReference.load(
+                    source / str(bmd_job["baseline_reference"])
+                )
+                trainer = MMTrainer(
+                    convention_configuration,
+                    snapshot=snapshot,
+                    historical=historical,
+                    calibration=calibration,
+                    baseline_reference=baseline,
+                    market_model=market_model,
+                    resource_monitor=monitor,
+                )
+                fifteen_market = evaluations[label].markets[15]
+                result = trainer.evaluate_five_year_truncation(
+                    checkpoint_path=source / str(mm_job["checkpoint"]),
+                    market=fifteen_market,
+                )
+                report, _ = _report_outcome(result.outcome, horizon_years=5)
+                truncations[label] = {
+                    "status": "available",
+                    "source_checkpoint": str(mm_job["checkpoint"]),
+                    "source_checkpoint_sha256": str(mm_job["checkpoint_sha256"]),
+                    "source_horizon_years": 15,
+                    "evaluation_horizon_years": 5,
+                    "time_feature_horizon_years": 15,
+                    "action_steps": int(result.outcome.treasury_actions.shape[1]),
+                    "optimizer_updates": result.optimizer_updates,
+                    "report": report,
+                }
+                monitor.check(f"after-{label}-mm-truncation")
+
+            evidence = {
+                "format_version": 1,
+                "kind": "paired-convention-pilot-evaluation",
+                "status": "completed",
+                "label": "paired-convention-research-pilot",
+                "source_run": str(source),
+                "source_manifest_sha256": _sha256(source / "manifest.json"),
+                "source_git_revision": manifest["git_revision"],
+                "financial_semantics_version": manifest.get("financial_semantics_version"),
+                "reports": {
+                    label: evaluation.reports for label, evaluation in evaluations.items()
+                },
+                "locked_evaluation_manifests": {
+                    label: evaluation.manifest for label, evaluation in evaluations.items()
+                },
+                "paired_intervals": comparisons,
+                "mm_fifteen_year_truncation": truncations,
+                "resource_measurements": monitor.snapshot().to_dict(),
+                "interpretation": (
+                    "Descriptive paired-convention evidence only; it does not establish "
+                    "economic superiority, convergence, methodological reproduction, "
+                    "or bank-model approval."
+                ),
+            }
+            _write_json_artifact(staging_directory / "paired-evaluation.json", evidence)
+            os.replace(staging_directory, final_directory)
+            return RunBundle(
+                status=RunStatus.COMPLETED,
+                acceptance_status=AcceptanceStatus.PAIRED_CONVENTION_RESEARCH_PILOT,
+                artifact_directory=final_directory,
+                artifacts=(final_directory / "paired-evaluation.json",),
+            )
+        except (OperationalRunError, OSError, RuntimeError, ValueError, KeyError) as error:
+            return _paired_pilot_failure_bundle(
+                configuration,
+                staging_directory=staging_directory,
+                staged_configuration=configuration,
+                error=error,
+                status=RunStatus.FAILED,
+            )
+
     def generate_compact_report(
         self,
         configuration: ResolvedRunConfiguration,
@@ -1782,6 +1935,123 @@ def _paired_pilot_training_jobs(
         }
         for (convention, policy, horizon), result in sorted(results.items())
     ]
+
+
+def _completed_paired_pilot_jobs(
+    source: Path, manifest: Mapping[str, object]
+) -> dict[str, list[dict[str, object]]]:
+    """Return only identity-checked, complete convention-local pilot jobs."""
+
+    pilot = manifest.get("paired_convention_pilot")
+    if (
+        manifest.get("status") != RunStatus.COMPLETED.value
+        or not isinstance(pilot, Mapping)
+        or pilot.get("status") != "completed"
+        or pilot.get("label") != AcceptanceStatus.PAIRED_CONVENTION_RESEARCH_PILOT.value
+        or pilot.get("completed_primary_optimizer_updates") != 32
+    ):
+        raise OperationalRunError("Paired evaluation requires a completed 32-update pilot")
+    raw_jobs = pilot.get("completed_training_jobs")
+    if not isinstance(raw_jobs, list) or len(raw_jobs) != 8:
+        raise OperationalRunError("Paired pilot lacks its complete eight-job matrix")
+    grouped: dict[str, list[dict[str, object]]] = {"paper": [], "corrected": []}
+    for job in raw_jobs:
+        if not isinstance(job, dict):
+            raise OperationalRunError("Paired pilot job record is invalid")
+        try:
+            label = str(job["convention"])
+            policy = str(job["policy"])
+            horizon = int(job["horizon_years"])
+            checkpoint = source / str(job["checkpoint"])
+            expected_hash = str(job["checkpoint_sha256"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise OperationalRunError("Paired pilot job is missing identity fields") from error
+        if (
+            label not in grouped
+            or policy not in {"BM^D", "MM"}
+            or horizon not in {5, 15}
+            or int(job.get("optimizer_updates", -1)) != 4
+            or job.get("selected_epoch") != 2
+            or job.get("finite_clipped_gradients") is not True
+            or not checkpoint.is_file()
+            or _sha256(checkpoint) != expected_hash
+        ):
+            raise OperationalRunError("Paired pilot checkpoint is incomplete or incompatible")
+        grouped[label].append(job)
+    for label, jobs in grouped.items():
+        if len(jobs) != 4 or {
+            (str(job["policy"]), int(job["horizon_years"])) for job in jobs
+        } != {("BM^D", 5), ("BM^D", 15), ("MM", 5), ("MM", 15)}:
+            raise OperationalRunError(f"Paired pilot {label} matrix is incomplete")
+        for horizon in (5, 15):
+            bmd = _paired_job(jobs, policy="BM^D", horizon_years=horizon)
+            mm = _paired_job(jobs, policy="MM", horizon_years=horizon)
+            if (
+                mm.get("baseline_reference") != bmd.get("baseline_reference")
+                or mm.get("baseline_reference_identity")
+                != bmd.get("baseline_reference_identity")
+            ):
+                raise OperationalRunError(
+                    f"Paired pilot {label} MM {horizon}y lacks its matching frozen BM^D baseline"
+                )
+    return grouped
+
+
+def _paired_job(
+    jobs: list[dict[str, object]], *, policy: str, horizon_years: int
+) -> dict[str, object]:
+    for job in jobs:
+        if job["policy"] == policy and job["horizon_years"] == horizon_years:
+            return job
+    raise OperationalRunError(f"Paired pilot lacks {policy} {horizon_years}y")
+
+
+def _paired_convention_intervals(
+    paper: Mapping[str, Mapping[str, torch.Tensor]],
+    corrected: Mapping[str, Mapping[str, torch.Tensor]],
+    *,
+    seed: int,
+) -> list[dict[str, object]]:
+    """Bootstrap Paper minus Corrected only on matching finite locked paths."""
+
+    from deepalm.evaluation import paired_bootstrap
+
+    intervals: list[dict[str, object]] = []
+    metrics = ("equity_ratio", "annualized_return", "total_loss", "penalty")
+    for label in sorted(set(paper) | set(corrected)):
+        for metric in metrics:
+            left = paper.get(label, {}).get(metric)
+            right = corrected.get(label, {}).get(metric)
+            record: dict[str, object] = {
+                "paper_label": label,
+                "corrected_label": label,
+                "metric": metric,
+                "paths": 0,
+                "resamples": 100,
+            }
+            if (
+                left is None
+                or right is None
+                or left.ndim != 1
+                or right.shape != left.shape
+                or not torch.isfinite(left).all()
+                or not torch.isfinite(right).all()
+            ):
+                record.update(
+                    status="not-applicable",
+                    reason="missing, non-finite, or identity-incompatible locked path metric",
+                )
+            else:
+                point, lower, upper = paired_bootstrap(left, right, seed=seed, resamples=100)
+                record.update(
+                    status="available",
+                    point_difference=point,
+                    lower_95=lower,
+                    upper_95=upper,
+                    paths=int(left.numel()),
+                )
+            intervals.append(record)
+    return intervals
 
 
 def _workflow_stage_artifacts(stage: str) -> tuple[str, ...]:

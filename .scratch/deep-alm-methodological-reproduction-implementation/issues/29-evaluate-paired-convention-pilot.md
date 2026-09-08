@@ -4,7 +4,7 @@
 
 **Blocked by:** 28/Run the bounded paired-convention pilot matrix.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Execution scope:** opt-in-research
 
@@ -20,3 +20,5 @@
 ## Comments
 
 2026-09-08 — Created from Ticket 20’s confirmed M5 pilot plan. This separates factual paired outcomes and numerical-failure disclosure from the later research assessment in Ticket 24.
+
+2026-09-08 — Evaluated the completed paired pilot at `artifacts/paired-convention-pilot-evaluation`. All eight frozen checkpoints passed identity checks and were evaluated once on 64 locked paths per horizon. All 16 Paper-minus-Corrected, 100-resample paired intervals were available. Both MM(15y|5y) evaluations used their own 15-year checkpoints, ran exactly 60 action steps with the original 15-year time feature, and recorded zero optimizer updates. The evidence remains descriptive only; Ticket 30 owns its report.
