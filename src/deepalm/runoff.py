@@ -114,7 +114,16 @@ class ALMSimulator:
         transitions = states - 1
         _validate_horizon(market, transitions)
         _require_positive_finite("discount_factors", discounts)
+        policy_requires_full_state = policy is not None and bool(
+            getattr(policy, "requires_full_state", False)
+        )
         if objective_parameters is not None:
+            include_constraints = True
+        if policy_requires_full_state:
+            if objective_parameters is None:
+                raise RunoffSimulationError(
+                    "A full-state treasury policy requires objective parameters"
+                )
             include_constraints = True
         if actions is not None and policy is not None:
             raise RunoffSimulationError("Provide either actions or policy, not both")
@@ -124,7 +133,11 @@ class ALMSimulator:
             _spot_tensor(
                 market, device=device, dtype=dtype, expected_shape=discounts.shape
             )
-            if include_loan_dynamics or include_deposit_dynamics
+            if (
+                include_loan_dynamics
+                or include_deposit_dynamics
+                or policy_requires_full_state
+            )
             else None
         )
 
@@ -210,6 +223,12 @@ class ALMSimulator:
             ladders,
             time=0,
             transitions=transitions,
+            cash=cash[:, 0],
+            curve=spots[:, 0] if policy_requires_full_state and spots is not None else None,
+            prior_constraint_values=(
+                initial_constraints.values if policy_requires_full_state else None
+            ),
+            objective_parameters=objective_parameters if policy_requires_full_state else None,
         )
         if initial_action is not None:
             assert treasury_cash is not None
@@ -384,6 +403,18 @@ class ALMSimulator:
                     ladders,
                     time=transition + 1,
                     transitions=transitions,
+                    cash=cash[:, transition + 1],
+                    curve=(
+                        spots[:, transition + 1]
+                        if policy_requires_full_state and spots is not None
+                        else None
+                    ),
+                    prior_constraint_values=(
+                        current_constraints.values if policy_requires_full_state else None
+                    ),
+                    objective_parameters=(
+                        objective_parameters if policy_requires_full_state else None
+                    ),
                 )
                 if transition + 1 < transitions
                 else None
@@ -634,19 +665,55 @@ def _policy_action_at(
     *,
     time: int,
     transitions: int,
+    cash: torch.Tensor | None = None,
+    curve: torch.Tensor | None = None,
+    prior_constraint_values: torch.Tensor | None = None,
+    objective_parameters: ObjectiveParameters | None = None,
 ) -> TreasuryAction | None:
     if schedule is not None:
         return _treasury_action_at(schedule, time)
     if policy is None:
         return None
+    full_state = _policy_requires_full_state(policy)
     return policy(
         TreasuryPolicyState(
             investments=ladders["investments"],
             funding=ladders["funding"],
             time=time,
             transitions=transitions,
+            mortgages=ladders["mortgages"] if full_state else None,
+            enterprise_loans=(
+                ladders["enterprise_loans"]
+                if full_state
+                else None
+            ),
+            non_maturity_deposits=(
+                ladders["non_maturity_deposits"]
+                if full_state
+                else None
+            ),
+            term_deposits=ladders["term_deposits"] if full_state else None,
+            cash=cash if full_state else None,
+            curve=curve if full_state else None,
+            prior_constraint_values=prior_constraint_values if full_state else None,
+            mu=(
+                objective_parameters.mu
+                if full_state and objective_parameters
+                else None
+            ),
+            penalty_weight=(
+                objective_parameters.penalty_weight
+                if full_state and objective_parameters
+                else None
+            ),
         )
     )
+
+
+def _policy_requires_full_state(policy: TreasuryPolicy) -> bool:
+    """Keep benchmark policy calls on their compact historical state contract."""
+
+    return bool(getattr(policy, "requires_full_state", False))
 
 
 def _constraint_state(

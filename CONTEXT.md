@@ -25,8 +25,12 @@ _Avoid_: Silent fix, improved version
 _Avoid_: bme, bmc, bmd, mm
 
 **TreasuryPolicy 决策状态**:
-某一 Treasury 决策日期可交易的投资与融资名义梯子及其在有限决策期限中的位置；它是策略决定本期无互换交易动作所依据的状态。
+某一 Treasury 决策日期可交易的投资与融资名义梯子及其在有限决策期限中的位置；benchmark 只消费这些核心字段，MM 额外消费完整银行状态、当前曲线、上期约束、`mu` 与 `lambda`，以决定本期无互换交易动作。
 _Avoid_: 完整资产负债表快照, 通用状态
+
+**MM 曲线特征预处理（MM Curve Feature Preprocessing）**:
+仅由登记的 training states 拟合的、中心化但不标准化的三成分曲线 PCA；它保存中心、投影、确定性 path/time 抽样索引以及数据和校准身份，并拒绝 selection/test 或身份不匹配的重载。
+_Avoid_: 使用 selection/test 曲线拟合, 无身份的 PCA
 
 **冻结 BM^D baseline reference（冻结基准引用）**:
 与一个已选择 BM^D checkpoint 并列保存的、内容寻址的只读引用；引用文件名内含其内容哈希，并记录 checkpoint 哈希、期限、配置与数据身份。MM 先从引用路径验证该哈希与 checkpoint 身份，再加载为不可训练的策略。

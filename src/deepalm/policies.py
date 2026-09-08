@@ -22,6 +22,15 @@ class TreasuryPolicyState:
     funding: torch.Tensor
     time: int
     transitions: int
+    mortgages: torch.Tensor | None = None
+    enterprise_loans: torch.Tensor | None = None
+    non_maturity_deposits: torch.Tensor | None = None
+    term_deposits: torch.Tensor | None = None
+    cash: torch.Tensor | None = None
+    curve: torch.Tensor | None = None
+    prior_constraint_values: torch.Tensor | None = None
+    mu: torch.Tensor | None = None
+    penalty_weight: torch.Tensor | None = None
 
     def __post_init__(self) -> None:
         if self.investments.ndim != 2 or self.investments.shape[1] != 180:
@@ -36,6 +45,37 @@ class TreasuryPolicyState:
             not torch.isfinite(self.investments).all()
             or not torch.isfinite(self.funding).all()
         ):
+            raise TreasuryActionError("Policy state must be finite")
+        paths = self.investments.shape[0]
+        ladders = {
+            "mortgages": self.mortgages,
+            "enterprise_loans": self.enterprise_loans,
+            "non_maturity_deposits": self.non_maturity_deposits,
+            "term_deposits": self.term_deposits,
+            "curve": self.curve,
+        }
+        for name, value in ladders.items():
+            if value is not None and value.shape != self.investments.shape:
+                raise TreasuryActionError(
+                    f"Policy {name} must match investment ladder shape"
+                )
+        scalar_features = {
+            "cash": self.cash,
+            "mu": self.mu,
+            "penalty_weight": self.penalty_weight,
+        }
+        for name, value in scalar_features.items():
+            if value is not None and value.shape != (paths,):
+                raise TreasuryActionError(f"Policy {name} must have shape [paths]")
+        if (
+            self.prior_constraint_values is not None
+            and self.prior_constraint_values.shape != (paths, 6)
+        ):
+            raise TreasuryActionError(
+                "Policy prior_constraint_values must have shape [paths, 6]"
+            )
+        additional = (*ladders.values(), *scalar_features.values(), self.prior_constraint_values)
+        if any(value is not None and not torch.isfinite(value).all() for value in additional):
             raise TreasuryActionError("Policy state must be finite")
 
 
