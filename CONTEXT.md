@@ -40,6 +40,10 @@ _Avoid_: 文件名引用, 未验证的 checkpoint
 只在完整 epoch 的 selection 完成后保存的训练进度；它包含当前模型、优化器、scheduler、selection 历史和语义身份。重启时会重放未完成 epoch，并仅允许设备、输出位置和增加资源预算的覆盖。
 _Avoid_: batch 级别快照, 不经兼容性检查的续训
 
+**配对口径研究试跑（Paired Convention Research Pilot）**:
+在同一 Reference Bank、市场创新路径和主随机种子下，以受限计算预算配对运行 Paper 与 Corrected 的 BM^D/MM 两期限实验；它量化公式差异和数值失败边界，但不主张收敛、方法论复现或银行模型获批。
+_Avoid_: 论文复现成功, 正式经济验收
+
 **期限结构（Term Structure）**:
 某一估值日、同一组月度期限上的连续复利即期利率、贴现因子和离散远期利率，它们是同一条利率曲线的三种一致表示。
 _Avoid_: 三条独立曲线
