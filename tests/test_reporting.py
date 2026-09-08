@@ -5,13 +5,16 @@ from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
 
+import pytest
 import torch
 import yaml
 from test_run_skeleton import configuration_data
 
 from deepalm.cli import main
 from deepalm.config import resolve_configuration
+from deepalm.reporting import ReportingError, build_paired_convention_pilot_report
 from deepalm.runner import ReproductionRunner, RunStatus
+from deepalm.semantics import artifact_semantics
 
 
 def _report_configuration(tmp_path: Path):
@@ -127,6 +130,7 @@ def test_runner_publishes_an_atomic_paired_pilot_report_with_separate_convention
     pilot = tmp_path / "paired-pilot"
     pilot.mkdir()
     manifest = {
+        "training_identity": {"artifact_semantics": artifact_semantics("training")},
         "status": "completed",
         "git_revision": "pilot-revision",
         "runtime": {"device": "mps", "dtype": "float32"},
@@ -168,6 +172,7 @@ def test_runner_publishes_an_atomic_paired_pilot_report_with_separate_convention
             {
                 "format_version": 1,
                 "kind": "paired-convention-pilot-evaluation",
+                "artifact_semantics": artifact_semantics("evaluation"),
                 "status": "completed",
                 "label": "paired-convention-research-pilot",
                 "source_run": str(pilot.resolve()),
@@ -185,6 +190,7 @@ def test_runner_publishes_an_atomic_paired_pilot_report_with_separate_convention
                 "locked_evaluation_manifests": {
                     convention: {
                         "financial_semantics_version": "fixed-rate-cohorts-cash-rollover-v3",
+                        "artifact_semantics": artifact_semantics("evaluation"),
                         "test_scenarios": {"5": {"paths": 64}},
                         "checkpoints": {},
                     }
@@ -195,6 +201,7 @@ def test_runner_publishes_an_atomic_paired_pilot_report_with_separate_convention
                 ],
                 "mm_fifteen_year_truncation": {
                     convention: {
+                        "artifact_semantics": artifact_semantics("evaluation"),
                         "status": "available",
                         "action_steps": 60,
                         "optimizer_updates": 0,
@@ -230,6 +237,21 @@ def test_runner_publishes_an_atomic_paired_pilot_report_with_separate_convention
         "fixed-rate-cohorts-cash-rollover-v3"
     )
     assert report["paired_intervals"][0]["resamples"] == 100
+    evaluation_path = evaluation / "paired-evaluation.json"
+    stale = json.loads(evaluation_path.read_text())
+    stale["artifact_semantics"] = {"contract_version": 999}
+    evaluation_path.write_text(json.dumps(stale))
+    with pytest.raises(ReportingError, match="artifact semantics"):
+        build_paired_convention_pilot_report(
+            pilot_run_directory=pilot, evaluation_directory=evaluation
+        )
+    stale["artifact_semantics"] = artifact_semantics("evaluation")
+    stale["locked_evaluation_manifests"]["paper"]["risk_metric_convention"] = "wrong-legacy-metric"
+    evaluation_path.write_text(json.dumps(stale))
+    with pytest.raises(ReportingError, match="artifact semantics"):
+        build_paired_convention_pilot_report(
+            pilot_run_directory=pilot, evaluation_directory=evaluation
+        )
     assert report["deferred_work"] == [
         "paper widths",
         "three MM seeds",
@@ -425,6 +447,9 @@ def test_report_uses_selected_checkpoint_epoch_after_identity_audit(
                 "hjm_calibration_identity": "calibration-1",
                 "reference_bank_content_hash": "reference-bank-1",
             },
+            "code_identity": {
+                "artifact_semantics": artifact_semantics("training"),
+            },
         },
         source.artifact_directory / "BM_E_5y.pt",
     )
@@ -447,6 +472,53 @@ def test_report_uses_selected_checkpoint_epoch_after_identity_audit(
         "penalty_loss": 0.2,
     }
     assert report["actual_work"]["completed_optimizer_updates"] == 2
+
+
+def test_report_excludes_checkpoint_with_stale_training_semantics(tmp_path: Path) -> None:
+    configuration = _report_configuration(tmp_path)
+    source = ReproductionRunner().run(
+        replace(configuration, output=replace(configuration.output, run_name="source"))
+    )
+    assert source.artifact_directory is not None
+    manifest_path = source.artifact_directory / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["market_preflight"] = {"calibration": {"identity": "calibration-1"}}
+    manifest["reference_bank"] = {"content_hash": "reference-bank-1"}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    torch.save(
+        {
+            "format_version": 1,
+            "policy": "BM^E",
+            "horizon_years": 5,
+            "policy_state": {"weight": torch.tensor([1.0])},
+            "optimizer_updates": 2,
+            "selected_epoch": 1,
+            "selection_history": [{"epoch": 1, "total_loss": 3.0, "penalty_loss": 0.2}],
+            "configuration": manifest["resolved_configuration"],
+            "configuration_identity": manifest["resolved_configuration_hash"],
+            "data_identities": {
+                "market_source_hash": manifest["input_hashes"]["snb_csv"],
+                "hjm_calibration_identity": "calibration-1",
+                "reference_bank_content_hash": "reference-bank-1",
+            },
+            "code_identity": {"artifact_semantics": {"contract_version": 999}},
+        },
+        source.artifact_directory / "BM_E_5y.pt",
+    )
+
+    bundle = ReproductionRunner().generate_compact_report(
+        replace(configuration, output=replace(configuration.output, run_name="report")),
+        source_run_directories=(source.artifact_directory,),
+    )
+
+    assert bundle.status is RunStatus.COMPLETED
+    assert bundle.artifact_directory is not None
+    report = json.loads(
+        (bundle.artifact_directory / "compact-no-swap-report.json").read_text()
+    )
+    assert report["actual_work"]["completed_training_jobs"] == []
+    audit = report["actual_work"]["checkpoint_audit"]
+    assert audit[0]["status"] == "unavailable"
 
 
 def test_cli_writes_a_report_from_a_completed_source_bundle(

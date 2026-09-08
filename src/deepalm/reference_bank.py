@@ -12,6 +12,11 @@ from types import MappingProxyType
 import numpy as np
 
 from deepalm.runner import OperationalRunError
+from deepalm.semantics import (
+    SNAPSHOT_SCHEMA_VERSION,
+    artifact_semantics,
+    artifact_semantics_error,
+)
 from deepalm.sensitivities import (
     REFERENCE_BANK_SENSITIVITIES,
     approved_sensitivity_value,
@@ -29,7 +34,7 @@ _TARGETS = {
     "funding": 4_000.0,
 }
 _LADDER_NAMES = tuple(name for name in _TARGETS if name != "cash")
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = SNAPSHOT_SCHEMA_VERSION
 _PROFILES = {"canonical", "imported", "sensitivity"}
 _CANONICAL_AS_OF_DATE = "2022-07-15"
 _CANONICAL_CURVE_IDENTITY = (
@@ -543,6 +548,7 @@ class ReferenceBankProvider:
 
         return {
             "schema_version": _SCHEMA_VERSION,
+            "artifact_semantics": artifact_semantics("snapshot"),
             "profiles": sorted(_PROFILES),
             "ladder_names": list(_LADDER_NAMES),
             "loan_cohort_products": ["mortgages", "enterprise_loans"],
@@ -618,6 +624,8 @@ class ReferenceBankProvider:
             data = json.loads(path.read_text(encoding="utf-8"))
             if data["schema_version"] != _SCHEMA_VERSION:
                 raise ReferenceBankError("Reference Bank schema version is unsupported")
+            if error := artifact_semantics_error(data, "snapshot"):
+                raise ReferenceBankError(error)
             snapshot = _make_snapshot(
                 profile=data["profile"],
                 as_of_date=data["as_of_date"],
@@ -831,6 +839,7 @@ def _make_snapshot(
 
 def _to_data(snapshot: ReferenceBankSnapshot) -> dict[str, object]:
     return {
+        "artifact_semantics": artifact_semantics("snapshot"),
         "schema_version": snapshot.schema_version,
         "profile": snapshot.profile,
         "as_of_date": snapshot.as_of_date,

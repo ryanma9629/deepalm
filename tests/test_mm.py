@@ -21,7 +21,7 @@ from deepalm.objective import evaluation_objective_parameters
 from deepalm.policies import BMDatePolicy, TreasuryPolicyState
 from deepalm.reference_bank import ReferenceBankProvider
 from deepalm.runoff import ALMSimulator
-from deepalm.semantics import FINANCIAL_SEMANTICS_VERSION
+from deepalm.semantics import FINANCIAL_SEMANTICS_VERSION, artifact_semantics
 from deepalm.term_structures import MarketScenarioModel
 from deepalm.treasury import apply_treasury_action
 
@@ -87,7 +87,8 @@ def _frozen_reference(tmp_path: Path) -> FrozenDateBenchmarkReference:
         {
             "policy": "BM^D",
             "code_identity": {
-                "financial_semantics_version": FINANCIAL_SEMANTICS_VERSION
+                "financial_semantics_version": FINANCIAL_SEMANTICS_VERSION,
+                "artifact_semantics": artifact_semantics("training"),
             },
             "horizon_years": 5,
             "configuration_identity": "configuration-v1",

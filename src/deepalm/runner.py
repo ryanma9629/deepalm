@@ -23,6 +23,7 @@ import torch
 from deepalm.config import ConventionConfiguration, ResolvedRunConfiguration
 from deepalm.planning import build_execution_plan
 from deepalm.resources import BudgetExceeded, ResourceMonitor
+from deepalm.semantics import artifact_semantics, artifact_semantics_error
 
 if TYPE_CHECKING:
     from deepalm.evaluation import PolicyCheckpoint
@@ -966,6 +967,7 @@ class ReproductionRunner:
                 {
                     "format_version": 1,
                     "kind": "mm-fifteen-year-truncation",
+                    "artifact_semantics": artifact_semantics("evaluation"),
                     "source_horizon_years": 15,
                     "evaluation_horizon_years": 5,
                     "convention": staged_configuration.convention.profile,
@@ -1650,6 +1652,7 @@ class ReproductionRunner:
                 )
                 report, _ = _report_outcome(result.outcome, horizon_years=5)
                 truncations[label] = {
+                    "artifact_semantics": artifact_semantics("evaluation"),
                     "status": "available",
                     "source_checkpoint": str(mm_job["checkpoint"]),
                     "source_checkpoint_sha256": str(mm_job["checkpoint_sha256"]),
@@ -1665,6 +1668,7 @@ class ReproductionRunner:
             evidence = {
                 "format_version": 1,
                 "kind": "paired-convention-pilot-evaluation",
+                "artifact_semantics": artifact_semantics("evaluation"),
                 "status": "completed",
                 "label": "paired-convention-research-pilot",
                 "source_run": str(source),
@@ -2009,6 +2013,8 @@ def _completed_paired_pilot_jobs(
 ) -> dict[str, list[dict[str, object]]]:
     """Return only identity-checked, complete convention-local pilot jobs."""
 
+    if error := artifact_semantics_error(manifest.get("training_identity"), "training"):
+        raise OperationalRunError(error)
     pilot = manifest.get("paired_convention_pilot")
     if (
         manifest.get("status") != RunStatus.COMPLETED.value
@@ -2152,6 +2158,12 @@ def _validate_reusable_workflow_manifest(
     if not isinstance(manifest, dict):
         raise OperationalRunError("Reusable workflow manifest is not an object")
     _workflow_stage_artifacts(stage)
+    if stage in {"train", "resume"}:
+        error = artifact_semantics_error(manifest.get("training_identity"), "training")
+    else:
+        error = artifact_semantics_error(manifest, "evaluation")
+    if error:
+        raise OperationalRunError(error)
     if manifest.get("status") != RunStatus.COMPLETED.value:
         raise OperationalRunError("Reusable workflow did not complete successfully")
     workflow = manifest.get("local_workflow")
@@ -2205,6 +2217,8 @@ def _validate_reusable_stage_evidence(
         )
     if stage == "evaluate":
         evaluation = _read_json_artifact(artifact_directory / "locked-evaluation.json")
+        if error := artifact_semantics_error(evaluation, "evaluation"):
+            raise OperationalRunError(error)
         expected_data = _manifest_data_identities(manifest)
         if (
             evaluation.get("kind") != "locked-final-test-evaluation"
@@ -2213,6 +2227,8 @@ def _validate_reusable_stage_evidence(
         ):
             raise OperationalRunError("Reusable locked evaluation has incompatible semantics")
         truncation = _read_json_artifact(artifact_directory / "mm-truncation.json")
+        if error := artifact_semantics_error(truncation, "evaluation"):
+            raise OperationalRunError(error)
         if (
             truncation.get("kind") != "mm-fifteen-year-truncation"
             or truncation.get("source_horizon_years") != 15
@@ -2223,6 +2239,8 @@ def _validate_reusable_stage_evidence(
             raise OperationalRunError("Reusable MM truncation has incompatible semantics")
     if stage == "accept":
         acceptance = _read_json_artifact(artifact_directory / "acceptance-report.json")
+        if error := artifact_semantics_error(acceptance, "evaluation"):
+            raise OperationalRunError(error)
         checks = acceptance.get("checks")
         if (
             acceptance.get("kind") != "local-workflow-acceptance"
@@ -2251,13 +2269,20 @@ def _validate_reusable_checkpoints(
 
     expected_data = _manifest_data_identities(manifest)
     for name in required:
-        if not name.endswith(".pt") or name.endswith(".recovery.pt"):
+        if not name.endswith(".pt"):
             continue
         checkpoint = torch.load(
             artifact_directory / name, map_location="cpu", weights_only=False
         )
         if not isinstance(checkpoint, dict):
             raise OperationalRunError(f"Reusable checkpoint is not an object: {name}")
+        identity = checkpoint.get(
+            "recovery_identity" if name.endswith(".recovery.pt") else "code_identity"
+        )
+        if error := artifact_semantics_error(identity, "training"):
+            raise OperationalRunError(error)
+        if name.endswith(".recovery.pt"):
+            continue
         policy_tag, horizon_tag = name.removesuffix(".pt").rsplit("_", 1)
         expected_policy = {"BM_E": "BM^E", "BM_C": "BM^C", "BM_D": "BM^D", "MM": "MM"}[policy_tag]
         expected_horizon = int(horizon_tag.removesuffix("y"))
@@ -2701,6 +2726,7 @@ def _local_workflow_acceptance(
     return {
         "format_version": 1,
         "kind": "local-workflow-acceptance",
+        "artifact_semantics": artifact_semantics("evaluation"),
         "purpose": "development-validation",
         "status": "passed" if all(check["status"] == "passed" for check in checks) else "failed",
         "checks": checks,
@@ -2724,6 +2750,7 @@ def _horizon_analysis_evidence(
         return {
             "format_version": 1,
             "kind": "horizon-scenario-analysis",
+            "artifact_semantics": artifact_semantics("evaluation"),
             "convention": configuration.convention.profile,
             "data_identities": {
                 "market_source_hash": historical.source_hash,
@@ -2739,6 +2766,7 @@ def _horizon_analysis_evidence(
     return {
         "format_version": 1,
         "kind": "horizon-scenario-analysis",
+        "artifact_semantics": artifact_semantics("evaluation"),
         "convention": configuration.convention.profile,
         "data_identities": {
             "market_source_hash": historical.source_hash,
@@ -2905,6 +2933,8 @@ def _build_manifest(
     acceptance_status: AcceptanceStatus,
 ) -> dict[str, object]:
     return {
+        "artifact_semantics": artifact_semantics("evaluation"),
+        "training_identity": {"artifact_semantics": artifact_semantics("training")},
         **_manifest_metadata(configuration),
         "status": status.value,
         "acceptance_status": acceptance_status.value,

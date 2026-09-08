@@ -14,6 +14,7 @@ import torch
 
 from deepalm.config import ResolvedRunConfiguration
 from deepalm.reference_bank import ReferenceBankProvider
+from deepalm.semantics import artifact_semantics, artifact_semantics_error
 from deepalm.term_structures import (
     HullWhiteConfiguration,
     MarketScenarioModel,
@@ -51,6 +52,10 @@ def build_paired_convention_pilot_report(
     evaluation_path = evaluation_directory / "paired-evaluation.json"
     pilot_manifest = _read_report_object(pilot_manifest_path, "pilot manifest")
     evaluation = _read_report_object(evaluation_path, "paired evaluation")
+    if error := artifact_semantics_error(pilot_manifest.get("training_identity"), "training"):
+        raise ReportingError(error)
+    if error := artifact_semantics_error(evaluation, "evaluation"):
+        raise ReportingError(error)
     pilot = pilot_manifest.get("paired_convention_pilot")
     if (
         pilot_manifest.get("status") != "completed"
@@ -112,6 +117,9 @@ def build_paired_convention_pilot_report(
                 "loan_interest_annualization": "monthly",
             }
         )
+        for evidence in (locked, truncation):
+            if error := artifact_semantics_error(evidence, "evaluation"):
+                raise ReportingError(error)
         conventions[convention] = {
             "formula_choices": formula_choices,
             "architecture": architecture,
@@ -126,6 +134,7 @@ def build_paired_convention_pilot_report(
     report = {
         "format_version": 1,
         "kind": "paired-convention-pilot-report",
+        "artifact_semantics": artifact_semantics("evaluation"),
         "label": "paired-convention-research-pilot",
         "pilot_source": {
             "directory": str(pilot_run_directory.resolve()),
@@ -238,6 +247,7 @@ def build_compact_no_swap_report(
     report = {
         "format_version": 1,
         "kind": "compact-no-swap-local-report",
+        "artifact_semantics": artifact_semantics("evaluation"),
         "purpose": "local workflow demonstration",
         "swaps_included": False,
         "source_runs": [source.summary for source in sources],
@@ -406,6 +416,8 @@ def _is_recovery_diagnostic(
     ):
         return False
     identity = recovered["recovery_identity"]
+    if artifact_semantics_error(identity, "training"):
+        return False
     data_identities = identity.get("data_identities")
     if not isinstance(data_identities, dict):
         return False
@@ -556,6 +568,8 @@ def _load_completed_source(
         raise ReportingError(f"Report source manifest is unreadable: {manifest_path}") from error
     if not isinstance(manifest, dict) or manifest.get("status") != "completed":
         raise ReportingError(f"Report source bundle is not completed: {directory}")
+    if error := artifact_semantics_error(manifest, "evaluation"):
+        raise ReportingError(error)
     if manifest.get("input_hashes") != expected_input_hashes:
         raise ReportingError(
             f"Report source input identities do not match: {directory}"
@@ -584,6 +598,19 @@ def _load_evidence_artifact(path: Path) -> _EvidenceArtifact:
         contents = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         contents = None
+    if isinstance(contents, dict) and contents.get("kind") in {
+        "locked-final-test-evaluation", "frozen-policy-reference-bank-sensitivity",
+        "mm-fifteen-year-truncation", "horizon-scenario-analysis",
+        "local-workflow-acceptance", "compact-no-swap-local-report",
+        "no-swap-paper-coverage-inventory",
+    }:
+        if error := artifact_semantics_error(contents, "evaluation"):
+            raise ReportingError(f"{path.name}: {error}")
+        if contents.get("kind") == "frozen-policy-reference-bank-sensitivity":
+            evaluation = contents.get("evaluation")
+            manifest = evaluation.get("manifest") if isinstance(evaluation, dict) else None
+            if error := artifact_semantics_error(manifest, "evaluation"):
+                raise ReportingError(f"{path.name}: {error}")
     return _EvidenceArtifact(
         name=path.name,
         sha256=_sha256(path),
@@ -769,6 +796,7 @@ def _coverage_inventory(
     return {
         "format_version": 1,
         "kind": "no-swap-paper-coverage-inventory",
+        "artifact_semantics": artifact_semantics("evaluation"),
         "entries": entries,
         "presentation_metadata": metadata,
         "swaps_included": False,
@@ -977,6 +1005,8 @@ def _validate_checkpoint_for_source(
 ) -> None:
     """Reject files that look like checkpoints but cannot evidence this source run."""
 
+    if error := artifact_semantics_error(checkpoint.get("code_identity"), "training"):
+        raise ValueError(error)
     source_configuration = source.manifest.get("resolved_configuration")
     source_configuration_identity = source.manifest.get("resolved_configuration_hash")
     expected_data_identities = _source_checkpoint_data_identities(source)

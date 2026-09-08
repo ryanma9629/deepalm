@@ -12,6 +12,7 @@ from deepalm.config import resolve_configuration
 from deepalm.reference_bank import ReferenceBankError, ReferenceBankProvider
 from deepalm.runner import ReproductionRunner, RunStatus
 from deepalm.runoff import ALMSimulator
+from deepalm.semantics import artifact_semantics
 from deepalm.term_structures import MarketScenarioModel
 
 
@@ -31,6 +32,7 @@ def _imported_snapshot_data() -> dict[str, object]:
         if name != "cash"
     }
     data: dict[str, object] = {
+        "artifact_semantics": artifact_semantics("snapshot"),
         "schema_version": 2,
         "profile": "imported",
         "as_of_date": "2024-01-31",

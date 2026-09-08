@@ -3,13 +3,17 @@
 `ReferenceBankProvider.load()` imports a versioned JSON snapshot and
 `ReferenceBankProvider.save()` emits the same contract. The in-code schema is
 available through `ReferenceBankProvider.schema()`; the current
-`schema_version` is `2`.
+`schema_version` is `2`. Each snapshot also carries a required
+`artifact_semantics` identity. It identifies the financial behavior actually
+implemented and the repair items still pending; callers cannot upgrade an old
+aggregate-deposit snapshot merely by changing metadata.
 
 ## Required mapping
 
 | Input field | Meaning | Validation |
 | --- | --- | --- |
 | `as_of_date`, `initial_curve_identity` | Valuation date and initial market-curve identity | Must match the market batch supplied to `ALMSimulator.rollout` when the batch declares them. |
+| `artifact_semantics` | Implemented snapshot behavior and correction status | Must exactly match the runtime's supported snapshot semantics; missing, unknown, or self-declared future repairs are rejected. |
 | `cash`, `equity`, `target_economic_values` | Balance-sheet valuation in the declared unit | Seven targets: cash plus six product ladders; assets less liabilities must equal equity. |
 | `ladders` | Monthly contractual nominal cash flows | Exactly six named arrays, each exactly 180 entries; finite and non-negative within tolerance. |
 | `loan_cohorts` | Fixed-rate mortgage and enterprise-loan contracts | Each product has one or more cohorts. A cohort provides 180 remaining principal cash flows and one non-negative, already fixed monthly coupon rate. Reconstructing principal plus coupon cash flows from all cohorts must equal its aggregate loan ladder exactly. |

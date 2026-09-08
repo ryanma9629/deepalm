@@ -93,6 +93,29 @@ def test_local_workflow_runs_every_required_stage_and_publishes_one_bundle(
         )
         assert reused.status is RunStatus.COMPLETED
         assert reused.artifact_directory == bundle.artifact_directory
+    manifest_path = bundle.artifact_directory / "manifest.json"
+    original_manifest = manifest_path.read_text()
+    manifest["training_identity"]["artifact_semantics"]["policy_version"] = "old-policy"
+    manifest_path.write_text(json.dumps(manifest))
+    semantic_reuse = runner.reuse_completed_workflow_stage(
+        configuration, source_run_directory=bundle.artifact_directory, stage="train"
+    )
+    assert semantic_reuse.status is RunStatus.FAILED
+    assert "artifact semantics" in str(semantic_reuse.error)
+    manifest_path.write_text(original_manifest)
+    metric_changed = json.loads(original_manifest)
+    metric_changed["artifact_semantics"]["metric_version"] = "different-report-metrics"
+    manifest_path.write_text(json.dumps(metric_changed))
+    weights_reused = runner.reuse_completed_workflow_stage(
+        configuration, source_run_directory=bundle.artifact_directory, stage="train"
+    )
+    assert weights_reused.status is RunStatus.COMPLETED
+    metrics_rejected = runner.reuse_completed_workflow_stage(
+        configuration, source_run_directory=bundle.artifact_directory, stage="evaluate"
+    )
+    assert metrics_rejected.status is RunStatus.FAILED
+    assert "artifact semantics" in str(metrics_rejected.error)
+    manifest_path.write_text(original_manifest)
     incompatible = runner.reuse_completed_workflow_stage(
         replace(configuration, seeds={**configuration.seeds, "bootstrap": 99}),
         source_run_directory=bundle.artifact_directory,

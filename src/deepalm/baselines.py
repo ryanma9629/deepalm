@@ -14,7 +14,11 @@ from typing import Any
 import torch
 
 from deepalm.policies import BMDatePolicy
-from deepalm.semantics import current_financial_semantics
+from deepalm.semantics import (
+    artifact_semantics,
+    artifact_semantics_error,
+    current_financial_semantics,
+)
 
 _REFERENCE_NAME = re.compile(r"\.baseline\.([0-9a-f]{64})\.json$")
 
@@ -48,6 +52,7 @@ class FrozenDateBenchmarkReference:
         if checkpoint.get("policy") != "BM^D":
             raise BaselineReferenceError("Only a selected BM^D checkpoint can be frozen")
         payload = {
+            "artifact_semantics": artifact_semantics("training"),
             "format_version": 1,
             "policy": "BM^D",
             "checkpoint_path": checkpoint_path.name,
@@ -89,6 +94,8 @@ class FrozenDateBenchmarkReference:
             raise BaselineReferenceError("Frozen BM^D reference identity verification failed")
         try:
             payload = json.loads(reference_path.read_text(encoding="utf-8"))
+            if error := artifact_semantics_error(payload, "training"):
+                raise BaselineReferenceError(error)
             relative_checkpoint = payload["checkpoint_path"]
             checkpoint_relative_path = Path(relative_checkpoint)
             if checkpoint_relative_path.is_absolute() or ".." in checkpoint_relative_path.parts:
@@ -149,6 +156,8 @@ def _load_checkpoint(path: Path) -> dict[str, Any]:
         raise BaselineReferenceError("Frozen BM^D baseline checkpoint has invalid content")
     if not current_financial_semantics(loaded):
         raise BaselineReferenceError("Frozen BM^D baseline financial semantics are incompatible; retraining required")
+    if error := artifact_semantics_error(loaded.get("code_identity"), "training"):
+        raise BaselineReferenceError(error)
     return loaded
 
 

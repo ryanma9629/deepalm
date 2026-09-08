@@ -44,7 +44,12 @@ from deepalm.policies import (
 from deepalm.reference_bank import ReferenceBankSnapshot
 from deepalm.resources import BudgetExceeded, ResourceMonitor, ResourceSnapshot
 from deepalm.runoff import ALMSimulator, PassiveRunoffResult
-from deepalm.semantics import FINANCIAL_SEMANTICS_VERSION, current_financial_semantics
+from deepalm.semantics import (
+    FINANCIAL_SEMANTICS_VERSION,
+    artifact_semantics,
+    artifact_semantics_error,
+    current_financial_semantics,
+)
 from deepalm.term_structures import (
     HistoricalTermStructures,
     HjmPcaCalibration,
@@ -1296,6 +1301,8 @@ class MMTrainer(BenchmarkTrainer):
             raise TrainingError("Checkpoint is not a supported MM policy")
         if not current_financial_semantics(checkpoint):
             raise TrainingError("MM checkpoint financial semantics are incompatible; retraining required")
+        if error := artifact_semantics_error(checkpoint.get("code_identity"), "training"):
+            raise TrainingError(error)
         dependencies = checkpoint.get("policy_dependencies")
         if not isinstance(dependencies, dict):
             raise TrainingError("MM checkpoint has no immutable dependency record")
@@ -1745,6 +1752,7 @@ def _checkpoint_contents(
         "configuration": configuration_data,
         "configuration_identity": _json_identity(configuration_data),
         "code_identity": {
+            "artifact_semantics": artifact_semantics("training"),
             "financial_semantics_version": FINANCIAL_SEMANTICS_VERSION,
             "git_revision": _training_git_revision(),
             "checkpoint_schema_version": 1,
@@ -2067,6 +2075,8 @@ def _load_recovery(path: Path) -> dict[str, object]:
         or recovered.get("kind") != "epoch-recovery"
     ):
         raise TrainingError("Recovery artifact has an incompatible format")
+    if error := artifact_semantics_error(recovered.get("recovery_identity"), "training"):
+        raise TrainingError(error)
     return recovered
 
 
@@ -2091,6 +2101,8 @@ def _validate_selected_checkpoint_contract(
 
     if not current_financial_semantics(checkpoint):
         raise TrainingError(f"{policy_label} checkpoint financial semantics are incompatible; retraining required")
+    if error := artifact_semantics_error(checkpoint.get("code_identity"), "training"):
+        raise TrainingError(error)
     recorded = checkpoint.get("configuration")
     if not isinstance(recorded, dict):
         raise TrainingError(f"{policy_label} checkpoint lacks a configuration manifest")
@@ -2148,6 +2160,7 @@ def _recovery_identity(
     return {
         "policy": policy_name,
         "horizon_years": horizon_years,
+        "artifact_semantics": artifact_semantics("training"),
         "financial_semantics_version": FINANCIAL_SEMANTICS_VERSION,
         "semantic_configuration_identity": _json_identity(semantic_configuration),
         "data_identities": {

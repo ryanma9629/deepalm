@@ -24,7 +24,13 @@ from deepalm.reference_bank import (
     ReferenceBankSnapshot,
 )
 from deepalm.runoff import ALMSimulator, PassiveRunoffResult
-from deepalm.semantics import FINANCIAL_SEMANTICS_VERSION, current_financial_semantics
+from deepalm.semantics import (
+    FINANCIAL_SEMANTICS_VERSION,
+    METRIC_SEMANTICS_VERSION,
+    artifact_semantics,
+    artifact_semantics_error,
+    current_financial_semantics,
+)
 from deepalm.term_structures import (
     HistoricalTermStructures,
     HjmPcaCalibration,
@@ -315,7 +321,8 @@ class LockedEvaluator:
     ) -> dict[str, object]:
         return {
             "format_version": 1,
-            "risk_metric_convention": "centered-equity-ratio-and-penalty-v2",
+            "artifact_semantics": artifact_semantics("evaluation"),
+            "risk_metric_convention": METRIC_SEMANTICS_VERSION,
             "financial_semantics_version": FINANCIAL_SEMANTICS_VERSION,
             "kind": (
                 "frozen-policy-reference-bank-sensitivity"
@@ -470,6 +477,7 @@ class FrozenPolicySensitivityEvaluator:
         return {
             "format_version": 1,
             "kind": "frozen-policy-reference-bank-sensitivity",
+            "artifact_semantics": artifact_semantics("evaluation"),
             "canonical_reference_bank_content_hash": self._canonical_snapshot.content_hash,
             "representative_sensitivity": asdict(result.sensitivity),
             "representative_variant_content_hash": result.variant.content_hash,
@@ -710,6 +718,8 @@ def _validate_checkpoint_compatibility(
 ) -> None:
     if not current_financial_semantics(checkpoint):
         raise LockedEvaluationError("Checkpoint financial semantics are incompatible; retraining required")
+    if error := artifact_semantics_error(checkpoint.get("code_identity"), "training"):
+        raise LockedEvaluationError(error)
     expected = {
         "market_source_hash": historical.source_hash,
         "hjm_calibration_identity": calibration.calibration_identity,
