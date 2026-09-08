@@ -48,6 +48,32 @@ source hashes, Git revision, runtime/device identity, named seed registry, and
 the execution plan. `run` does not yet run market calibration, Reference Bank
 construction, or policy training; its acceptance status is therefore `pending`.
 
+## Complete local workflow
+
+Run the complete bounded no-swap workflow with one command:
+
+```bash
+uv run deepalm workflow --config configs/quick-skeleton.yaml
+```
+
+It calibrates the market model, saves and reloads the canonical Reference Bank,
+performs the 50,000-path one-step market diagnostic, trains all four policies at
+both 5 and 15 years, verifies a short recovery, runs both MM paper-width checks,
+then creates locked evaluation, MM(15y|5y), representative sensitivity, horizon
+analysis, and compact-report artifacts. All work shares the configured resource
+budget and is published by one final atomic rename. The successful bundle is
+`development-validated` only: it demonstrates the technical workflow on a small
+local sample; it does not claim convergence, paper-result replication, CUDA
+validation, multi-GPU readiness, or bank-model approval.
+
+`plan` (also `profile`), `preflight` (also `calibrate`), and `bank` are bounded
+preparation stages. After a completed workflow, `train --source-run`, `resume
+--source-run`, `evaluate --source-run`, and `accept --source-run` reuse its
+atomic evidence instead of rerunning the policy matrix. Reuse rejects a source
+whose requested configuration differs in data, convention, seeds, or model
+semantics. `report` remains available for explicitly combining completed source
+run directories.
+
 ## Compact no-swap report
 
 Create a compact report only from one or more completed run bundles. The report
