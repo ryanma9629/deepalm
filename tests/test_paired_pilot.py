@@ -41,6 +41,17 @@ def _paired_pilot_data(tmp_path: Path) -> dict[str, object]:
     return data
 
 
+def test_paired_pilot_config_writes_distinct_repair_evidence() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    raw = yaml.safe_load(
+        (repository / "configs/paired-convention-pilot.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert raw["output"]["run_name"] == "paired-convention-pilot-financial-corrections"
+
+
 def test_paired_convention_pilot_resolves_the_locked_m5_budget(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

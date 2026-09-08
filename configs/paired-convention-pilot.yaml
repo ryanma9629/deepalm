@@ -44,7 +44,7 @@ seeds:
 
 output:
   directory: artifacts
-  run_name: paired-convention-pilot
+  run_name: paired-convention-pilot-financial-corrections
 
 acceptance:
   purpose: research

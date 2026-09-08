@@ -94,8 +94,8 @@ convergence result, paper-result replication, or bank-model approval.
 Evaluate and report a completed paired pilot without retraining:
 
 ```bash
-uv run deepalm paired-evaluate --config configs/paired-convention-pilot.yaml --source-run artifacts/paired-convention-pilot
-uv run deepalm paired-report --config configs/paired-convention-pilot.yaml --source-run artifacts/paired-convention-pilot --evaluation-run artifacts/paired-convention-pilot-evaluation
+uv run deepalm paired-evaluate --config configs/paired-convention-pilot.yaml --source-run artifacts/paired-convention-pilot-financial-corrections
+uv run deepalm paired-report --config configs/paired-convention-pilot.yaml --source-run artifacts/paired-convention-pilot-financial-corrections --evaluation-run artifacts/paired-convention-pilot-financial-corrections-evaluation
 ```
 
 The second command publishes a sibling `*-report` bundle. It retains both

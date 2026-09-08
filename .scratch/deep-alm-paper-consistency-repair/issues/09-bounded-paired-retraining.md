@@ -4,7 +4,7 @@
 
 **Blocked by:** 08.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 来源：Deep ALM 论文一致性修复增量规格 Revision 1；本专项独立编号，旧专项票不变。
 
@@ -15,3 +15,11 @@
 ## Comments
 
 2026-09-08 — 用户已确认十票拆分与阻塞关系；按本地 Markdown tracker 发布。
+
+2026-09-08 — 已以锁定的 MPS float32/600 秒配置启动一次新的试跑；为避免覆盖修复前
+`paired-convention-pilot`，新配置输出为
+`paired-convention-pilot-financial-corrections`。试跑在 74.13 秒以 failed 停止，诊断包为
+`artifacts/paired-convention-pilot-financial-corrections.failed-x3wou4jr`：Corrected 的
+BM^D 15 年及 MM 15 年首 epoch 探针已完成，但 Paper 的 BM^D 15 年首 batch 所有目标/约束
+损失与参数梯度均为零，优化器未改变参数。未修改损失、优化规则、样本、学习率或资源预算；
+因此本票仍为 claimed，八作业/32 更新证据尚未生成。
