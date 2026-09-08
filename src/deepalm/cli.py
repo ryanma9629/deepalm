@@ -121,6 +121,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     workflow_parser.add_argument(
         "--config", type=Path, required=True, help="YAML local workflow configuration"
     )
+    paired_pilot_parser = subparsers.add_parser(
+        "paired-pilot",
+        help="run the bounded MPS Paper/Corrected BM^D/MM research pilot",
+    )
+    paired_pilot_parser.add_argument(
+        "--config", type=Path, required=True, help="YAML paired-pilot configuration"
+    )
     arguments = parser.parse_args(argv)
 
     try:
@@ -153,6 +160,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     elif arguments.command == "workflow":
         bundle = runner.run_local_workflow(configuration)
+    elif arguments.command == "paired-pilot":
+        bundle = runner.run_paired_convention_pilot(configuration)
     elif arguments.command == "train":
         bundle = (
             runner.reuse_completed_workflow_stage(

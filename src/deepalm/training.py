@@ -421,6 +421,7 @@ class BenchmarkTrainer:
             diagnostics = {
                 "error_type": type(error).__name__,
                 "error": str(error),
+                "training_diagnostics": getattr(error, "diagnostics", {}),
                 "resource_snapshot": self._monitor.snapshot().to_dict(),
             }
             self._record_interruption(

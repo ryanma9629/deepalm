@@ -13,6 +13,7 @@ class PlannedTrainingJob:
     """One policy/horizon training job in a resolved workflow plan."""
 
     policy: str
+    convention: str
     horizon_years: int
     seed: int
     epochs: int
@@ -56,9 +57,15 @@ def build_execution_plan(configuration: ResolvedRunConfiguration) -> ExecutionPl
     scale = configuration.run_scale
     updates_per_epoch = _ceil_division(scale.training_paths_per_epoch, scale.batch_size)
     updates = updates_per_epoch * scale.epochs
+    conventions = (
+        ("corrected", "paper")
+        if scale.profile == "paired_convention_pilot"
+        else (configuration.convention.profile,)
+    )
     jobs = tuple(
         PlannedTrainingJob(
             policy=policy,
+            convention=convention,
             horizon_years=horizon,
             seed=_job_seed(
                 configuration.seeds["model_initialization"], policy, horizon
@@ -72,12 +79,19 @@ def build_execution_plan(configuration: ResolvedRunConfiguration) -> ExecutionPl
             architecture_profile=configuration.architecture.profile,
             architecture_widths=configuration.architecture.widths,
         )
+        for convention in conventions
         for policy in configuration.policy.names
         for horizon in configuration.experiment.horizons_years
     )
     both_horizons = set(configuration.experiment.horizons_years) == {5, 15}
     has_mm = "MM" in configuration.policy.names
-    paper_width_checks = 2 if has_mm and both_horizons else 0
+    paper_width_checks = (
+        2
+        if has_mm
+        and both_horizons
+        and scale.profile != "paired_convention_pilot"
+        else 0
+    )
     return ExecutionPlan(
         run_scale=scale.profile,
         purpose=configuration.acceptance.purpose,

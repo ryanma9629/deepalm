@@ -1,0 +1,51 @@
+source_data:
+  snb_csv: data/snb-data-rendopar-en-all_19880401-20250731.csv
+  paper_pdf: docs/Deep treasury management for banks.pdf
+  nss_beta_unit: percentage_points
+
+convention:
+  profile: corrected
+
+run_scale:
+  profile: paired_convention_pilot
+
+architecture:
+  profile: compact
+
+reference_bank:
+  profile: canonical
+  initial_assets:
+    value: 10000
+    unit: mCHF
+
+experiment:
+  horizons_years: [5, 15]
+  include_swaps: false
+
+policy:
+  names: [BM^D, MM]
+
+optimization:
+  device: mps
+  dtype: float32
+
+resources:
+  wall_clock_budget_seconds: 600
+  process_rss_limit_bytes: 12884901888
+  accelerator_memory_limit_bytes: 12884901888
+
+seeds:
+  market_scenarios: 20260907
+  objective_parameters: 20260908
+  model_initialization: 20260909
+  data_loader_order: 20260910
+  bootstrap: 20260911
+  sensitivity: 20260912
+
+output:
+  directory: artifacts
+  run_name: paired-convention-pilot
+
+acceptance:
+  purpose: research
+  required_status: paired-convention-research-pilot

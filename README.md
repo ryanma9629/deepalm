@@ -74,6 +74,23 @@ whose requested configuration differs in data, convention, seeds, or model
 semantics. `report` remains available for explicitly combining completed source
 run directories.
 
+## Paired-convention research pilot
+
+On an Apple Silicon Mac with MPS available, the explicitly opt-in pilot runs
+Paper and Corrected BM^D/MM at both horizons on matching immutable inputs and
+named scenario streams:
+
+```bash
+uv run deepalm paired-pilot --config configs/paired-convention-pilot.yaml
+```
+
+It uses the locked compact MPS/float32 32-update matrix and a 600-second total
+budget. After both 15-year MM first epochs, it stops remaining work when its
+measured projection exceeds 420 seconds. A numerical failure writes the precise
+diagnostic and returns nonzero; a finite but weaker Paper result is evidence,
+not a Corrected failure. This is a `paired-convention-research-pilot`, not a
+convergence result, paper-result replication, or bank-model approval.
+
 ## Compact no-swap report
 
 Create a compact report only from one or more completed run bundles. The report
