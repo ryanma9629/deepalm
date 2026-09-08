@@ -45,6 +45,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=Path,
         help="versioned imported Reference Bank snapshot; omit to build canonical",
     )
+    device_check_parser = subparsers.add_parser(
+        "device-check",
+        help="run bounded actual CPU/MPS/CUDA commissioning updates",
+    )
+    device_check_parser.add_argument(
+        "--config", type=Path, required=True, help="YAML run configuration"
+    )
+    device_check_parser.add_argument(
+        "--policy",
+        choices=("BM^E", "MM"),
+        default="BM^E",
+        help="benchmark or MM path to commission; MM includes a frozen BM^D dependency",
+    )
+    device_check_parser.add_argument(
+        "--horizon",
+        type=int,
+        choices=(5, 15),
+        default=5,
+        help="full 5- or 15-year rollout used by the commissioning update",
+    )
     arguments = parser.parse_args(argv)
 
     try:
@@ -63,6 +83,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     elif arguments.command == "bank":
         bundle = runner.build_reference_bank(
             configuration, snapshot_path=arguments.snapshot
+        )
+    elif arguments.command == "device-check":
+        bundle = runner.commission_single_device_portability(
+            configuration,
+            horizon_years=arguments.horizon,
+            policy_name=arguments.policy,
         )
     else:
         bundle = runner.run(configuration)

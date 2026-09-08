@@ -42,6 +42,7 @@ Produce an implementation-ready decision set for a Python and PyTorch methodolog
 - [18 Demonstrate horizon effects and rate scenarios](../deep-alm-methodological-reproduction-implementation/issues/18-analyze-horizon-and-scenarios.md): Resolved with immutable action/market-prefix evidence, paired MM horizon turnover statistics, terminal concentration handling, and paper-defined overlapping rate-scenario categories.
 - [19 Evaluate a representative Reference Bank sensitivity](../deep-alm-methodological-reproduction-implementation/issues/19-run-reference-bank-sensitivities.md): Resolved with validated named one-factor snapshots, a bounded 5,000 mCHF frozen-policy evaluation, visible invalid-variant diagnostics, and an explicit no-retraining/local-inference boundary.
 - [26 Validate replaceable bank and market inputs](issues/26-validate-replaceable-bank-and-market-inputs.md): Resolved with versioned single-currency snapshot import/export, auditable market lineage, runner-stage import, and synthetic passive-rollout evidence.
+- [27 Validate single-device portability and bank handoff](../deep-alm-methodological-reproduction-implementation/issues/27-validate-single-device-portability-and-bank-handoff.md): Resolved with CPU-recovery device validation, semantic checkpoint contracts, code/schema identity, a bank single-GPU commissioning configuration, and explicit real-bank/multi-GPU boundaries.
 
 ## Out of scope
 

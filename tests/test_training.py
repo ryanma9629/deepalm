@@ -6,8 +6,11 @@ from pathlib import Path
 
 import pytest
 import torch
+import yaml
+from test_run_skeleton import configuration_data
 
 from deepalm.baselines import BaselineReferenceError, FrozenDateBenchmarkReference
+from deepalm.cli import main
 from deepalm.config import (
     ArchitectureConfiguration,
     ExperimentConfiguration,
@@ -17,6 +20,7 @@ from deepalm.config import (
 )
 from deepalm.reference_bank import ReferenceBankProvider
 from deepalm.resources import BudgetExceeded, ResourceSnapshot
+from deepalm.runner import ReproductionRunner, RunStatus
 from deepalm.term_structures import MarketScenarioModel
 from deepalm.training import (
     BMConstantTrainer,
@@ -115,6 +119,8 @@ def test_bme_trainer_updates_policy_selects_checkpoint_and_records_resources(
     assert [item.resource_profile.horizon_years for item in results] == [5, 15]
     assert checkpoint["policy"] == "BM^E"
     assert checkpoint["horizon_years"] == 5
+    assert checkpoint["code_identity"]["git_revision"]
+    assert checkpoint["code_identity"]["checkpoint_schema_version"] == 1
     assert checkpoint["scenario_identities"]["training"]["split"] == "training"
     assert checkpoint["scenario_identities"]["selection"]["split"] == "selection"
     assert checkpoint["data_identities"]["market_source_hash"] == historical.source_hash
@@ -135,7 +141,66 @@ def test_bme_trainer_updates_policy_selects_checkpoint_and_records_resources(
     assert result.resource_profile.scenario_seconds >= 0.0
 
 
-def test_bme_device_validation_records_cpu_and_available_mps(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    (
+        (
+            lambda checkpoint: checkpoint["configuration"]["convention"].update(
+                {"profile": "paper"}
+            ),
+            "convention",
+        ),
+        (
+            lambda checkpoint: checkpoint["configuration"]["architecture"].update(
+                {"widths": [1, 1, 1, 1]}
+            ),
+            "architecture",
+        ),
+        (
+            lambda checkpoint: checkpoint.update({"horizon_years": 15}),
+            "horizon",
+        ),
+        (
+            lambda checkpoint: checkpoint["configuration"]["source_data"].update(
+                {"nss_beta_unit": "decimal"}
+            ),
+            "preprocessing",
+        ),
+        (
+            lambda checkpoint: checkpoint["data_identities"].update(
+                {"market_source_hash": "wrong-market"}
+            ),
+            "data identities",
+        ),
+    ),
+)
+def test_bme_checkpoint_loader_rejects_incompatible_semantic_contract(
+    tmp_path: Path, mutate, message: str
+) -> None:
+    configuration = _configuration(tmp_path)
+    model = MarketScenarioModel()
+    historical = model.load_historical_term_structures(SOURCE)
+    calibration = model.calibrate_hjm_pca(historical)
+    snapshot = ReferenceBankProvider().build_canonical(historical)
+    trainer = BMETrainer(
+        configuration,
+        snapshot=snapshot,
+        historical=historical,
+        calibration=calibration,
+    )
+    result = trainer.fit(horizon_years=5)
+    checkpoint = torch.load(result.checkpoint_path, weights_only=False)
+    mutate(checkpoint)
+    incompatible_path = tmp_path / f"incompatible-{message}.pt"
+    torch.save(checkpoint, incompatible_path)
+
+    with pytest.raises(TrainingError, match=message):
+        trainer.load_selected_checkpoint(incompatible_path)
+
+
+def test_bme_device_validation_records_cpu_mps_and_cuda_truthfully(
+    tmp_path: Path,
+) -> None:
     configuration = _configuration(tmp_path)
     model = MarketScenarioModel()
     historical = model.load_historical_term_structures(SOURCE)
@@ -149,17 +214,128 @@ def test_bme_device_validation_records_cpu_and_available_mps(tmp_path: Path) -> 
         calibration=calibration,
     ).validate_devices(horizon_years=5)
 
-    assert records[0].device == "cpu"
-    assert records[0].status == "completed"
-    assert records[0].finite and records[0].updated and records[0].clipped
-    assert records[0].checkpoint_path is not None
-    assert records[1].device == "mps"
+    records_by_device = {record.device: record for record in records}
+    assert set(records_by_device) == {"cpu", "mps", "cuda"}
+    cpu = records_by_device["cpu"]
+    assert cpu.status == "completed"
+    assert cpu.finite and cpu.updated and cpu.clipped
+    assert cpu.checkpoint_path is not None
+    assert cpu.checkpoint_loaded and cpu.resumed_from_cpu_recovery
+    assert cpu.recovery_path is not None and cpu.recovery_path.is_file()
+    cpu_checkpoint = torch.load(cpu.checkpoint_path, weights_only=False)
+    assert cpu_checkpoint["configuration"]["optimization"]["dtype"] == "float32"
+
+    mps = records_by_device["mps"]
     if torch.backends.mps.is_available():
-        assert records[1].status == "completed"
-        assert records[1].finite and records[1].updated and records[1].clipped
-        assert records[1].checkpoint_path is not None
+        assert mps.status == "completed"
+        assert mps.finite and mps.updated and mps.clipped
+        assert mps.checkpoint_path is not None
+        assert mps.checkpoint_loaded and mps.resumed_from_cpu_recovery
     else:
-        assert records[1].status == "not-run"
+        assert mps.status == "not-run"
+        assert mps.checkpoint_path is None
+        assert mps.reason == "PyTorch MPS runtime is not available"
+
+    cuda = records_by_device["cuda"]
+    if torch.cuda.is_available():
+        assert cuda.status == "completed"
+        assert cuda.finite and cuda.updated and cuda.clipped
+        assert cuda.checkpoint_path is not None
+        assert cuda.checkpoint_loaded and cuda.resumed_from_cpu_recovery
+    else:
+        assert cuda.status == "not-run"
+        assert cuda.checkpoint_path is None
+        assert cuda.reason == "PyTorch CUDA runtime is not available"
+
+
+def test_runner_persists_actual_single_device_validation_evidence(
+    tmp_path: Path,
+) -> None:
+    configuration = _configuration(tmp_path)
+    configuration.source_data.paper_pdf.write_bytes(b"paper fixture")
+    configuration = replace(
+        configuration,
+        output=replace(configuration.output, run_name="single-device-portability"),
+    )
+    model = MarketScenarioModel()
+    historical = model.load_historical_term_structures(SOURCE)
+    calibration = model.calibrate_hjm_pca(historical)
+    snapshot = ReferenceBankProvider().build_canonical(historical)
+    trainer = BMETrainer(
+        configuration,
+        snapshot=snapshot,
+        historical=historical,
+        calibration=calibration,
+    )
+
+    bundle = ReproductionRunner().validate_single_device_portability(
+        configuration, trainer=trainer, horizon_years=5
+    )
+
+    assert bundle.status is RunStatus.COMPLETED
+    assert bundle.artifact_directory is not None
+    evidence = json.loads(
+        (bundle.artifact_directory / "single-device-validation.json").read_text()
+    )
+    records = {record["device"]: record for record in evidence["records"]}
+    assert records["cpu"]["status"] == "completed"
+    assert records["cpu"]["checkpoint_path"] is not None
+    assert records["cpu"]["checkpoint_loaded"] is True
+    assert records["cpu"]["resumed_from_cpu_recovery"] is True
+    assert records["cuda"]["status"] == (
+        "completed" if torch.cuda.is_available() else "not-run"
+    )
+    if not torch.cuda.is_available():
+        assert records["cuda"]["reason"] == "PyTorch CUDA runtime is not available"
+    assert evidence["cross_device_bitwise_equality"] == "not-promised"
+
+
+@pytest.mark.parametrize(
+    ("policy_name", "horizon_years"),
+    (("BM^E", 5), ("BM^E", 15), ("MM", 5), ("MM", 15)),
+)
+def test_cli_runs_the_bounded_single_device_commissioning_check(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    policy_name: str,
+    horizon_years: int,
+) -> None:
+    configuration = configuration_data(tmp_path)
+    source_data = configuration["source_data"]
+    assert isinstance(source_data, dict)
+    source_data["snb_csv"] = str(SOURCE)
+    Path(str(source_data["paper_pdf"])).write_bytes(b"paper fixture")
+    if policy_name == "MM":
+        configuration["policy"] = {"names": ["BM^D", "MM"]}
+    configuration["output"] = {
+        "directory": str(tmp_path / "runs"),
+        "run_name": f"cli-device-check-{policy_name}-{horizon_years}",
+    }
+    configuration_path = tmp_path / "device-check.yaml"
+    configuration_path.write_text(
+        yaml.safe_dump(configuration), encoding="utf-8"
+    )
+
+    exit_code = main(
+        [
+            "device-check",
+            "--config",
+            str(configuration_path),
+            "--horizon",
+            str(horizon_years),
+            "--policy",
+            policy_name,
+        ]
+    )
+
+    captured = capsys.readouterr()
+    artifact_directory = Path(captured.out.strip())
+    assert exit_code == 0, captured.err
+    evidence = json.loads(
+        (artifact_directory / "single-device-validation.json").read_text()
+    )
+    assert evidence["horizon_years"] == horizon_years
+    assert evidence["policy"] == policy_name
 
 
 def test_constant_benchmark_uses_the_shared_trainer_for_both_horizons(

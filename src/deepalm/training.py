@@ -6,8 +6,10 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
@@ -259,6 +261,10 @@ class DeviceValidationRecord:
     updated: bool
     clipped: bool
     checkpoint_path: Path | None
+    checkpoint_loaded: bool = False
+    resumed_from_cpu_recovery: bool = False
+    recovery_path: Path | None = None
+    reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -794,48 +800,54 @@ class BenchmarkTrainer:
     def validate_devices(
         self, *, horizon_years: int
     ) -> tuple[DeviceValidationRecord, ...]:
-        """Run the smallest real-update fixture on CPU and available MPS."""
+        """Resume a CPU recovery artifact on each available single device."""
 
-        records: list[DeviceValidationRecord] = []
-        for device in ("cpu", "mps"):
-            if device == "mps" and not torch.backends.mps.is_available():
-                records.append(
-                    DeviceValidationRecord(
-                        device=device,
-                        status="not-run",
-                        finite=False,
-                        updated=False,
-                        clipped=False,
-                        checkpoint_path=None,
-                    )
-                )
-                continue
-            result = BenchmarkTrainer(
-                _device_validation_configuration(self._configuration, device),
+        return _validate_device_portability(
+            self._configuration,
+            horizon_years=horizon_years,
+            create_trainer=lambda configuration: BenchmarkTrainer(
+                configuration,
                 snapshot=self._snapshot,
                 historical=self._historical,
                 calibration=self._calibration,
                 policy_name=self._policy_name,
                 simulator=self._simulator,
                 market_model=self._market_model,
-            ).fit(horizon_years=horizon_years)
-            records.append(
-                DeviceValidationRecord(
-                    device=device,
-                    status="completed",
-                    finite=all(
-                        torch.isfinite(torch.tensor(record.total_loss))
-                        for record in result.selection_history
-                    ),
-                    updated=result.optimizer_updates > 0,
-                    clipped=all(
-                        norm <= _GRADIENT_CLIP_NORM + 1e-5
-                        for norm in result.clipped_gradient_norms
-                    ),
-                    checkpoint_path=result.checkpoint_path,
-                )
+            ),
+        )
+
+    def load_selected_checkpoint(self, checkpoint_path: Path) -> TreasuryPolicy:
+        """Load a CPU-readable selected benchmark checkpoint onto this device."""
+
+        try:
+            checkpoint = torch.load(
+                checkpoint_path, map_location="cpu", weights_only=False
             )
-        return tuple(records)
+        except (OSError, RuntimeError, ValueError) as error:
+            raise TrainingError(
+                f"Could not load benchmark checkpoint: {checkpoint_path}"
+            ) from error
+        if (
+            not isinstance(checkpoint, dict)
+            or checkpoint.get("policy") != self._policy_name
+            or checkpoint.get("horizon_years") not in {5, 15}
+        ):
+            raise TrainingError("Benchmark checkpoint is incompatible")
+        _validate_selected_checkpoint_contract(
+            checkpoint,
+            configuration=self._configuration,
+            historical=self._historical,
+            calibration=self._calibration,
+            snapshot=self._snapshot,
+            policy_label="Benchmark",
+        )
+        policy = self._create_policy(horizon_years=int(checkpoint["horizon_years"]))
+        try:
+            policy.load_state_dict(checkpoint["policy_state"])
+        except (KeyError, RuntimeError) as error:
+            raise TrainingError("Benchmark checkpoint policy state is incompatible") from error
+        policy.eval()
+        return policy
 
     def _training_market(
         self,
@@ -1176,46 +1188,19 @@ class MMTrainer(BenchmarkTrainer):
         """Validate MM updates on available local devices with its frozen inputs."""
 
         self._require_mm_horizon(horizon_years)
-        records: list[DeviceValidationRecord] = []
-        for device in ("cpu", "mps"):
-            if device == "mps" and not torch.backends.mps.is_available():
-                records.append(
-                    DeviceValidationRecord(
-                        device=device,
-                        status="not-run",
-                        finite=False,
-                        updated=False,
-                        clipped=False,
-                        checkpoint_path=None,
-                    )
-                )
-                continue
-            result = MMTrainer(
-                _device_validation_configuration(self._configuration, device),
+        return _validate_device_portability(
+            self._configuration,
+            horizon_years=horizon_years,
+            create_trainer=lambda configuration: MMTrainer(
+                configuration,
                 snapshot=self._snapshot,
                 historical=self._historical,
                 calibration=self._calibration,
                 baseline_reference=self._baseline_reference,
                 simulator=self._simulator,
                 market_model=self._market_model,
-            ).fit(horizon_years=horizon_years)
-            records.append(
-                DeviceValidationRecord(
-                    device=device,
-                    status="completed",
-                    finite=all(
-                        torch.isfinite(torch.tensor(norm))
-                        for norm in result.clipped_gradient_norms
-                    ),
-                    updated=result.optimizer_updates > 0,
-                    clipped=all(
-                        norm <= _GRADIENT_CLIP_NORM + 1e-5
-                        for norm in result.clipped_gradient_norms
-                    ),
-                    checkpoint_path=result.checkpoint_path,
-                )
-            )
-        return tuple(records)
+            ),
+        )
 
     def load_selected_checkpoint(self, checkpoint_path: Path) -> MMPolicy:
         """Reload a selected MM only when its frozen inputs still match exactly."""
@@ -1230,6 +1215,7 @@ class MMTrainer(BenchmarkTrainer):
             ) from error
         if not isinstance(checkpoint, dict) or checkpoint.get("policy") != "MM":
             raise TrainingError("Checkpoint is not an MM policy")
+        self._validate_selected_checkpoint_configuration(checkpoint)
         horizon_years = checkpoint.get("horizon_years")
         if horizon_years != self._baseline_reference.horizon_years:
             raise TrainingError("MM checkpoint horizon must match its frozen baseline")
@@ -1267,6 +1253,20 @@ class MMTrainer(BenchmarkTrainer):
             raise TrainingError("MM checkpoint policy state is incompatible") from error
         policy.eval()
         return policy
+
+    def _validate_selected_checkpoint_configuration(
+        self, checkpoint: dict[str, object]
+    ) -> None:
+        """Reject semantic checkpoint changes before rebuilding MM dependencies."""
+
+        _validate_selected_checkpoint_contract(
+            checkpoint,
+            configuration=self._configuration,
+            historical=self._historical,
+            calibration=self._calibration,
+            snapshot=self._snapshot,
+            policy_label="MM",
+        )
 
     @classmethod
     def load_policy_from_checkpoint(
@@ -1740,6 +1740,10 @@ def _checkpoint_contents(
         },
         "configuration": configuration_data,
         "configuration_identity": _json_identity(configuration_data),
+        "code_identity": {
+            "git_revision": _training_git_revision(),
+            "checkpoint_schema_version": 1,
+        },
         "data_identities": {
             "market_source_hash": historical.source_hash,
             "hjm_calibration_identity": calibration.calibration_identity,
@@ -1858,14 +1862,14 @@ def _gradient_norm(policy: TreasuryPolicy) -> torch.Tensor:
 
 
 def _device_validation_configuration(
-    configuration: ResolvedRunConfiguration, device: str
+    configuration: ResolvedRunConfiguration, device: str, *, label: str
 ) -> ResolvedRunConfiguration:
-    dtype = "float32" if device == "mps" else "float64"
+    dtype = "float32"
     return replace(
         configuration,
         run_scale=RunScaleConfiguration(
             profile="device-validation",
-            epochs=1,
+            epochs=2,
             training_paths_per_epoch=2,
             selection_paths=2,
             test_paths=2,
@@ -1874,9 +1878,102 @@ def _device_validation_configuration(
         optimization=OptimizationConfiguration(device=device, dtype=dtype),
         output=OutputConfiguration(
             directory=configuration.output.directory,
-            run_name=f"{configuration.output.run_name}-device-validation-{device}",
+            run_name=f"{configuration.output.run_name}-device-validation-{label}",
         ),
     )
+
+
+def _validate_device_portability(
+    configuration: ResolvedRunConfiguration,
+    *,
+    horizon_years: int,
+    create_trainer: Callable[[ResolvedRunConfiguration], BenchmarkTrainer],
+) -> tuple[DeviceValidationRecord, ...]:
+    """Resume a CPU-written artifact and reload its checkpoint on each device."""
+
+    source = create_trainer(
+        _device_validation_configuration(configuration, "cpu", label="source-cpu")
+    )
+    try:
+        source.fit(
+            horizon_years=horizon_years,
+            control=TrainingControl(stop_after_completed_epoch=1),
+        )
+    except TrainingInterrupted as interruption:
+        recovery_path = interruption.recovery_path
+    else:  # pragma: no cover - the fixed two-epoch fixture must interrupt at epoch one.
+        raise TrainingError("CPU portability fixture did not stop at its recovery boundary")
+    if not recovery_path.is_file():
+        raise TrainingError("CPU portability fixture did not write a recovery artifact")
+
+    records: list[DeviceValidationRecord] = []
+    for device in ("cpu", "mps", "cuda"):
+        if not _device_is_available(device):
+            records.append(
+                DeviceValidationRecord(
+                    device=device,
+                    status="not-run",
+                    finite=False,
+                    updated=False,
+                    clipped=False,
+                    checkpoint_path=None,
+                    reason=_unavailable_device_reason(device),
+                )
+            )
+            continue
+        target = create_trainer(
+            _device_validation_configuration(configuration, device, label=device)
+        )
+        result = target.fit(
+            horizon_years=horizon_years,
+            control=TrainingControl(resume=True, resume_from=recovery_path),
+        )
+        loaded = target.load_selected_checkpoint(result.checkpoint_path)
+        checkpoint_loaded = all(
+            parameter.device.type == device for parameter in loaded.parameters()
+        )
+        records.append(
+            DeviceValidationRecord(
+                device=device,
+                status="completed",
+                finite=all(
+                    torch.isfinite(torch.tensor(record.total_loss))
+                    for record in result.selection_history
+                ),
+                updated=result.optimizer_updates > 1,
+                clipped=all(
+                    norm <= _GRADIENT_CLIP_NORM + 1e-5
+                    for norm in result.clipped_gradient_norms
+                ),
+                checkpoint_path=result.checkpoint_path,
+                checkpoint_loaded=checkpoint_loaded,
+                resumed_from_cpu_recovery=True,
+                recovery_path=recovery_path,
+            )
+        )
+    return tuple(records)
+
+
+def _device_is_available(device: str) -> bool:
+    """Return availability without creating tensors on an unavailable backend."""
+
+    if device == "cpu":
+        return True
+    if device == "mps":
+        return torch.backends.mps.is_available()
+    if device == "cuda":
+        return torch.cuda.is_available()
+    raise ValueError(f"Unsupported device validation target: {device}")
+
+
+def _unavailable_device_reason(device: str) -> str:
+    """Explain a true runtime omission without pretending it was validated."""
+
+    names = {"mps": "MPS", "cuda": "CUDA"}
+    try:
+        return f"PyTorch {names[device]} runtime is not available"
+    except KeyError as error:
+        raise ValueError(f"Unsupported unavailable device target: {device}") from error
 
 
 def _recovery_contents(
@@ -1940,6 +2037,20 @@ def _recovery_contents(
     }
 
 
+def _training_git_revision() -> str:
+    """Return the source revision that created a portable checkpoint."""
+
+    repository_root = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repository_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip() or "unavailable"
+
+
 def _load_recovery(path: Path) -> dict[str, object]:
     try:
         recovered = torch.load(path, map_location="cpu", weights_only=False)
@@ -1952,6 +2063,65 @@ def _load_recovery(path: Path) -> dict[str, object]:
     ):
         raise TrainingError("Recovery artifact has an incompatible format")
     return recovered
+
+
+def _validate_selected_checkpoint_contract(
+    checkpoint: dict[str, object],
+    *,
+    configuration: ResolvedRunConfiguration,
+    historical: HistoricalTermStructures,
+    calibration: HjmPcaCalibration,
+    snapshot: ReferenceBankSnapshot,
+    policy_label: str,
+) -> None:
+    """Reject a selected checkpoint whose semantic inputs no longer match.
+
+    Output location, resource limits, execution device, and tensor dtype are
+    deliberately absent from this contract: a selected CPU checkpoint is
+    expected to be remapped onto a different single device, potentially with
+    PyTorch's audited state-dict dtype conversion. Financial convention,
+    declared model architecture, actual horizon, source-unit preprocessing,
+    and the three immutable input identities must instead agree exactly.
+    """
+
+    recorded = checkpoint.get("configuration")
+    if not isinstance(recorded, dict):
+        raise TrainingError(f"{policy_label} checkpoint lacks a configuration manifest")
+    expected = configuration.to_dict()
+    if recorded.get("convention") != expected["convention"]:
+        raise TrainingError(f"{policy_label} checkpoint convention is incompatible")
+    if recorded.get("architecture") != expected["architecture"]:
+        raise TrainingError(f"{policy_label} checkpoint architecture is incompatible")
+
+    recorded_experiment = recorded.get("experiment")
+    expected_experiment = expected["experiment"]
+    horizon_years = checkpoint.get("horizon_years")
+    if (
+        not isinstance(recorded_experiment, dict)
+        or recorded_experiment.get("include_swaps")
+        != expected_experiment["include_swaps"]
+        or not isinstance(horizon_years, int)
+        or horizon_years not in expected_experiment["horizons_years"]
+    ):
+        raise TrainingError(f"{policy_label} checkpoint horizon is incompatible")
+
+    recorded_source = recorded.get("source_data")
+    if (
+        not isinstance(recorded_source, dict)
+        or recorded_source.get("nss_beta_unit")
+        != expected["source_data"]["nss_beta_unit"]
+    ):
+        raise TrainingError(
+            f"{policy_label} checkpoint preprocessing is incompatible"
+        )
+
+    expected_data = {
+        "market_source_hash": historical.source_hash,
+        "hjm_calibration_identity": calibration.calibration_identity,
+        "reference_bank_content_hash": snapshot.content_hash,
+    }
+    if checkpoint.get("data_identities") != expected_data:
+        raise TrainingError(f"{policy_label} checkpoint data identities are incompatible")
 
 
 def _recovery_identity(

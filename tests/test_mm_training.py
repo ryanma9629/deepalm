@@ -10,6 +10,7 @@ import torch
 from deepalm.baselines import FrozenDateBenchmarkReference
 from deepalm.config import (
     ArchitectureConfiguration,
+    ConventionConfiguration,
     PolicyConfiguration,
     RunScaleConfiguration,
     resolve_configuration,
@@ -22,6 +23,7 @@ from deepalm.training import (
     BMDateTrainer,
     MMTrainer,
     TrainingControl,
+    TrainingError,
     TrainingInterrupted,
     _derived_seed,
 )
@@ -311,3 +313,75 @@ def test_mm_recovery_keeps_its_frozen_dependency_contract(tmp_path: Path) -> Non
     result = trainer.fit(horizon_years=5, control=TrainingControl(resume=True))
 
     assert result.optimizer_updates == 4
+
+
+def test_mm_checkpoint_loader_rejects_a_different_convention_explicitly(
+    tmp_path: Path,
+) -> None:
+    configuration = _configuration(tmp_path)
+    model = MarketScenarioModel()
+    historical = model.load_historical_term_structures(SOURCE)
+    calibration = model.calibrate_hjm_pca(historical)
+    snapshot = ReferenceBankProvider().build_canonical(historical)
+    reference = _frozen_baseline(configuration, model, tmp_path)
+    checkpoint = MMTrainer(
+        configuration,
+        snapshot=snapshot,
+        historical=historical,
+        calibration=calibration,
+        baseline_reference=reference,
+    ).fit(horizon_years=5).checkpoint_path
+    paper_configuration = replace(
+        configuration,
+        convention=ConventionConfiguration(
+            profile="paper",
+            pca_loading_scale="eigenvalue",
+            loan_interest_annualization="unannualized",
+            is_custom=False,
+        ),
+    )
+
+    with pytest.raises(TrainingError, match="convention"):
+        MMTrainer(
+            paper_configuration,
+            snapshot=snapshot,
+            historical=historical,
+            calibration=calibration,
+            baseline_reference=reference,
+        ).load_selected_checkpoint(checkpoint)
+
+
+def test_mm_checkpoint_loader_rejects_different_custom_convention_fields(
+    tmp_path: Path,
+) -> None:
+    configuration = _configuration(tmp_path)
+    model = MarketScenarioModel()
+    historical = model.load_historical_term_structures(SOURCE)
+    calibration = model.calibrate_hjm_pca(historical)
+    snapshot = ReferenceBankProvider().build_canonical(historical)
+    reference = _frozen_baseline(configuration, model, tmp_path)
+    checkpoint = MMTrainer(
+        configuration,
+        snapshot=snapshot,
+        historical=historical,
+        calibration=calibration,
+        baseline_reference=reference,
+    ).fit(horizon_years=5).checkpoint_path
+    custom_configuration = replace(
+        configuration,
+        convention=ConventionConfiguration(
+            profile="corrected",
+            pca_loading_scale="eigenvalue",
+            loan_interest_annualization="unannualized",
+            is_custom=True,
+        ),
+    )
+
+    with pytest.raises(TrainingError, match="convention"):
+        MMTrainer(
+            custom_configuration,
+            snapshot=snapshot,
+            historical=historical,
+            calibration=calibration,
+            baseline_reference=reference,
+        ).load_selected_checkpoint(checkpoint)

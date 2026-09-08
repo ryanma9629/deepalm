@@ -1,0 +1,61 @@
+# Synthetic, single-GPU commissioning only. Replace source inputs and import a
+# validated Reference Bank only after the checks in the accompanying guide.
+source_data:
+  snb_csv: data/snb-data-rendopar-en-all_19880401-20250731.csv
+  paper_pdf: docs/Deep treasury management for banks.pdf
+  nss_beta_unit: percentage_points
+
+convention:
+  profile: corrected
+
+run_scale:
+  profile: bank_training
+  epochs: 1
+  training_paths_per_epoch: 2
+  selection_paths: 2
+  test_paths: 2
+  batch_size: 2
+  selection_start_epoch: 1
+  early_stopping_patience: 1
+  minimum_relative_improvement: 0.0
+
+architecture:
+  profile: compact
+
+reference_bank:
+  profile: canonical
+  initial_assets:
+    value: 10000
+    unit: mCHF
+
+experiment:
+  horizons_years: [5, 15]
+  include_swaps: false
+
+policy:
+  names: [BM^E, BM^D, MM]
+
+optimization:
+  device: cuda
+  dtype: float32
+
+resources:
+  wall_clock_budget_seconds: 1800
+  process_rss_limit_bytes: 4294967296
+  accelerator_memory_limit_bytes: 4294967296
+
+seeds:
+  market_scenarios: 20260907
+  objective_parameters: 20260908
+  model_initialization: 20260909
+  data_loader_order: 20260910
+  bootstrap: 20260911
+  sensitivity: 20260912
+
+output:
+  directory: artifacts
+  run_name: bank-single-gpu-commissioning
+
+acceptance:
+  purpose: bank-training
+  required_status: development-validated

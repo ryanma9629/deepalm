@@ -47,3 +47,18 @@ All commands write an auditable manifest containing resolved configuration,
 source hashes, Git revision, runtime/device identity, named seed registry, and
 the execution plan. `run` does not yet run market calibration, Reference Bank
 construction, or policy training; its acceptance status is therefore `pending`.
+
+## Single-device commissioning
+
+Run a bounded, actual device check without starting the full policy matrix:
+
+```bash
+uv run deepalm device-check --config configs/quick-skeleton.yaml --horizon 5
+```
+
+It performs one small synthetic BM^E update on CPU and every available local
+accelerator. Unavailable MPS/CUDA runtimes are recorded as `not-run`; they are
+not simulated. The resulting run bundle explicitly does not promise
+cross-device bitwise equality or multi-GPU readiness. For the Linux/CUDA
+handoff sequence and the target-side configuration, see
+[the bank commissioning guide](docs/bank-single-gpu-commissioning.md).

@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from deepalm.evaluation import PolicyCheckpoint
     from deepalm.reference_bank import ReferenceBankSensitivity, ReferenceBankSnapshot
     from deepalm.term_structures import HistoricalTermStructures, HjmPcaCalibration
+    from deepalm.training import DeviceValidationRecord
 
 
 class RunStatus(StrEnum):
@@ -62,6 +63,14 @@ class MarketPreflightModel(Protocol):
     def generate_hjm_scenarios(
         self, historical: Any, calibration: Any, **kwargs: Any
     ) -> Any: ...
+
+
+class DeviceValidationTrainer(Protocol):
+    """A real trainer capable of a bounded update on each supported device."""
+
+    def validate_devices(
+        self, *, horizon_years: int
+    ) -> tuple[DeviceValidationRecord, ...]: ...
 
 
 @dataclass(frozen=True)
@@ -405,6 +414,208 @@ class ReproductionRunner:
                 if failure_directory is not None
                 else (),
             )
+
+    def validate_single_device_portability(
+        self,
+        configuration: ResolvedRunConfiguration,
+        *,
+        trainer: DeviceValidationTrainer,
+        horizon_years: int,
+        policy_name: str = "BM^E",
+    ) -> RunBundle:
+        """Record bounded, actual single-device update evidence atomically.
+
+        CPU always runs. MPS and CUDA are attempted only when PyTorch reports
+        their runtime as available; unavailable backends remain explicitly
+        ``not-run`` rather than being simulated. This is a portability
+        commissioning check, not a claim of cross-device bitwise equality or
+        multi-GPU validation.
+        """
+
+        try:
+            from deepalm.training import TrainingError
+
+            records = trainer.validate_devices(horizon_years=horizon_years)
+            serialized_records = [
+                {
+                    **asdict(record),
+                    "checkpoint_path": (
+                        str(record.checkpoint_path)
+                        if record.checkpoint_path is not None
+                        else None
+                    ),
+                    "recovery_path": (
+                        str(record.recovery_path)
+                        if record.recovery_path is not None
+                        else None
+                    ),
+                }
+                for record in records
+            ]
+            evidence = {
+                "format_version": 1,
+                "kind": "single-device-portability-validation",
+                "policy": policy_name,
+                "horizon_years": horizon_years,
+                "records": serialized_records,
+                "cross_device_bitwise_equality": "not-promised",
+                "deferred_boundary": (
+                    "real-bank mapping, multi-GPU/DDP, mixed precision tuning, "
+                    "and cluster throughput commissioning"
+                ),
+            }
+            failed = [
+                record.device
+                for record in records
+                if record.status == "completed"
+                and (
+                    not record.finite
+                    or not record.updated
+                    or not record.clipped
+                    or not record.checkpoint_loaded
+                    or not record.resumed_from_cpu_recovery
+                )
+            ]
+            unexpected_statuses = [
+                f"{record.device}={record.status}"
+                for record in records
+                if record.status not in {"completed", "not-run"}
+            ]
+            if unexpected_statuses:
+                raise OperationalRunError(
+                    "Single-device validation has an unsupported status: "
+                    + ", ".join(unexpected_statuses)
+                )
+            if failed:
+                raise OperationalRunError(
+                    "Single-device validation did not produce a finite clipped update: "
+                    + ", ".join(failed)
+                )
+            manifest = _build_manifest(
+                configuration, RunStatus.COMPLETED, AcceptanceStatus.PENDING
+            )
+            manifest["single_device_portability"] = evidence
+            artifact_directory = _write_bundle_atomically(
+                configuration,
+                manifest,
+                extra_artifacts={"single-device-validation.json": evidence},
+            )
+            return RunBundle(
+                status=RunStatus.COMPLETED,
+                acceptance_status=AcceptanceStatus.PENDING,
+                artifact_directory=artifact_directory,
+                artifacts=(
+                    artifact_directory / "manifest.json",
+                    artifact_directory / "single-device-validation.json",
+                ),
+            )
+        except (OperationalRunError, TrainingError, OSError, ValueError) as error:
+            failure_directory = _write_failure_bundle(configuration, error)
+            return RunBundle(
+                status=RunStatus.FAILED,
+                acceptance_status=AcceptanceStatus.PENDING,
+                artifact_directory=failure_directory,
+                error=str(error),
+                artifacts=(failure_directory / "manifest.json",)
+                if failure_directory is not None
+                else (),
+            )
+
+    def commission_single_device_portability(
+        self,
+        configuration: ResolvedRunConfiguration,
+        *,
+        horizon_years: int = 5,
+        policy_name: str = "BM^E",
+    ) -> RunBundle:
+        """Construct synthetic inputs and run the bounded device-check stage.
+
+        The bank-facing command deliberately commissions only a synthetic
+        Reference Bank and one benchmark update. Real-bank input mapping and
+        full policy training remain explicit later stages.
+        """
+
+        try:
+            if horizon_years not in configuration.experiment.horizons_years:
+                raise OperationalRunError(
+                    "Single-device commissioning horizon is not declared in the configuration"
+                )
+            from deepalm.reference_bank import ReferenceBankProvider
+            from deepalm.term_structures import MarketScenarioModel
+            from deepalm.training import (
+                BMDateTrainer,
+                BMETrainer,
+                MMTrainer,
+                TrainingError,
+            )
+
+            market_model = MarketScenarioModel()
+            historical = market_model.load_historical_term_structures(
+                configuration.source_data.snb_csv,
+                beta_unit=configuration.source_data.nss_beta_unit,
+            )
+            calibration = market_model.calibrate_hjm_pca(historical)
+            snapshot = ReferenceBankProvider().build_canonical(historical)
+            if policy_name == "BM^E":
+                trainer: DeviceValidationTrainer = BMETrainer(
+                    configuration,
+                    snapshot=snapshot,
+                    historical=historical,
+                    calibration=calibration,
+                    market_model=market_model,
+                )
+            elif policy_name == "MM":
+                baseline_configuration = replace(
+                    configuration,
+                    output=replace(
+                        configuration.output,
+                        run_name=f"{configuration.output.run_name}-bmd-source",
+                    ),
+                )
+                baseline = BMDateTrainer(
+                    baseline_configuration,
+                    snapshot=snapshot,
+                    historical=historical,
+                    calibration=calibration,
+                    market_model=market_model,
+                ).fit(horizon_years=horizon_years)
+                if baseline.baseline_reference_path is None:
+                    raise TrainingError(
+                        "MM commissioning did not create a frozen BM^D reference"
+                    )
+                from deepalm.baselines import FrozenDateBenchmarkReference
+
+                trainer = MMTrainer(
+                    configuration,
+                    snapshot=snapshot,
+                    historical=historical,
+                    calibration=calibration,
+                    baseline_reference=FrozenDateBenchmarkReference.load(
+                        baseline.baseline_reference_path
+                    ),
+                    market_model=market_model,
+                )
+            else:
+                raise OperationalRunError(
+                    "Single-device commissioning policy must be BM^E or MM"
+                )
+        except (OperationalRunError, TrainingError, OSError, ValueError) as error:
+            failure_directory = _write_failure_bundle(configuration, error)
+            return RunBundle(
+                status=RunStatus.FAILED,
+                acceptance_status=AcceptanceStatus.PENDING,
+                artifact_directory=failure_directory,
+                error=str(error),
+                artifacts=(failure_directory / "manifest.json",)
+                if failure_directory is not None
+                else (),
+            )
+        return self.validate_single_device_portability(
+            configuration,
+            trainer=trainer,
+            horizon_years=horizon_years,
+            policy_name=policy_name,
+        )
 
 
 def _build_manifest(
