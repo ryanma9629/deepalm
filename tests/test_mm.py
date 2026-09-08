@@ -345,6 +345,7 @@ def test_mm_policy_receives_complete_live_bank_state_during_rollout(
             horizon_years=5,
             initial_curve_identity=snapshot.initial_curve_identity,
             as_of_date=snapshot.as_of_date,
+            deposit_initial_history_identity=snapshot.deposit_initial_history.identity,
         ),
         policy=policy,
         include_loan_dynamics=True,

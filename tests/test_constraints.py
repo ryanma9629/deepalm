@@ -260,6 +260,7 @@ def test_simulator_returns_constraint_trajectory_and_terminal_objective(
             spot_rates=spots,
             initial_curve_identity=snapshot.initial_curve_identity,
             as_of_date=snapshot.as_of_date,
+            deposit_initial_history_identity=snapshot.deposit_initial_history.identity,
         ),
         actions=torch.zeros((1, horizon_months, 29), dtype=torch.float64),
         include_deposit_dynamics=True,

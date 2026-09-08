@@ -13,7 +13,11 @@ from deepalm.reference_bank import ReferenceBankError, ReferenceBankProvider
 from deepalm.runner import ReproductionRunner, RunStatus
 from deepalm.runoff import ALMSimulator
 from deepalm.semantics import artifact_semantics
-from deepalm.term_structures import MarketScenarioModel
+from deepalm.term_structures import (
+    MarketScenarioModel,
+    deposit_initial_history_identity,
+    deposit_initial_history_target_dates,
+)
 
 
 def _imported_snapshot_data() -> dict[str, object]:
@@ -46,9 +50,15 @@ def _imported_snapshot_data() -> dict[str, object]:
             ("term_deposits", targets["term_deposits"]),
         )
     }
+    history_targets = ("2023-12-31", "2023-11-30")
+    history_observations = ("2023-12-29", "2023-11-30")
+    history_yields = (0.02, 0.01)
+    available_history_dates = ("2023-11-30", "2023-12-29")
+    available_history_yields = (0.01, 0.02)
+    history_source = "synthetic-usd-deposit-history"
     data: dict[str, object] = {
         "artifact_semantics": artifact_semantics("snapshot"),
-        "schema_version": 3,
+        "schema_version": 5,
         "profile": "imported",
         "as_of_date": "2024-01-31",
         "initial_curve_identity": "synthetic-usd-2024-01-31",
@@ -68,6 +78,22 @@ def _imported_snapshot_data() -> dict[str, object]:
             )
         },
         "deposit_reference_schedules": deposit_reference_schedules,
+        "deposit_initial_history": {
+            "target_dates": list(history_targets),
+            "observation_dates": list(history_observations),
+            "six_month_yields": list(history_yields),
+            "available_observation_dates": list(available_history_dates),
+            "available_six_month_yields": list(available_history_yields),
+            "source_identity": history_source,
+            "identity": deposit_initial_history_identity(
+                history_targets,
+                history_observations,
+                history_yields,
+                available_history_dates,
+                available_history_yields,
+                history_source,
+            ),
+        },
         "target_economic_values": targets,
         "target_value_errors": {name: 0.0 for name in ladders},
         "product_assumptions": {
@@ -173,6 +199,40 @@ def test_imported_snapshot_rejects_legacy_schema_without_complete_contract(
     source.write_text(json.dumps(data), encoding="utf-8")
 
     with pytest.raises(ReferenceBankError, match="schema version"):
+        ReferenceBankProvider().load(source)
+
+
+def test_imported_snapshot_rejects_missing_dated_deposit_history(tmp_path: Path) -> None:
+    data = _imported_snapshot_data()
+    data.pop("deposit_initial_history")
+    data["content_hash"] = _content_hash(data)
+    source = tmp_path / "missing-deposit-history.json"
+    source.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(ReferenceBankError, match="deposit_initial_history"):
+        ReferenceBankProvider().load(source)
+
+
+def test_imported_snapshot_rejects_nonlatest_deposit_history_observation(
+    tmp_path: Path,
+) -> None:
+    data = _imported_snapshot_data()
+    history = data["deposit_initial_history"]
+    history["observation_dates"][0] = "2023-11-30"
+    history["six_month_yields"][0] = 0.01
+    history["identity"] = deposit_initial_history_identity(
+        tuple(history["target_dates"]),
+        tuple(history["observation_dates"]),
+        tuple(history["six_month_yields"]),
+        tuple(history["available_observation_dates"]),
+        tuple(history["available_six_month_yields"]),
+        history["source_identity"],
+    )
+    data["content_hash"] = _content_hash(data)
+    source = tmp_path / "nonlatest-deposit-history.json"
+    source.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(ReferenceBankError, match="deposit initial history"):
         ReferenceBankProvider().load(source)
 
 
@@ -291,6 +351,28 @@ def test_canonical_profile_rejects_an_unlocked_valuation_date(tmp_path: Path) ->
     data["provenance"]["market"] = (
         f"{data['initial_curve_identity']}@{data['as_of_date']}"
     )
+    targets = deposit_initial_history_target_dates(data["as_of_date"])
+    observations = ("2023-12-29", "2023-11-30")
+    yields = (0.02, 0.01)
+    available_dates = ("2023-11-30", "2023-12-29")
+    available_yields = (0.01, 0.02)
+    source_identity = "forged-history-fixture"
+    data["deposit_initial_history"] = {
+        "target_dates": list(targets),
+        "observation_dates": list(observations),
+        "six_month_yields": list(yields),
+        "available_observation_dates": list(available_dates),
+        "available_six_month_yields": list(available_yields),
+        "source_identity": source_identity,
+        "identity": deposit_initial_history_identity(
+            targets,
+            observations,
+            yields,
+            available_dates,
+            available_yields,
+            source_identity,
+        ),
+    }
     data["content_hash"] = _content_hash(data)
     source = tmp_path / "forged-canonical.json"
     source.write_text(json.dumps(data), encoding="utf-8")

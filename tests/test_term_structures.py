@@ -110,6 +110,47 @@ def test_market_scenario_model_rejects_partial_parameter_dates(tmp_path: Path) -
         MarketScenarioModel().load_historical_term_structures(source)
 
 
+def test_deposit_initial_history_uses_calendar_month_end_and_prior_observation(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "deposit-history.csv"
+    write_snb_export(
+        source,
+        {
+            "2005-01-03": flat_curve_parameters(1.0),
+            "2022-01-31": flat_curve_parameters(1.0),
+            "2022-02-25": flat_curve_parameters(2.0),
+            "2022-07-15": flat_curve_parameters(3.0),
+        },
+    )
+    model = MarketScenarioModel()
+    historical = model.load_historical_term_structures(source)
+
+    history = model.deposit_initial_history(historical, as_of_date="2022-03-31")
+
+    assert history.target_dates == ("2022-02-28", "2022-01-31")
+    assert history.observation_dates == ("2022-02-25", "2022-01-31")
+    assert history.six_month_yields == pytest.approx((0.02, 0.01))
+
+
+def test_deposit_initial_history_rejects_missing_pre_valuation_observation(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "missing-deposit-history.csv"
+    write_snb_export(
+        source,
+        {
+            "2005-01-03": flat_curve_parameters(1.0),
+            "2022-07-15": flat_curve_parameters(3.0),
+        },
+    )
+    model = MarketScenarioModel()
+    historical = model.load_historical_term_structures(source)
+
+    with pytest.raises(TermStructureError, match="missing a completed curve"):
+        model.deposit_initial_history(historical, as_of_date="2005-02-01")
+
+
 def test_market_scenario_model_rejects_duplicate_parameter_keys(tmp_path: Path) -> None:
     source = tmp_path / "duplicate.csv"
     values = flat_curve_parameters(2.0)

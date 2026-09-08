@@ -61,7 +61,7 @@ def test_training_records_actual_pending_repairs_without_metric_coupling(tmp_pat
     semantics = checkpoint["code_identity"]["artifact_semantics"]
     assert semantics["repair_status"] == "pending"
     assert semantics["corrections"] == {
-        "C-1": False, "C-2": False, "C-3": False, "C-5": True, "C-6": False,
+        "C-1": False, "C-2": False, "C-3": False, "C-5": True, "C-6": True,
     }
     assert "metric_version" not in semantics
     assert "R-1" not in semantics["corrections"]
@@ -112,11 +112,11 @@ def test_snapshot_persists_its_actual_schema_and_rejects_claimed_future_repair(t
     path = tmp_path / "bank.json"
     provider.save(bank, path)
     saved = json.loads(path.read_text())
-    assert saved["schema_version"] == 3
-    assert provider.schema()["artifact_semantics"]["repair_status"] == "pending"
-    assert saved["artifact_semantics"]["corrections"] == {"C-5": True, "C-6": False}
+    assert saved["schema_version"] == 5
+    assert provider.schema()["artifact_semantics"]["repair_status"] == "complete"
+    assert saved["artifact_semantics"]["corrections"] == {"C-5": True, "C-6": True}
     assert provider.load(path).content_hash == bank.content_hash
-    saved["artifact_semantics"]["repair_status"] = "complete"
+    saved["artifact_semantics"]["repair_status"] = "pending"
     path.write_text(json.dumps(saved))
     with pytest.raises(ReferenceBankError, match="artifact semantics"):
         provider.load(path)

@@ -158,6 +158,12 @@ class ALMSimulator:
             )
             else None
         )
+        if include_deposit_dynamics and getattr(
+            market, "deposit_initial_history_identity", None
+        ) != snapshot.deposit_initial_history.identity:
+            raise ReferenceBankError(
+                "Reference Bank deposit initial-history identity does not match market"
+            )
 
         ladders = {
             name: torch.tensor(snapshot.ladders[name], device=device, dtype=dtype)
@@ -189,6 +195,17 @@ class ALMSimulator:
                 .clone()
                 for name, schedule in snapshot.deposit_reference_schedules.items()
             }
+            if include_deposit_dynamics
+            else None
+        )
+        deposit_initial_history = (
+            torch.tensor(
+                snapshot.deposit_initial_history.six_month_yields,
+                device=device,
+                dtype=dtype,
+            )
+            .unsqueeze(0)
+            .expand(paths, -1)
             if include_deposit_dynamics
             else None
         )
@@ -357,10 +374,28 @@ class ALMSimulator:
             if include_deposit_dynamics:
                 assert spots is not None
                 assert deposit_reference_schedules is not None
-                history = torch.stack(
-                    [spots[:, max(0, transition - offset), 5] for offset in (0, 1, 2)],
-                    dim=1,
-                )
+                assert deposit_initial_history is not None
+                if transition == 0:
+                    history = torch.cat(
+                        (spots[:, :1, 5], deposit_initial_history), dim=1
+                    )
+                elif transition == 1:
+                    history = torch.cat(
+                        (
+                            spots[:, 1:2, 5],
+                            spots[:, :1, 5],
+                            deposit_initial_history[:, :1],
+                        ),
+                        dim=1,
+                    )
+                else:
+                    history = torch.stack(
+                        [
+                            spots[:, transition - offset, 5]
+                            for offset in (0, 1, 2)
+                        ],
+                        dim=1,
+                    )
                 rates = deposit_rates(history, spots[:, transition + 1, 5])
                 product_growth: dict[str, torch.Tensor] = {}
                 product_matured: dict[str, torch.Tensor] = {}

@@ -11,6 +11,10 @@ and Corrected. No production/pilot training is required to validate these fixes.
   capitalized interest adds a liability but no net cash flow. C-5 further keeps
   the original 1, 2, 12, or 120 month reference-term class through renewal;
   only new external growth is allocated using the product's global weights.
+- C-6 deposit initialization: the first rate window uses scenario Y0 plus two
+  dated, pre-valuation six-month yields; the second uses Y1, Y0 and Y−1. The
+  calendar-month history is content-addressed in the Reference Bank snapshot
+  and must match the market batch, rather than being fabricated by repeating Y0.
 - E-03: the negative-rate cash charge is non-negative and subtracted from cash.
   Exempt cash and non-negative short rates produce zero charge, not interest income.
 - Equation 8: loan growth uses the current pre-roll nominal balance rather than
@@ -30,7 +34,7 @@ and preserves the action gradient against a central finite difference.
 ## Artifact compatibility
 
 Financial semantics are identified by
-`reference-term-deposits-v4`; evaluation metrics by
+`dated-deposit-history-v6`; evaluation metrics by
 `centered-equity-ratio-and-penalty-v2`. Selected checkpoints, frozen baselines,
 and epoch recovery identities must match the financial semantics version.
 Missing/older versions require fresh training, not a metadata-only upgrade.
@@ -52,11 +56,19 @@ targets remain unchanged. Schema v1 aggregate-only snapshots are rejected: a
 bank adapter must provide explicit cohort/contract data instead of reverse
 engineering coupon rates from aggregate cash flows.
 
-Snapshot schema v3 additionally stores the four reference-term schedules for
+Snapshot schema v3 stores the four reference-term schedules for
 both non-maturity and term deposits, together with their allocation weights.
 The schedules must sum exactly to each aggregate deposit ladder. Aggregate v2
 deposit ladders cannot reveal a maturing balance's original reference-term
 class, so they are rejected rather than reconstructed heuristically.
+
+Snapshot schema v5 stores the dated Y−1/Y−2 deposit-rate prefix, including
+calendar-month target dates, selected completed observation dates, yields, and
+the dated six-month-yield source used to prove that each selected observation
+is the latest complete curve on or before its target. The simulator combines
+this prefix with scenario Y0/Y1 only for the first two deposit-rate windows; it
+does not repeat Y0 as fabricated history. A scenario batch must declare the
+same initial-history identity, including the historical-source evidence.
 
 The new-loan rate remains a single six-month-yield rate for all maturities. This
 is an explicit shared simplification; a later maturity-specific origination-curve

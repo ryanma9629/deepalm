@@ -55,6 +55,7 @@ def test_reference_bank_scale_sensitivity_is_a_valid_single_factor_snapshot(
     assert variant.product_assumptions["loan_spread_decimal"] == canonical.product_assumptions[
         "loan_spread_decimal"
     ]
+    assert variant.deposit_initial_history == canonical.deposit_initial_history
     provider.validate(variant, discounts=historical.initial_curve.discount_factors)
 
 

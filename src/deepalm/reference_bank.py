@@ -6,6 +6,7 @@ import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from itertools import pairwise
 from pathlib import Path
 from types import MappingProxyType
 
@@ -22,7 +23,13 @@ from deepalm.sensitivities import (
     approved_sensitivity_value,
     canonical_sensitivity_value,
 )
-from deepalm.term_structures import HistoricalTermStructures
+from deepalm.term_structures import (
+    DepositInitialHistory,
+    HistoricalTermStructures,
+    MarketScenarioModel,
+    deposit_initial_history_identity,
+    deposit_initial_history_target_dates,
+)
 
 _TARGETS = {
     "cash": 2_000.0,
@@ -92,6 +99,7 @@ class ReferenceBankSnapshot:
     ladders: Mapping[str, np.ndarray]
     loan_cohorts: Mapping[str, tuple[LoanCohort, ...]]
     deposit_reference_schedules: Mapping[str, DepositReferenceSchedule]
+    deposit_initial_history: DepositInitialHistory
     target_economic_values: Mapping[str, float]
     target_value_errors: Mapping[str, float]
     product_assumptions: Mapping[str, object]
@@ -138,6 +146,7 @@ class ReferenceBankProvider:
             raise ReferenceBankError(
                 "Canonical initial curve must contain 180 finite discounts"
             )
+        deposit_initial_history = _initial_deposit_history(historical)
         mortgage_weights = [0.06] * 11
         mortgage_weights[8] = 0.40
         loan_cohorts = {
@@ -239,6 +248,7 @@ class ReferenceBankProvider:
                 )
                 for name, schedule in deposit_reference_schedules.items()
             },
+            deposit_initial_history=deposit_initial_history,
             target_economic_values=_TARGETS,
             equity=1_000.0,
             assumptions=assumptions,
@@ -282,6 +292,7 @@ class ReferenceBankProvider:
             raise ReferenceBankError(
                 "Sensitivity initial curve must contain 180 finite discounts"
             )
+        deposit_initial_history = _initial_deposit_history(historical)
         factor, value = sensitivity.factor, float(sensitivity.value)
         try:
             approved = approved_sensitivity_value(factor, value)
@@ -413,6 +424,7 @@ class ReferenceBankProvider:
                 )
                 for name, schedule in deposit_reference_schedules.items()
             },
+            deposit_initial_history=deposit_initial_history,
             target_economic_values=targets,
             equity=targets["cash"]
             + targets["investments"]
@@ -493,6 +505,64 @@ class ReferenceBankProvider:
             raise ReferenceBankError(
                 "Reference Bank deposit reference-term schedules are incomplete"
             )
+        history = snapshot.deposit_initial_history
+        available_dates = history.available_observation_dates
+        available_yields = history.available_six_month_yields
+        if (
+            len(history.target_dates) != 2
+            or len(history.observation_dates) != 2
+            or len(history.six_month_yields) != 2
+            or not available_dates
+            or len(available_dates) != len(available_yields)
+            or not all(_is_iso_date(date) for date in history.target_dates)
+            or not all(_is_iso_date(date) for date in history.observation_dates)
+            or not all(_is_iso_date(date) for date in available_dates)
+            or any(
+                earlier >= later
+                for earlier, later in pairwise(available_dates)
+            )
+            or any(
+                observation > target
+                for observation, target in zip(
+                    history.observation_dates, history.target_dates, strict=True
+                )
+            )
+            or not np.all(np.isfinite(history.six_month_yields))
+            or not np.all(np.isfinite(available_yields))
+            or not isinstance(history.source_identity, str)
+            or not isinstance(history.identity, str)
+            or not history.source_identity
+            or not history.identity
+            or history.target_dates
+            != deposit_initial_history_target_dates(snapshot.as_of_date)
+            or history.identity
+            != deposit_initial_history_identity(
+                history.target_dates,
+                history.observation_dates,
+                history.six_month_yields,
+                available_dates,
+                available_yields,
+                history.source_identity,
+            )
+        ):
+            raise ReferenceBankError("Reference Bank deposit initial history is invalid")
+        for target, observation, yield_ in zip(
+            history.target_dates,
+            history.observation_dates,
+            history.six_month_yields,
+            strict=True,
+        ):
+            eligible = [
+                index for index, date in enumerate(available_dates) if date <= target
+            ]
+            if not eligible:
+                raise ReferenceBankError("Reference Bank deposit initial history is invalid")
+            selected = eligible[-1]
+            if (
+                observation != available_dates[selected]
+                or not np.isclose(yield_, available_yields[selected], rtol=0.0, atol=0.0)
+            ):
+                raise ReferenceBankError("Reference Bank deposit initial history is invalid")
         for name, schedule in snapshot.deposit_reference_schedules.items():
             if (
                 schedule.terms_months != (1, 2, 12, 120)
@@ -676,6 +746,18 @@ class ReferenceBankProvider:
                 "non_maturity_deposits",
                 "term_deposits",
             ],
+            "deposit_initial_history": {
+                "six_month_yield_tenor_months": 6,
+                "required_fields": [
+                    "target_dates",
+                    "observation_dates",
+                    "six_month_yields",
+                    "available_observation_dates",
+                    "available_six_month_yields",
+                    "source_identity",
+                    "identity",
+                ],
+            },
             "ladder_length_months": 180,
             "required_provenance": sorted(_PROVENANCE_FIELDS),
             "unit_rule": "unit must be m followed by the declared ISO currency",
@@ -780,6 +862,23 @@ class ReferenceBankProvider:
                     )
                     for name, schedule in data["deposit_reference_schedules"].items()
                 },
+                deposit_initial_history=DepositInitialHistory(
+                    target_dates=tuple(data["deposit_initial_history"]["target_dates"]),
+                    observation_dates=tuple(
+                        data["deposit_initial_history"]["observation_dates"]
+                    ),
+                    six_month_yields=tuple(
+                        data["deposit_initial_history"]["six_month_yields"]
+                    ),
+                    available_observation_dates=tuple(
+                        data["deposit_initial_history"]["available_observation_dates"]
+                    ),
+                    available_six_month_yields=tuple(
+                        data["deposit_initial_history"]["available_six_month_yields"]
+                    ),
+                    source_identity=data["deposit_initial_history"]["source_identity"],
+                    identity=data["deposit_initial_history"]["identity"],
+                ),
                 target_economic_values=data["target_economic_values"],
                 equity=data["equity"],
                 assumptions=data["product_assumptions"],
@@ -919,6 +1018,15 @@ def _seasoned_deposit_reference_schedule(
     )
 
 
+def _initial_deposit_history(
+    historical: HistoricalTermStructures,
+) -> DepositInitialHistory:
+    return MarketScenarioModel().deposit_initial_history(
+        historical,
+        as_of_date=str(historical.initial_curve.as_of_date.astype("datetime64[D]")),
+    )
+
+
 def _duration(ladder: np.ndarray, discounts: np.ndarray) -> float:
     value = float(ladder @ discounts)
     return float((ladder * discounts @ (np.arange(1, 181) / 12)) / value)
@@ -939,6 +1047,7 @@ def _make_snapshot(
     ladders: Mapping[str, np.ndarray],
     loan_cohorts: Mapping[str, tuple[LoanCohort, ...]],
     deposit_reference_schedules: Mapping[str, DepositReferenceSchedule],
+    deposit_initial_history: DepositInitialHistory,
     target_economic_values: Mapping[str, float],
     equity: float,
     assumptions: Mapping[str, object],
@@ -983,6 +1092,22 @@ def _make_snapshot(
                 for name, schedule in deposit_reference_schedules.items()
             }
         ),
+        "deposit_initial_history": DepositInitialHistory(
+            target_dates=tuple(deposit_initial_history.target_dates),
+            observation_dates=tuple(deposit_initial_history.observation_dates),
+            six_month_yields=tuple(
+                float(value) for value in deposit_initial_history.six_month_yields
+            ),
+            available_observation_dates=tuple(
+                deposit_initial_history.available_observation_dates
+            ),
+            available_six_month_yields=tuple(
+                float(value)
+                for value in deposit_initial_history.available_six_month_yields
+            ),
+            source_identity=deposit_initial_history.source_identity,
+            identity=deposit_initial_history.identity,
+        ),
         "target_economic_values": MappingProxyType(
             {name: float(value) for name, value in target_economic_values.items()}
         ),
@@ -1026,6 +1151,21 @@ def _to_data(snapshot: ReferenceBankSnapshot) -> dict[str, object]:
                 "provenance": schedule.provenance,
             }
             for name, schedule in snapshot.deposit_reference_schedules.items()
+        },
+        "deposit_initial_history": {
+            "target_dates": list(snapshot.deposit_initial_history.target_dates),
+            "observation_dates": list(
+                snapshot.deposit_initial_history.observation_dates
+            ),
+            "six_month_yields": list(snapshot.deposit_initial_history.six_month_yields),
+            "available_observation_dates": list(
+                snapshot.deposit_initial_history.available_observation_dates
+            ),
+            "available_six_month_yields": list(
+                snapshot.deposit_initial_history.available_six_month_yields
+            ),
+            "source_identity": snapshot.deposit_initial_history.source_identity,
+            "identity": snapshot.deposit_initial_history.identity,
         },
         "target_economic_values": dict(snapshot.target_economic_values),
         "target_value_errors": dict(snapshot.target_value_errors),

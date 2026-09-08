@@ -32,6 +32,7 @@ def _five_year_market(paths: int = 5) -> MarketScenarioBatch:
         initial_curve_identity="test-curve",
         as_of_date="2022-07-15",
         global_path_indices=tuple(range(paths)),
+        deposit_initial_history_identity="test-dated-deposit-history",
     )
 
 
@@ -54,6 +55,7 @@ def _fifteen_year_market(five_year: MarketScenarioBatch) -> MarketScenarioBatch:
         split=five_year.split,
         epoch=five_year.epoch,
         global_path_indices=five_year.global_path_indices,
+        deposit_initial_history_identity=five_year.deposit_initial_history_identity,
     )
 
 
@@ -264,6 +266,26 @@ def test_horizon_analysis_rejects_misaligned_paths_and_retrained_truncation() ->
             mm_fifteen_year=_trajectory(
                 "MM(15y)", fifteen_year_actions, 15,
                 replace(fifteen_year_market, global_path_indices=(4, 3, 2, 1, 0)),
+                checkpoint_identity="MM15",
+            ),
+            mm_fifteen_year_truncated=_trajectory(
+                "MM(15y|5y)", five_year_actions, 15, five_year_market,
+                checkpoint_identity="MM15", optimizer_updates=0,
+            ),
+            bootstrap_seed=19,
+        )
+
+    with pytest.raises(HorizonAnalysisError, match="scenario path identity"):
+        analyzer.analyze(
+            mm_five_year=_trajectory(
+                "MM(5y)", five_year_actions, 5, five_year_market, checkpoint_identity="MM5"
+            ),
+            mm_fifteen_year=_trajectory(
+                "MM(15y)", fifteen_year_actions, 15,
+                replace(
+                    fifteen_year_market,
+                    deposit_initial_history_identity="other-dated-deposit-history",
+                ),
                 checkpoint_identity="MM15",
             ),
             mm_fifteen_year_truncated=_trajectory(

@@ -33,7 +33,7 @@ def test_canonical_reference_bank_matches_balance_sheet_and_curve_values(canonic
     assert all(ladder.shape == (180,) for ladder in bank.ladders.values())
     assert all(np.all(ladder >= 0) for ladder in bank.ladders.values())
     assert all(error <= 1e-8 for error in bank.target_value_errors.values())
-    assert bank.schema_version == 3
+    assert bank.schema_version == 5
     assert tuple(bank.loan_cohorts) == ("mortgages", "enterprise_loans")
     assert len(bank.loan_cohorts["mortgages"]) == 11
     assert len(bank.loan_cohorts["enterprise_loans"]) == 3
@@ -55,6 +55,16 @@ def test_canonical_reference_bank_matches_balance_sheet_and_curve_values(canonic
     assert bank.loan_duration_years < 5
     assert bank.deposit_duration_years < 3
     assert len(bank.content_hash) == 64
+
+
+def test_canonical_bank_records_dated_deposit_rate_history(canonical_bank: object) -> None:
+    bank = canonical_bank
+    history = bank.deposit_initial_history
+
+    assert history.target_dates == ("2022-06-15", "2022-05-15")
+    assert history.observation_dates == ("2022-06-15", "2022-05-13")
+    assert history.source_identity == bank.initial_curve_identity
+    assert len(history.six_month_yields) == 2
 
 
 def test_saved_snapshot_round_trips_and_table_one_is_assumption_labeled(

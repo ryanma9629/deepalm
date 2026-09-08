@@ -51,6 +51,19 @@ class TermStructureHistory:
 
 
 @dataclass(frozen=True)
+class DepositInitialHistory:
+    """The two dated yields required before the simulated deposit path begins."""
+
+    target_dates: tuple[str, str]
+    observation_dates: tuple[str, str]
+    six_month_yields: tuple[float, float]
+    available_observation_dates: tuple[str, ...]
+    available_six_month_yields: tuple[float, ...]
+    source_identity: str
+    identity: str
+
+
+@dataclass(frozen=True)
 class HistoricalTermStructures:
     """Validated calibration curves and the paper-window initial curve."""
 
@@ -108,6 +121,7 @@ class MarketScenarioBatch:
     split: str = "default"
     epoch: int = 0
     global_path_indices: tuple[int, ...] = ()
+    deposit_initial_history_identity: str | None = None
 
     def prefix(self, *, horizon_years: int) -> MarketScenarioBatch:
         """Return an identity-preserving prefix of a longer HJM path batch.
@@ -145,6 +159,7 @@ class MarketScenarioBatch:
             global_path_indices=self.global_path_indices,
             initial_curve_identity=self.initial_curve_identity,
             as_of_date=self.as_of_date,
+            deposit_initial_history_identity=self.deposit_initial_history_identity,
         )
 
 
@@ -262,6 +277,73 @@ class MarketScenarioModel:
             rate_unit="decimal",
             round_trip_error=round_trip_error,
         )
+
+    def deposit_initial_history(
+        self,
+        historical: HistoricalTermStructures,
+        *,
+        as_of_date: str,
+    ) -> DepositInitialHistory:
+        """Select the two completed calendar-month curves before ``as_of_date``."""
+
+        try:
+            valuation_date = pd.Timestamp(as_of_date)
+        except (TypeError, ValueError) as error:
+            raise TermStructureError(
+                "Deposit history requires a valid valuation date"
+            ) from error
+        targets = _deposit_initial_history_targets(valuation_date)
+        dates = historical.deposit_reference_history.dates.astype("datetime64[D]")
+        observed: list[np.datetime64] = []
+        yields: list[float] = []
+        for target in targets:
+            target_day = target.to_datetime64().astype("datetime64[D]")
+            index = int(np.searchsorted(dates, target_day, side="right") - 1)
+            if index < 0:
+                raise TermStructureError(
+                    "Deposit history is missing a completed curve on or before "
+                    f"{target_day}"
+                )
+            observed.append(dates[index])
+            yields.append(
+                float(historical.deposit_reference_history.spot_rates[index, 5])
+            )
+        target_dates = tuple(str(target.date()) for target in targets)
+        observation_dates = tuple(str(date) for date in observed)
+        six_month_yields = tuple(yields)
+        available_observation_dates = tuple(
+            str(date.astype("datetime64[D]"))
+            for date in historical.deposit_reference_history.dates
+        )
+        available_six_month_yields = tuple(
+            float(value)
+            for value in historical.deposit_reference_history.spot_rates[:, 5]
+        )
+        identity = deposit_initial_history_identity(
+            target_dates,
+            observation_dates,
+            six_month_yields,
+            available_observation_dates,
+            available_six_month_yields,
+            historical.source_hash,
+        )
+        return DepositInitialHistory(
+            target_dates=target_dates,
+            observation_dates=observation_dates,
+            six_month_yields=six_month_yields,
+            available_observation_dates=available_observation_dates,
+            available_six_month_yields=available_six_month_yields,
+            source_identity=historical.source_hash,
+            identity=identity,
+        )
+
+    def _initial_deposit_history_identity(
+        self, historical: HistoricalTermStructures
+    ) -> str:
+        return self.deposit_initial_history(
+            historical,
+            as_of_date=str(historical.initial_curve.as_of_date.astype("datetime64[D]")),
+        ).identity
 
     def calibrate_hjm_pca(
         self, historical: HistoricalTermStructures
@@ -431,6 +513,9 @@ class MarketScenarioModel:
             global_path_indices=indices,
             initial_curve_identity=historical.source_hash,
             as_of_date=str(historical.initial_curve.as_of_date.astype("datetime64[D]")),
+            deposit_initial_history_identity=self._initial_deposit_history_identity(
+                historical
+            ),
         )
 
     def validate_hjm_one_step(
@@ -536,6 +621,9 @@ class MarketScenarioModel:
             ),
             initial_curve_identity=historical.source_hash,
             as_of_date=str(historical.initial_curve.as_of_date.astype("datetime64[D]")),
+            deposit_initial_history_identity=self._initial_deposit_history_identity(
+                historical
+            ),
         )
 
     def summarize_terminal_curve_diversity(
@@ -886,6 +974,45 @@ def _calibration_identity(
     for value in (weekly_dates, covariance, eigenvalues):
         digest.update(np.ascontiguousarray(value).tobytes())
     return digest.hexdigest()
+
+
+def deposit_initial_history_target_dates(as_of_date: str) -> tuple[str, str]:
+    """Return the prior one- and two-calendar-month target dates."""
+
+    try:
+        valuation_date = pd.Timestamp(as_of_date)
+    except (TypeError, ValueError) as error:
+        raise TermStructureError("Deposit history requires a valid valuation date") from error
+    return tuple(str(target.date()) for target in _deposit_initial_history_targets(valuation_date))
+
+
+def _deposit_initial_history_targets(valuation_date: pd.Timestamp) -> tuple[pd.Timestamp, pd.Timestamp]:
+    return tuple(
+        valuation_date - pd.DateOffset(months=offset) for offset in (1, 2)
+    )
+
+
+def deposit_initial_history_identity(
+    target_dates: tuple[str, str],
+    observation_dates: tuple[str, str],
+    six_month_yields: tuple[float, float],
+    available_observation_dates: tuple[str, ...],
+    available_six_month_yields: tuple[float, ...],
+    source_identity: str,
+) -> str:
+    payload = json.dumps(
+        {
+            "target_dates": target_dates,
+            "observation_dates": observation_dates,
+            "six_month_yields": six_month_yields,
+            "available_observation_dates": available_observation_dates,
+            "available_six_month_yields": available_six_month_yields,
+            "source_identity": source_identity,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 def _hull_white_identity(configuration: HullWhiteConfiguration) -> str:

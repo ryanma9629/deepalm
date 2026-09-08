@@ -114,6 +114,7 @@ class _MarketPrefixIdentity:
     seed: int
     calibration_identity: str
     initial_curve_identity: str
+    deposit_initial_history_identity: str | None
     as_of_date: str
     split: str
     epoch: int
@@ -295,6 +296,7 @@ def _market_prefix_identity(market: MarketScenarioBatch) -> _MarketPrefixIdentit
         seed=market.seed,
         calibration_identity=market.calibration_identity,
         initial_curve_identity=market.initial_curve_identity,
+        deposit_initial_history_identity=market.deposit_initial_history_identity,
         as_of_date=market.as_of_date,
         split=market.split,
         epoch=market.epoch,
@@ -344,6 +346,7 @@ def _five_year_market_snapshot(market: MarketScenarioBatch) -> MarketScenarioBat
         split=market.split,
         epoch=market.epoch,
         global_path_indices=market.global_path_indices,
+        deposit_initial_history_identity=market.deposit_initial_history_identity,
     )
 
 
