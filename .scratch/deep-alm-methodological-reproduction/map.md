@@ -36,6 +36,10 @@ Produce an implementation-ready decision set for a Python and PyTorch methodolog
 - Use the fixed quick and paper-scale sample/epoch settings from the acceptance decision. Measure wall-clock performance on the user's Apple Silicon machine during implementation and treat it as an engineering benchmark, not a methodological pass/fail gate.
 - After the specification is approved, use `/to-tickets` to split implementation into blocker-aware tracer-bullet tickets; do not implement directly from this map.
 
+## Implementation context
+
+- [17 Lock final-test evaluation and small-sample statistics](issues/17-lock-test-evaluation.md): Resolved with frozen-checkpoint final-test evaluation, locked common paths, auditable manifest, constraint/risk reports, and deterministic paired bootstrap statistics.
+
 ## Out of scope
 
 - The interest-rate-swap extension.
