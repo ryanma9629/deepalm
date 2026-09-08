@@ -10,6 +10,7 @@ from deepalm.runner import OperationalRunError
 
 CONSTRAINT_NAMES = ("lcr", "nsfr", "cmr", "equity_rwa", "irs", "eyr")
 PENALTY_COEFFICIENTS = (1.0, 0.2, 1.0, 2.5, 2.0, 0.002)
+CONSTRAINT_FEATURE_LOWER_BOUNDS = (1.05, 1.05, 1.00, 0.17, 0.0, 0.0)
 
 
 class ConstraintError(OperationalRunError):
@@ -47,7 +48,7 @@ def evaluate_constraints(
     """Evaluate all six ratios at a post-restructuring decision state."""
 
     _validate_state(state)
-    values = _portfolio_values(state)
+    values = portfolio_values(state)
     investments, mortgages, enterprise_loans, nmd, term_deposits, funding = values
     equity = state.cash + investments + mortgages + enterprise_loans - nmd - term_deposits - funding
 
@@ -95,7 +96,7 @@ def constraint_violations(
         raise ConstraintError("Annual mask must be boolean with shape [paths]")
     if not torch.isfinite(values).all():
         raise ConstraintError("Constraint values must be finite")
-    lower_bounds = values.new_tensor((1.05, 1.05, 1.00, 0.17, 0.0, 0.0))
+    lower_bounds = values.new_tensor(CONSTRAINT_FEATURE_LOWER_BOUNDS)
     shortfall = torch.clamp_min(lower_bounds - values, 0.0)
     shortfall[:, 4] = torch.clamp_min(values[:, 4] - 0.085, 0.0)
     shortfall[:, 5] = torch.where(annual_mask, shortfall[:, 5], torch.zeros_like(shortfall[:, 5]))
@@ -114,7 +115,9 @@ def constraint_penalty(violations: torch.Tensor) -> torch.Tensor:
     return (1.0 + cumulative).square() - 1.0
 
 
-def _portfolio_values(state: ConstraintState) -> tuple[torch.Tensor, ...]:
+def portfolio_values(state: ConstraintState) -> tuple[torch.Tensor, ...]:
+    """Return current economic PVs in the shared constraint/MM product order."""
+
     return tuple(
         (ladder * state.discounts).sum(dim=1)
         for ladder in (

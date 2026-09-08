@@ -28,6 +28,8 @@ class TreasuryPolicyState:
     term_deposits: torch.Tensor | None = None
     cash: torch.Tensor | None = None
     curve: torch.Tensor | None = None
+    discounts: torch.Tensor | None = None
+    initial_assets: torch.Tensor | None = None
     prior_constraint_values: torch.Tensor | None = None
     mu: torch.Tensor | None = None
     penalty_weight: torch.Tensor | None = None
@@ -53,6 +55,7 @@ class TreasuryPolicyState:
             "non_maturity_deposits": self.non_maturity_deposits,
             "term_deposits": self.term_deposits,
             "curve": self.curve,
+            "discounts": self.discounts,
         }
         for name, value in ladders.items():
             if value is not None and value.shape != self.investments.shape:
@@ -61,6 +64,7 @@ class TreasuryPolicyState:
                 )
         scalar_features = {
             "cash": self.cash,
+            "initial_assets": self.initial_assets,
             "mu": self.mu,
             "penalty_weight": self.penalty_weight,
         }

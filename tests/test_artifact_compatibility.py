@@ -37,7 +37,7 @@ def test_freezing_checkpoint_rejects_unknown_artifact_semantics(tmp_path: Path, 
     elif mutation == "claimed-complete":
         identity["artifact_semantics"]["repair_status"] = "complete"
     elif mutation == "claimed-correction":
-        identity["artifact_semantics"]["corrections"]["C-1"] = True
+        identity["artifact_semantics"]["corrections"]["C-1"] = False
     else:
         identity["artifact_semantics"]["contract_version"] = True
     torch.save(checkpoint, reference.checkpoint_path)
@@ -61,12 +61,14 @@ def test_training_records_actual_pending_repairs_without_metric_coupling(tmp_pat
     semantics = checkpoint["code_identity"]["artifact_semantics"]
     assert semantics["repair_status"] == "pending"
     assert semantics["corrections"] == {
-        "C-1": False, "C-2": False, "C-3": False, "C-5": True, "C-6": True,
+        "C-1": True, "C-2": True, "C-3": False, "C-5": True, "C-6": True,
     }
     assert "metric_version" not in semantics
     assert "R-1" not in semantics["corrections"]
     trainer.load_selected_checkpoint(result.checkpoint_path)
-    checkpoint["code_identity"]["artifact_semantics"]["policy_version"] = "future-policy"
+    checkpoint["code_identity"]["artifact_semantics"]["policy_version"] = (
+        "legacy-nominal-mm-absolute-bmd-v1"
+    )
     incompatible = tmp_path / "incompatible.pt"
     torch.save(checkpoint, incompatible)
     with pytest.raises(TrainingError, match="artifact semantics"):

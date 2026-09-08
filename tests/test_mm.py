@@ -18,12 +18,15 @@ from deepalm.mm import (
     RegisteredTrainingCurves,
 )
 from deepalm.objective import evaluation_objective_parameters
-from deepalm.policies import BMDatePolicy, TreasuryPolicyState
-from deepalm.reference_bank import ReferenceBankProvider
+from deepalm.policies import BMDatePolicy, TreasuryPolicy, TreasuryPolicyState
+from deepalm.reference_bank import (
+    ReferenceBankProvider,
+    ReferenceBankSensitivity,
+)
 from deepalm.runoff import ALMSimulator
 from deepalm.semantics import FINANCIAL_SEMANTICS_VERSION, artifact_semantics
 from deepalm.term_structures import MarketScenarioModel
-from deepalm.treasury import apply_treasury_action
+from deepalm.treasury import TreasuryAction, apply_treasury_action
 
 SOURCE = (
     Path(__file__).resolve().parents[1]
@@ -71,9 +74,43 @@ def _state(*, requires_grad: bool = False) -> TreasuryPolicyState:
         term_deposits=ladder(6.0),
         cash=scalar(7.0),
         curve=_training_curves()[:paths, 0].clone().requires_grad_(requires_grad),
+        discounts=torch.full((paths, 180), 0.95, **options),
+        initial_assets=scalar(100.0),
         prior_constraint_values=torch.full((paths, 6), 1.0, **options),
         mu=scalar(0.04),
         penalty_weight=scalar(3.5),
+        time=12,
+        transitions=60,
+    )
+
+
+def _economic_observation_state() -> TreasuryPolicyState:
+    """Paper Equation 45 hand state whose nominal ladders differ from PVs."""
+
+    paths = 2
+    discounts = torch.linspace(0.2, 0.9, 180, dtype=torch.float64).repeat(paths, 1)
+
+    def ladder(present_value: float, index: int) -> torch.Tensor:
+        values = torch.zeros((paths, 180), dtype=torch.float64)
+        values[:, index] = present_value / discounts[:, index]
+        return values
+
+    return TreasuryPolicyState(
+        investments=ladder(200.0, 10),
+        funding=ladder(300.0, 70),
+        mortgages=ladder(400.0, 40),
+        enterprise_loans=ladder(300.0, 120),
+        non_maturity_deposits=ladder(200.0, 90),
+        term_deposits=ladder(300.0, 150),
+        cash=torch.full((paths,), 100.0, dtype=torch.float64),
+        curve=torch.linspace(0.01, 0.03, 180, dtype=torch.float64).repeat(paths, 1),
+        discounts=discounts,
+        initial_assets=torch.full((paths,), 800.0, dtype=torch.float64),
+        prior_constraint_values=torch.tensor(
+            [[1.10, 1.00, 0.94, 0.20, 0.09, -0.01]], dtype=torch.float64
+        ).repeat(paths, 1),
+        mu=torch.full((paths,), 0.04, dtype=torch.float64),
+        penalty_weight=torch.full((paths,), 3.5, dtype=torch.float64),
         time=12,
         transitions=60,
     )
@@ -99,6 +136,21 @@ def _frozen_reference(tmp_path: Path) -> FrozenDateBenchmarkReference:
         checkpoint_path,
     )
     return FrozenDateBenchmarkReference.freeze(checkpoint_path)
+
+
+class _InitialAssetsProbe(TreasuryPolicy):
+    """Observes the full state supplied by the public ALM rollout seam."""
+
+    @property
+    def requires_full_state(self) -> bool:
+        return True
+
+    def forward(self, state: TreasuryPolicyState) -> TreasuryAction:
+        if state.time == 0:
+            self.initial_assets = state.initial_assets.detach().clone()
+        paths = state.investments.shape[0]
+        zeros = torch.zeros((paths, 13), dtype=state.investments.dtype)
+        return TreasuryAction(zeros, torch.zeros((paths, 16), dtype=zeros.dtype))
 
 
 def test_curve_feature_pca_is_centered_persistable_and_identity_checked() -> None:
@@ -182,6 +234,101 @@ def test_mm_policy_uses_compact_or_paper_widths_to_create_legal_actions(
     )
 
 
+def test_mm_observation_uses_economic_values_and_centered_constraints(
+    tmp_path: Path,
+) -> None:
+    policy = MMPolicy(
+        reference=_frozen_reference(tmp_path),
+        curve_features=CurveFeaturePCA.fit(_registered_training_curves()),
+        architecture=ArchitectureConfiguration(
+            profile="compact", widths=(64, 64, 32, 32)
+        ),
+    )
+    state = _economic_observation_state()
+
+    observation = policy.build_observation(state)
+
+    assert observation.shape == (2, 145)
+    assert torch.allclose(
+        observation[:, 131:136],
+        torch.tensor([[1.25, 0.20, 0.10, 0.20, 0.30]], dtype=torch.float64).repeat(2, 1),
+    )
+    assert torch.allclose(
+        observation[:, 136:142],
+        torch.tensor([[0.05, -0.05, -0.06, 0.03, 0.09, -0.01]], dtype=torch.float64).repeat(2, 1),
+    )
+    assert torch.equal(
+        state.prior_constraint_values,
+        torch.tensor([[1.10, 1.00, 0.94, 0.20, 0.09, -0.01]], dtype=torch.float64).repeat(2, 1),
+    )
+
+
+def test_mm_observation_rejects_zero_asset_denominators_without_clipping_equity(
+    tmp_path: Path,
+) -> None:
+    policy = MMPolicy(
+        reference=_frozen_reference(tmp_path),
+        curve_features=CurveFeaturePCA.fit(_registered_training_curves()),
+        architecture=ArchitectureConfiguration(
+            profile="compact", widths=(64, 64, 32, 32)
+        ),
+    )
+    state = _economic_observation_state()
+
+    negative_equity = policy.build_observation(
+        replace(state, non_maturity_deposits=state.non_maturity_deposits * 4)
+    )
+    assert torch.allclose(
+        negative_equity[:, 132], torch.full((2,), -0.4, dtype=torch.float64)
+    )
+    with pytest.raises(MMObservationError, match="initial economic assets.*decision 12"):
+        policy.build_observation(replace(state, initial_assets=torch.zeros_like(state.cash)))
+    with pytest.raises(MMObservationError, match="economic assets.*decision 12"):
+        policy.build_observation(
+            replace(
+                state,
+                cash=torch.zeros_like(state.cash),
+                investments=torch.zeros_like(state.investments),
+                mortgages=torch.zeros_like(state.mortgages),
+                enterprise_loans=torch.zeros_like(state.enterprise_loans),
+            )
+        )
+
+
+def test_rollout_supplies_actual_initial_economic_assets_to_full_state_policy() -> None:
+    historical = MarketScenarioModel().load_historical_term_structures(SOURCE)
+    snapshot = ReferenceBankProvider().build_sensitivity(
+        historical, ReferenceBankSensitivity("total_assets_mchf", 5_000.0)
+    )
+    discounts = np.broadcast_to(
+        historical.initial_curve.discount_factors, (1, 61, 180)
+    ).copy()
+    spots = np.broadcast_to(historical.initial_curve.spot_rates, (1, 61, 180)).copy()
+    policy = _InitialAssetsProbe()
+
+    ALMSimulator().rollout(
+        snapshot,
+        SimpleNamespace(
+            discount_factors=discounts,
+            spot_rates=spots,
+            horizon_years=5,
+            initial_curve_identity=snapshot.initial_curve_identity,
+            as_of_date=snapshot.as_of_date,
+        ),
+        policy=policy,
+        objective_parameters=evaluation_objective_parameters(1, horizon_years=5),
+    )
+
+    expected = snapshot.cash + sum(
+        snapshot.ladders[name] @ historical.initial_curve.discount_factors
+        for name in ("investments", "mortgages", "enterprise_loans")
+    )
+    assert torch.allclose(
+        policy.initial_assets, torch.tensor([expected], dtype=torch.float64)
+    )
+    assert expected == pytest.approx(5_000.0)
+
+
 def test_mm_stop_gradient_preserves_forward_values_and_policy_gradient(
     tmp_path: Path,
 ) -> None:
@@ -204,6 +351,8 @@ def test_mm_stop_gradient_preserves_forward_values_and_policy_gradient(
     assert torch.allclose(forward_action, detached_action)
     assert differentiable_state.investments.grad is None
     assert differentiable_state.curve.grad is None
+    assert differentiable_state.discounts.grad is None
+    assert differentiable_state.initial_assets.grad is None
     assert differentiable_state.prior_constraint_values.grad is None
     assert policy.investment_encoder.weight.grad is not None
     assert torch.any(policy.investment_encoder.weight.grad != 0)

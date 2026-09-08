@@ -274,6 +274,10 @@ class ALMSimulator:
         )
 
         cash[:, 0] = snapshot.cash
+        initial_assets = cash[:, 0] + sum(
+            (ladders[name] * discounts[:, 0]).sum(dim=1)
+            for name in _ASSET_LADDERS
+        )
         initial_constraints = (
             evaluate_constraints(
                 _constraint_state(cash[:, 0], ladders, discounts[:, 0])
@@ -291,6 +295,8 @@ class ALMSimulator:
             curve=spots[:, 0]
             if policy_requires_full_state and spots is not None
             else None,
+            discounts=discounts[:, 0] if policy_requires_full_state else None,
+            initial_assets=initial_assets if policy_requires_full_state else None,
             prior_constraint_values=(
                 initial_constraints.values if policy_requires_full_state else None
             ),
@@ -498,6 +504,12 @@ class ALMSimulator:
                         if policy_requires_full_state and spots is not None
                         else None
                     ),
+                    discounts=(
+                        discounts[:, transition + 1]
+                        if policy_requires_full_state
+                        else None
+                    ),
+                    initial_assets=(initial_assets if policy_requires_full_state else None),
                     prior_constraint_values=(
                         current_constraints.values
                         if policy_requires_full_state
@@ -763,6 +775,8 @@ def _policy_action_at(
     transitions: int,
     cash: torch.Tensor | None = None,
     curve: torch.Tensor | None = None,
+    discounts: torch.Tensor | None = None,
+    initial_assets: torch.Tensor | None = None,
     prior_constraint_values: torch.Tensor | None = None,
     objective_parameters: ObjectiveParameters | None = None,
 ) -> TreasuryAction | None:
@@ -785,6 +799,8 @@ def _policy_action_at(
             term_deposits=ladders["term_deposits"] if full_state else None,
             cash=cash if full_state else None,
             curve=curve if full_state else None,
+            discounts=discounts if full_state else None,
+            initial_assets=initial_assets if full_state else None,
             prior_constraint_values=prior_constraint_values if full_state else None,
             mu=(
                 objective_parameters.mu if full_state and objective_parameters else None

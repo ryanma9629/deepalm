@@ -15,6 +15,12 @@ and Corrected. No production/pilot training is required to validate these fixes.
   dated, pre-valuation six-month yields; the second uses Y1, Y0 and Y−1. The
   calendar-month history is content-addressed in the Reference Bank snapshot
   and must match the market batch, rather than being fabricated by repeating Y0.
+- C-1/C-2 MM observation: the five balance-sheet features use current
+  pre-action economic values, in Equation 45 order `A/A0, E/A, C/A,
+  investment PV/A, funding PV/A`; the six raw constraint features are shifted
+  by their paper bounds `(1.05, 1.05, 1.00, 0.17, 0, 0)`. Nominal ladders stay
+  in the four encoders. Zero A or A0 fails explicitly, while finite negative
+  equity remains an input value.
 - E-03: the negative-rate cash charge is non-negative and subtracted from cash.
   Exempt cash and non-negative short rates produce zero charge, not interest income.
 - Equation 8: loan growth uses the current pre-roll nominal balance rather than
@@ -39,6 +45,8 @@ Financial semantics are identified by
 and epoch recovery identities must match the financial semantics version.
 Missing/older versions require fresh training, not a metadata-only upgrade.
 Historical checkpoints and reports are retained, not rewritten or deleted.
+The MM policy-observation identity is `economic-mm-observation-v2`, so prior
+nominal-observation MM checkpoints are rejected and require fresh training.
 
 ## Fixed-rate loan cohorts
 

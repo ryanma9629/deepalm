@@ -12,6 +12,11 @@ from torch import nn
 
 from deepalm.baselines import FrozenDateBenchmarkReference
 from deepalm.config import ArchitectureConfiguration
+from deepalm.constraints import (
+    CONSTRAINT_FEATURE_LOWER_BOUNDS,
+    ConstraintState,
+    portfolio_values,
+)
 from deepalm.policies import TreasuryPolicy, TreasuryPolicyState
 from deepalm.treasury import TreasuryAction, TreasuryActionError
 
@@ -339,6 +344,8 @@ class MMPolicy(TreasuryPolicy):
         assert state.term_deposits is not None
         assert state.cash is not None
         assert state.curve is not None
+        assert state.discounts is not None
+        assert state.initial_assets is not None
         assert state.prior_constraint_values is not None
         assert state.mu is not None
         assert state.penalty_weight is not None
@@ -350,6 +357,8 @@ class MMPolicy(TreasuryPolicy):
         term_deposits = state.term_deposits.detach()
         cash = state.cash.detach()
         curve = state.curve.detach()
+        discounts = state.discounts.detach()
+        initial_assets = state.initial_assets.detach()
         prior_constraints = state.prior_constraint_values.detach()
         mu = state.mu.detach()
         penalty_weight = state.penalty_weight.detach()
@@ -364,29 +373,58 @@ class MMPolicy(TreasuryPolicy):
             ),
         )
         curve_factors = (curve - self.curve_center) @ self.curve_projection
-        total_assets = (
-            cash
-            + investments.sum(dim=1)
-            + mortgages.sum(dim=1)
-            + enterprise_loans.sum(dim=1)
-        ).clamp_min(torch.finfo(investments.dtype).eps)
+        (
+            investment_value,
+            mortgage_value,
+            enterprise_loan_value,
+            non_maturity_deposit_value,
+            term_deposit_value,
+            funding_value,
+        ) = portfolio_values(
+            ConstraintState(
+                cash=cash,
+                investments=investments,
+                mortgages=mortgages,
+                enterprise_loans=enterprise_loans,
+                non_maturity_deposits=non_maturity_deposits,
+                term_deposits=term_deposits,
+                funding=funding,
+                discounts=discounts,
+            )
+        )
+        total_assets = cash + investment_value + mortgage_value + enterprise_loan_value
+        _require_positive_ratio_denominator(
+            total_assets, name="economic assets", time=state.time
+        )
+        _require_positive_ratio_denominator(
+            initial_assets, name="initial economic assets", time=state.time
+        )
+        equity = (
+            total_assets
+            - non_maturity_deposit_value
+            - term_deposit_value
+            - funding_value
+        )
         relative_balance_sheet = torch.stack(
             (
-                cash,
-                investments.sum(dim=1),
-                (mortgages + enterprise_loans).sum(dim=1),
-                (non_maturity_deposits + term_deposits).sum(dim=1),
-                funding.sum(dim=1),
+                total_assets / initial_assets,
+                equity / total_assets,
+                cash / total_assets,
+                investment_value / total_assets,
+                funding_value / total_assets,
             ),
             dim=1,
-        ) / total_assets.unsqueeze(1)
+        )
+        centered_constraints = prior_constraints - prior_constraints.new_tensor(
+            CONSTRAINT_FEATURE_LOWER_BOUNDS
+        )
         normalized_time = torch.full_like(mu, state.time / state.transitions)
         return torch.cat(
             (
                 *encodings,
                 curve_factors,
                 relative_balance_sheet,
-                prior_constraints,
+                centered_constraints,
                 normalized_time.unsqueeze(1),
                 mu.unsqueeze(1),
                 penalty_weight.unsqueeze(1),
@@ -474,6 +512,8 @@ def _validate_mm_state(
         state.term_deposits,
         state.cash,
         state.curve,
+        state.discounts,
+        state.initial_assets,
         state.prior_constraint_values,
         state.mu,
         state.penalty_weight,
@@ -500,6 +540,16 @@ def _detached_baseline_state(state: TreasuryPolicyState) -> TreasuryPolicyState:
         time=state.time,
         transitions=state.transitions,
     )
+
+
+def _require_positive_ratio_denominator(
+    values: torch.Tensor, *, name: str, time: int
+) -> None:
+    invalid_paths = torch.nonzero(values <= 0, as_tuple=False).flatten().tolist()
+    if invalid_paths:
+        raise MMObservationError(
+            f"MM {name} must be positive at decision {time}; invalid paths {invalid_paths}"
+        )
 
 
 def _curve_training_matrix(

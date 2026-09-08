@@ -122,6 +122,8 @@ def _deterministic_smoke_state() -> TreasuryPolicyState:
         term_deposits=ladder(6.0),
         cash=torch.full((paths,), 7.0, dtype=torch.float64),
         curve=torch.linspace(0.01, 0.03, 180, dtype=torch.float64).repeat(paths, 1),
+        discounts=torch.full((paths, 180), 0.95, dtype=torch.float64),
+        initial_assets=torch.full((paths,), 100.0, dtype=torch.float64),
         prior_constraint_values=torch.ones((paths, 6), dtype=torch.float64),
         mu=torch.full((paths,), 0.04, dtype=torch.float64),
         penalty_weight=torch.full((paths,), 3.5, dtype=torch.float64),
