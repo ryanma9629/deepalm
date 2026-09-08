@@ -35,6 +35,13 @@ and Corrected. No production/pilot training is required to validate these fixes.
   returns. Penalty risk uses the upper tail; equity risk uses the lower tail.
   Quantiles use linear interpolation and inclusive masks. Small samples and ties
   need not select exactly 5% of observations. Annualized returns remain separate.
+- C-7/C-8/R-1 evaluation: standardized dividend yield divides each path's total
+  payout by initial equity times its nonterminal dividend years (`T - 1`).
+  Constraint reports separately identify raw values at violating observations,
+  transformed violation penalties, observation counts, and path-conditional
+  counts. Equity distribution statistics use Equation 51 population central
+  moments, including skewness and excess kurtosis; undefined metrics are
+  explicit JSON-safe availability records rather than NaN or Infinity.
 
 The numerical tests include a zero-rate/zero-growth rollover oracle: monthly
 equity changes by -4 mCHF operating costs only. Previously the first month lost
@@ -46,7 +53,7 @@ and preserves the action gradient against a central finite difference.
 
 Financial semantics are identified by
 `dated-deposit-history-v6`; evaluation metrics by
-`centered-equity-ratio-and-penalty-v2`. Selected checkpoints, frozen baselines,
+`population-moments-and-constraint-statistics-v3`. Selected checkpoints, frozen baselines,
 and epoch recovery identities must match the financial semantics version.
 Missing/older versions require fresh training, not a metadata-only upgrade.
 Historical checkpoints and reports are retained, not rewritten or deleted.

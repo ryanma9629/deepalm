@@ -733,6 +733,7 @@ class ReproductionRunner:
                 FrozenPolicySensitivityEvaluator,
                 LockedEvaluator,
                 PolicyCheckpoint,
+                _report_outcome,
             )
             from deepalm.objective import evaluation_objective_parameters
             from deepalm.reference_bank import (
@@ -981,6 +982,9 @@ class ReproductionRunner:
                     "checkpoint_sha256": _sha256(
                         training_results[("MM", 15)].checkpoint_path
                     ),
+                    "report": _report_outcome(
+                        truncation.outcome, horizon_years=5
+                    )[0],
                 },
             )
             simulator = ALMSimulator()
@@ -2817,7 +2821,8 @@ def _unavailable_device_checks() -> dict[str, dict[str, object]]:
 
 def _write_json_artifact(path: Path, contents: Mapping[str, object]) -> None:
     path.write_text(
-        json.dumps(contents, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        json.dumps(contents, indent=2, sort_keys=True, allow_nan=False) + "\n",
+        encoding="utf-8",
     )
 
 

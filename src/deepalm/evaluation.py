@@ -296,7 +296,8 @@ class LockedEvaluator:
         }
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
-            json.dumps(contents, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            json.dumps(contents, indent=2, sort_keys=True, allow_nan=False) + "\n",
+            encoding="utf-8",
         )
 
     def _locked_market(self, horizon_years: int) -> MarketScenarioBatch:
@@ -465,7 +466,7 @@ class FrozenPolicySensitivityEvaluator:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             json.dumps(
-                self.manifest_data(result), indent=2, sort_keys=True
+                self.manifest_data(result), indent=2, sort_keys=True, allow_nan=False
             )
             + "\n",
             encoding="utf-8",
@@ -543,8 +544,8 @@ def _report_outcome(
     annualized = torch.full_like(ratio, torch.nan)
     annualized[valid_return] = ratio[valid_return].pow(1.0 / horizon_years) - 1.0
     dividend_yield: torch.Tensor | None = None
-    if outcome.dividends is not None:
-        dividend_yield = outcome.dividends.sum(dim=1) / initial / horizon_years
+    if outcome.dividends is not None and horizon_years > 1:
+        dividend_yield = outcome.dividends.sum(dim=1) / initial / (horizon_years - 1)
     penalty = outcome.objective.penalty
     report: dict[str, object] = {
         "losses": {
@@ -554,12 +555,17 @@ def _report_outcome(
             "penalty_es95": _upper_es95(penalty),
         },
         "crra": _mean(outcome.objective.crra),
-        "equity_ratio": {"mean": _mean(ratio), "standard_deviation": _std(ratio)},
+        "equity_ratio": equity_distribution_report(ratio),
         "annualized_return": _available(
             annualized, "terminal equity ratio is non-positive"
         ),
         "standardized_dividend_yield": _available(
-            dividend_yield, "dividends unavailable"
+            dividend_yield,
+            (
+                "evaluation horizon has no nonterminal dividend years"
+                if horizon_years <= 1
+                else "dividends unavailable"
+            ),
         ),
         "risk": equity_risk_report(ratio),
         "constraints": _constraint_report(
@@ -594,6 +600,7 @@ def _constraint_report(
     by_constraint = result["by_constraint"]
     assert isinstance(by_constraint, dict)
     for index, name in enumerate(names):
+        eligible_time_indices = torch.arange(values.shape[1], device=values.device)
         current_values, current_violations = (
             values[:, :, index],
             violations[:, :, index],
@@ -604,20 +611,79 @@ def _constraint_report(
                     "Locked evaluation requires an annual mask for EYR reporting"
                 )
             eligible_times = annual_mask.all(dim=0)
+            eligible_time_indices = eligible_time_indices[eligible_times]
             current_values = current_values[:, eligible_times]
             current_violations = current_violations[:, eligible_times]
+        if not torch.isfinite(current_values).all() or not torch.isfinite(
+            current_violations
+        ).all():
+            raise LockedEvaluationError(
+                f"Locked evaluation constraint {name} contains non-finite evidence"
+            )
         positive = current_violations > 0
+        violating_paths = positive.any(dim=1)
+        per_path_counts = positive.sum(dim=1)
+        has_eligible_observations = current_values.shape[1] > 0
+        raw_violating_values = current_values[positive]
+        penalty_at_violations = current_violations[positive]
+        last_state: dict[str, object]
+        if has_eligible_observations:
+            last_time_index = int(eligible_time_indices[-1])
+            last_state_index = last_time_index + 1
+            last_state = {
+                "state_index": last_state_index,
+                "month_index": last_state_index,
+                "raw_values": values[:, last_time_index, index].detach().cpu().tolist(),
+            }
+        else:
+            last_state = {
+                "state_index": None,
+                "month_index": None,
+                "raw_values": None,
+                "status": "unavailable",
+                "reason": "no applicable constraint state",
+            }
         by_constraint[name] = {
-            "time_mean": current_values.mean(dim=0).detach().cpu().tolist(),
-            "time_median": current_values.median(dim=0).values.detach().cpu().tolist(),
-            "ever_violation_share": float(positive.any(dim=1).float().mean()),
-            "violating_count": int(positive.sum()),
-            "violating_mean": float(current_violations[positive].mean())
-            if positive.any()
-            else None,
-            "worst_value": float(
-                current_values.max() if name == "irs" else current_values.min()
+            "time_mean": current_values.mean(dim=0).detach().cpu().tolist()
+            if has_eligible_observations
+            else [],
+            "time_median": current_values.median(dim=0).values.detach().cpu().tolist()
+            if has_eligible_observations
+            else [],
+            "raw_value_unit": "ratio",
+            "applicable_time_mask": "annual_closes" if name == "eyr" else "all_states",
+            "applicable_state_indices": (eligible_time_indices + 1)
+            .detach()
+            .cpu()
+            .tolist(),
+            "eligible_observation_count": int(current_values.numel()),
+            "violating_observation_denominator": "eligible path-time observations",
+            "violating_observation_count": int(positive.sum()),
+            "ever_violating_path_share": float(violating_paths.float().mean()),
+            "raw_violating_mean": _available(
+                raw_violating_values, "no violating observations"
             ),
+            "violation_penalty_mean": _available(
+                penalty_at_violations, "no violating observations"
+            ),
+            "conditional_count_denominator": "paths with at least one violating observation",
+            "mean_violating_observations_per_violating_path": _available(
+                per_path_counts[violating_paths].to(dtype=values.dtype),
+                "no paths have violating observations",
+            ),
+            "most_adverse_raw_value": (
+                _available(
+                    current_values.max().reshape(1)
+                    if name == "irs"
+                    else current_values.min().reshape(1),
+                    "no applicable constraint state",
+                )
+                if has_eligible_observations
+                else _available(None, "no applicable constraint state")
+            ),
+            "most_adverse_scope": "all eligible observations",
+            "most_adverse_direction": "maximum" if name == "irs" else "minimum",
+            "last_applicable_state": last_state,
         }
     return result
 
@@ -796,7 +862,7 @@ def _validate_checkpoint_compatibility(
 
 
 def _available(values: torch.Tensor | None, reason: str) -> dict[str, object]:
-    if values is None or not torch.isfinite(values).all():
+    if values is None or values.numel() == 0 or not torch.isfinite(values).all():
         return {"value": None, "status": "unavailable", "reason": reason}
     return {"value": _mean(values), "status": "available"}
 
@@ -823,6 +889,49 @@ def equity_risk_report(equity_ratios: torch.Tensor) -> dict[str, object]:
         "input": "terminal_equity_ratio",
         "centered": True,
     }
+
+
+def equity_distribution_report(equity_ratios: torch.Tensor) -> dict[str, object]:
+    """Return Equation 51 population moments with JSON-safe availability records."""
+
+    reason = "terminal equity ratios are empty or non-finite"
+    if (
+        equity_ratios.ndim != 1
+        or equity_ratios.numel() == 0
+        or not torch.isfinite(equity_ratios).all()
+    ):
+        unavailable = _available(None, reason)
+        return {
+            "mean": unavailable,
+            "standard_deviation": unavailable,
+            "skewness": unavailable,
+            "excess_kurtosis": unavailable,
+            "moment_convention": "population_central",
+        }
+
+    mean = equity_ratios.mean()
+    centered = equity_ratios - mean
+    second_moment = centered.square().mean()
+    standard_deviation = second_moment.sqrt()
+    report: dict[str, object] = {
+        "mean": _available(mean.reshape(1), reason),
+        "standard_deviation": _available(standard_deviation.reshape(1), reason),
+        "moment_convention": "population_central",
+    }
+    if second_moment == 0:
+        undefined_reason = "equity ratio population variance is zero"
+        report["skewness"] = _available(None, undefined_reason)
+        report["excess_kurtosis"] = _available(None, undefined_reason)
+        return report
+    third_moment = centered.pow(3).mean()
+    fourth_moment = centered.pow(4).mean()
+    report["skewness"] = _available(
+        (third_moment / second_moment.pow(1.5)).reshape(1), reason
+    )
+    report["excess_kurtosis"] = _available(
+        (fourth_moment / second_moment.square() - 3.0).reshape(1), reason
+    )
+    return report
 
 
 def _mean(values: torch.Tensor) -> float:

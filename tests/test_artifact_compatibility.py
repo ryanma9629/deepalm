@@ -81,7 +81,8 @@ def test_training_records_actual_completed_policy_repairs_without_metric_couplin
     )
     evaluation = evaluator.evaluate((PolicyCheckpoint("BM^E", result.checkpoint_path),))
     assert evaluation.manifest["artifact_semantics"]["repair_status"] == "pending"
-    assert evaluation.manifest["artifact_semantics"]["corrections"]["R-1"] is False
+    assert evaluation.manifest["artifact_semantics"]["corrections"]["R-1"] is True
+    assert evaluation.manifest["artifact_semantics"]["corrections"]["R-2"] is False
     with pytest.raises(LockedEvaluationError, match="artifact semantics"):
         evaluator.evaluate((PolicyCheckpoint("incompatible", incompatible),))
 

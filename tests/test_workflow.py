@@ -85,6 +85,17 @@ def test_local_workflow_runs_every_required_stage_and_publishes_one_bundle(
     assert (bundle.artifact_directory / "reference-bank-sensitivity.json").is_file()
     assert (bundle.artifact_directory / "horizon-scenario-analysis.json").is_file()
     assert (bundle.artifact_directory / "compact-no-swap-report.json").is_file()
+    truncation = json.loads(
+        (bundle.artifact_directory / "mm-truncation.json").read_text()
+    )
+    assert truncation["evaluation_horizon_years"] == 5
+    assert truncation["report"]["standardized_dividend_yield"]["status"] in {
+        "available",
+        "unavailable",
+    }
+    assert truncation["report"]["equity_ratio"]["moment_convention"] == (
+        "population_central"
+    )
     for stage in ("train", "resume", "evaluate", "accept"):
         reused = runner.reuse_completed_workflow_stage(
             configuration,

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -13,6 +15,8 @@ from deepalm.evaluation import (
     LockedEvaluator,
     PolicyCheckpoint,
     _constraint_report,
+    _report_outcome,
+    equity_distribution_report,
     equity_risk_report,
     paired_bootstrap,
     penalty_tail_metrics,
@@ -22,6 +26,25 @@ from deepalm.policies import BMEqualPolicy
 from deepalm.reference_bank import ReferenceBankProvider
 from deepalm.term_structures import MarketScenarioModel
 from deepalm.training import MMTrainer, _job_seed
+
+
+def _outcome_for_report(
+    *, horizon_years: int, dividends: torch.Tensor
+) -> SimpleNamespace:
+    months = horizon_years * 12
+    return SimpleNamespace(
+        objective=SimpleNamespace(
+            total=torch.zeros(1, dtype=torch.float64),
+            target=torch.zeros(1, dtype=torch.float64),
+            penalty=torch.zeros(1, dtype=torch.float64),
+            crra=torch.zeros(1, dtype=torch.float64),
+        ),
+        constraint_values=torch.ones((1, months, 6), dtype=torch.float64),
+        constraint_violations=torch.zeros((1, months, 6), dtype=torch.float64),
+        constraint_annual_mask=torch.arange(months).remainder(12).eq(11).unsqueeze(0),
+        equity=torch.full((1, months + 1), 1000.0, dtype=torch.float64),
+        dividends=dividends,
+    )
 
 
 def test_equity_tail_risk_is_centered_and_translation_invariant() -> None:
@@ -40,6 +63,39 @@ def test_penalty_tail_risk_selects_raw_upper_tail_before_centering() -> None:
     )
 
 
+@pytest.mark.parametrize(("horizon_years", "annual_payouts"), ((5, 4), (15, 14)))
+def test_evaluation_dividend_yield_uses_nonterminal_dividend_years(
+    horizon_years: int, annual_payouts: int
+) -> None:
+    months = horizon_years * 12
+    dividends = torch.zeros((1, months), dtype=torch.float64)
+    dividend_months = torch.arange(annual_payouts) * 12 + 11
+    dividends[0, dividend_months] = 10.0
+    outcome = _outcome_for_report(horizon_years=horizon_years, dividends=dividends)
+
+    report, _ = _report_outcome(outcome, horizon_years)
+
+    assert report["standardized_dividend_yield"] == {
+        "value": pytest.approx(0.01),
+        "status": "available",
+    }
+
+
+def test_evaluation_marks_dividend_yield_unavailable_without_nonterminal_years() -> None:
+    months = 12
+    outcome = _outcome_for_report(
+        horizon_years=1, dividends=torch.zeros((1, months), dtype=torch.float64)
+    )
+
+    report, _ = _report_outcome(outcome, horizon_years=1)
+
+    assert report["standardized_dividend_yield"] == {
+        "value": None,
+        "status": "unavailable",
+        "reason": "evaluation horizon has no nonterminal dividend years",
+    }
+
+
 def test_equity_risk_includes_insolvent_paths_without_annualizing() -> None:
     report = equity_risk_report(
         torch.tensor([-1.0, 0.0, 1.0, 2.0], dtype=torch.float64)
@@ -48,6 +104,60 @@ def test_equity_risk_includes_insolvent_paths_without_annualizing() -> None:
     assert report["input"] == "terminal_equity_ratio"
     assert report["signed_var_95"] == pytest.approx(-1.35)
     assert report["signed_es_95"] == pytest.approx(-1.5)
+
+
+def test_equity_distribution_uses_population_central_moments() -> None:
+    report = equity_distribution_report(
+        torch.tensor([1.0, 1.0, 1.0, 5.0], dtype=torch.float64)
+    )
+
+    assert report["mean"] == {"value": pytest.approx(2.0), "status": "available"}
+    assert report["standard_deviation"] == {
+        "value": pytest.approx(3.0**0.5),
+        "status": "available",
+    }
+    assert report["skewness"] == {
+        "value": pytest.approx(2.0 / 3.0**0.5),
+        "status": "available",
+    }
+    assert report["excess_kurtosis"] == {
+        "value": pytest.approx(-2.0 / 3.0),
+        "status": "available",
+    }
+    assert report["moment_convention"] == "population_central"
+    json.dumps(report, allow_nan=False)
+
+
+def test_equity_distribution_marks_undefined_or_nonfinite_moments_unavailable() -> None:
+    constant = equity_distribution_report(torch.full((4,), 3.0, dtype=torch.float64))
+    nonfinite = equity_distribution_report(
+        torch.tensor([1.0, float("nan")], dtype=torch.float64)
+    )
+
+    assert constant["standard_deviation"] == {
+        "value": pytest.approx(0.0),
+        "status": "available",
+    }
+    assert constant["skewness"] == {
+        "value": None,
+        "status": "unavailable",
+        "reason": "equity ratio population variance is zero",
+    }
+    assert constant["excess_kurtosis"] == {
+        "value": None,
+        "status": "unavailable",
+        "reason": "equity ratio population variance is zero",
+    }
+    assert nonfinite["mean"] == {
+        "value": None,
+        "status": "unavailable",
+        "reason": "terminal equity ratios are empty or non-finite",
+    }
+    assert equity_distribution_report(
+        torch.tensor([-1.0, 0.0, 1.0], dtype=torch.float64)
+    )["mean"] == {"value": pytest.approx(0.0), "status": "available"}
+    json.dumps(constant, allow_nan=False)
+    json.dumps(nonfinite, allow_nan=False)
 
 
 def test_signed_tail_metrics_keep_loss_sign_and_paired_bootstrap_is_reproducible() -> (
@@ -107,8 +217,19 @@ def test_locked_evaluation_uses_disjoint_common_test_paths_and_writes_manifest(
     assert result.reports["BM^D"]["risk"]["centered"] is True
     assert (
         result.manifest["risk_metric_convention"]
-        == "centered-equity-ratio-and-penalty-v2"
+        == "population-moments-and-constraint-statistics-v3"
     )
+    assert result.manifest["artifact_semantics"]["corrections"] == {
+        "C-1": True,
+        "C-2": True,
+        "C-3": True,
+        "C-5": True,
+        "C-6": True,
+        "C-7": True,
+        "C-8": True,
+        "R-1": True,
+        "R-2": False,
+    }
     assert result.manifest["bootstrap_resamples"] == 100
     assert result.paired_intervals
     assert all(
@@ -234,5 +355,60 @@ def test_constraint_summary_uses_annual_eyr_times_and_irs_upper_bound() -> None:
     )
 
     assert report["aggregate_penalty"]["mean"] == pytest.approx(0.2)
-    assert report["by_constraint"]["irs"]["worst_value"] == pytest.approx(0.09)
+    assert report["by_constraint"]["irs"]["most_adverse_raw_value"] == {
+        "value": pytest.approx(0.09),
+        "status": "available",
+    }
     assert report["by_constraint"]["eyr"]["time_mean"] == pytest.approx([0.04, 0.06])
+
+
+def test_constraint_summary_separates_raw_values_and_conditional_counts() -> None:
+    values = torch.ones((3, 2, 6), dtype=torch.float64)
+    values[0, :, 2] = 0.94
+    values[2, 0, 2] = 0.94
+    violations = torch.zeros_like(values)
+    violations[0, :, 2] = 0.1236
+    violations[2, 0, 2] = 0.1236
+
+    report = _constraint_report(
+        values, violations, torch.ones((3, 2), dtype=torch.bool), torch.zeros(3)
+    )
+    cmr = report["by_constraint"]["cmr"]
+    lcr = report["by_constraint"]["lcr"]
+
+    assert cmr["raw_violating_mean"] == {
+        "value": pytest.approx(0.94),
+        "status": "available",
+    }
+    assert cmr["violation_penalty_mean"] == {
+        "value": pytest.approx(0.1236),
+        "status": "available",
+    }
+    assert cmr["violating_observation_count"] == 3
+    assert cmr["ever_violating_path_share"] == pytest.approx(2.0 / 3.0)
+    assert cmr["mean_violating_observations_per_violating_path"] == {
+        "value": pytest.approx(1.5),
+        "status": "available",
+    }
+    assert cmr["most_adverse_raw_value"] == {
+        "value": pytest.approx(0.94),
+        "status": "available",
+    }
+    assert cmr["last_applicable_state"] == {
+        "state_index": 2,
+        "month_index": 2,
+        "raw_values": pytest.approx([0.94, 1.0, 1.0]),
+    }
+    assert cmr["eligible_observation_count"] == 6
+    assert cmr["applicable_state_indices"] == [1, 2]
+    assert lcr["violating_observation_count"] == 0
+    assert lcr["raw_violating_mean"] == {
+        "value": None,
+        "status": "unavailable",
+        "reason": "no violating observations",
+    }
+    assert lcr["mean_violating_observations_per_violating_path"] == {
+        "value": None,
+        "status": "unavailable",
+        "reason": "no paths have violating observations",
+    }

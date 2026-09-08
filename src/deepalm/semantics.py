@@ -6,7 +6,7 @@ from typing import Literal
 
 FINANCIAL_SEMANTICS_VERSION = "dated-deposit-history-v6"
 POLICY_SEMANTICS_VERSION = "maturity-relative-bmd-v3"
-METRIC_SEMANTICS_VERSION = "centered-equity-ratio-and-penalty-v2"
+METRIC_SEMANTICS_VERSION = "population-moments-and-constraint-statistics-v3"
 SNAPSHOT_SCHEMA_VERSION = 5
 
 ArtifactScope = Literal["snapshot", "training", "evaluation"]
@@ -17,7 +17,7 @@ _CORRECTIONS = {
 }
 # Activate only alongside a completed formula repair and its regression evidence.
 _IMPLEMENTED_CORRECTIONS: frozenset[str] = frozenset(
-    {"C-1", "C-2", "C-3", "C-5", "C-6"}
+    {"C-1", "C-2", "C-3", "C-5", "C-6", "C-7", "C-8", "R-1"}
 )
 
 
