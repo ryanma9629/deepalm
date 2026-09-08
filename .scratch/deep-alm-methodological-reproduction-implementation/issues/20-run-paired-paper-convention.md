@@ -27,3 +27,5 @@
 2026-09-07 — 用户确认 Revision 2 增量拆分后发布。按用户确认转为延期研究记录，不进入当前 frontier，不再阻塞 22 或本机交付。启用需要明确资源计划。原编号保留；本次只更新待办，不表示本票实现已经完成。
 
 2026-09-08 — 用户确认 MacBook M5 / 32 GiB 的配对口径研究试跑边界：只运行 Paper 与 Corrected 各自的 BM^D/MM、5/15 年（八个训练任务），并由各自 15 年 MM checkpoint 生成零训练更新的 MM(15y|5y)。使用单进程 MPS float32、compact 网络、两 epochs、每 epoch 16 条训练路径、batch 8、16 条 selection 路径、64 条 locked-test 路径和一个主 seed；两口径固定共享 canonical Reference Bank、市场创新路径及种子注册表，但不共享 checkpoint。总训练为 32 次主更新，100 次 paired bootstrap；排除 Paper width、BME/BMC、多 seed、敏感性重训和完整论文图表。总运行预算为 600 秒、RSS/MPS 各 12 GiB；两个 15 年 MM 的首 epoch 后若预测全矩阵纯训练超过 420 秒，则停止未启动任务并按 incomplete 保留诊断。Paper 的有限但较差表现是研究发现，不影响 Corrected；Paper 非有限时保留 stage/path/month/value 诊断并继续独立子任务。此试跑量化公式差异和数值行为，不声明收敛、methodologically-reproduced 或银行模型获批。仍需把本票拆分为可执行子票后才启动实现。
+
+2026-09-08 — 用户同意拆分。实施入口依次为 28（配对训练矩阵与资源护栏）、29（锁定评估与 Paper 失败披露）和 30（可审计研究试跑报告）。Ticket 20 保留为范围总览；Ticket 24 的完整 paper-scale 经济验收仍未激活。
