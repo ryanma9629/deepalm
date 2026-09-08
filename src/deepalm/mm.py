@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import pairwise
 
 import torch
@@ -26,6 +26,7 @@ _APPROVED_WIDTHS = {
     "compact": (64, 64, 32, 32),
     "paper": (512, 512, 256, 128),
 }
+
 
 class MMObservationError(TreasuryActionError):
     """Raised when MM preprocessing, state, or action contracts are incompatible."""
@@ -76,13 +77,17 @@ class CurveFeaturePCA:
         """Fit only registered training curves, without variance standardization."""
 
         if not isinstance(training_states, RegisteredTrainingCurves):
-            raise MMObservationError("Curve PCA may fit only registered training states")
+            raise MMObservationError(
+                "Curve PCA may fit only registered training states"
+            )
         curves, paths, times = _curve_training_matrix(training_states.curves)
         selected = _stratified_curve_indices(paths, times, _MAX_CURVE_TRAINING_STATES)
         flattened = curves.reshape(paths * times, 180)
         samples = flattened[_flatten_indices(selected, times)]
         if samples.shape[0] < _CURVE_FEATURES:
-            raise MMObservationError("Curve PCA requires at least three training states")
+            raise MMObservationError(
+                "Curve PCA requires at least three training states"
+            )
         center = samples.mean(dim=0)
         centered = samples - center
         try:
@@ -150,7 +155,9 @@ class CurveFeaturePCA:
         data_identity = value.get("data_identity")
         calibration_identity = value.get("calibration_identity")
         if data_identity != expected_data_identity:
-            raise MMObservationError("Curve feature preprocessing data identity mismatch")
+            raise MMObservationError(
+                "Curve feature preprocessing data identity mismatch"
+            )
         if calibration_identity != expected_calibration_identity:
             raise MMObservationError(
                 "Curve feature preprocessing calibration identity mismatch"
@@ -168,9 +175,14 @@ class CurveFeaturePCA:
             )
             identity = str(value["identity"])
         except (KeyError, TypeError, ValueError, IndexError) as error:
-            raise MMObservationError("Curve feature preprocessing is invalid") from error
+            raise MMObservationError(
+                "Curve feature preprocessing is invalid"
+            ) from error
         _require_curve_vector(center, "Curve PCA center")
-        if projection.shape != (180, _CURVE_FEATURES) or not torch.isfinite(projection).all():
+        if (
+            projection.shape != (180, _CURVE_FEATURES)
+            or not torch.isfinite(projection).all()
+        ):
             raise MMObservationError("Curve PCA projection must have shape [180, 3]")
         if not sample_indices:
             raise MMObservationError("Curve PCA requires registered sample indices")
@@ -218,13 +230,18 @@ class MMPolicy(TreasuryPolicy):
             raise MMObservationError("MM requires a 64-feature final encoding")
         if architecture.action_features != _INVESTMENT_ACTIONS + _FUNDING_ACTIONS:
             raise MMObservationError("MM requires 29 no-swap action features")
-        if architecture.profile not in _APPROVED_WIDTHS or architecture.widths != _APPROVED_WIDTHS[
-            architecture.profile
-        ]:
-            raise MMObservationError("MM architecture must use approved compact or paper widths")
+        if (
+            architecture.profile not in _APPROVED_WIDTHS
+            or architecture.widths != _APPROVED_WIDTHS[architecture.profile]
+        ):
+            raise MMObservationError(
+                "MM architecture must use approved compact or paper widths"
+            )
 
         reference_parameter = next(baseline.parameters(), None)
-        if reference_parameter is None:  # pragma: no cover - BM^D always has parameters.
+        if (
+            reference_parameter is None
+        ):  # pragma: no cover - BM^D always has parameters.
             raise MMObservationError("MM baseline must contain BM^D parameters")
         options = {
             "device": reference_parameter.device,
@@ -235,7 +252,9 @@ class MMPolicy(TreasuryPolicy):
         self.curve_feature_identity = curve_features.identity
         self.architecture = architecture
         self.register_buffer("curve_center", curve_features.center.to(**options))
-        self.register_buffer("curve_projection", curve_features.projection.to(**options))
+        self.register_buffer(
+            "curve_projection", curve_features.projection.to(**options)
+        )
         self.investment_encoder = nn.Linear(180, _ENCODER_FEATURES, **options)
         self.funding_encoder = nn.Linear(180, _ENCODER_FEATURES, **options)
         self.loan_encoder = nn.Linear(180, _ENCODER_FEATURES, **options)
@@ -311,7 +330,9 @@ class MMPolicy(TreasuryPolicy):
             funding=torch.relu(baseline.funding + funding_adjustment),
         )
 
-    def _observation_from_stopped_state(self, state: TreasuryPolicyState) -> torch.Tensor:
+    def _observation_from_stopped_state(
+        self, state: TreasuryPolicyState
+    ) -> torch.Tensor:
         assert state.mortgages is not None
         assert state.enterprise_loans is not None
         assert state.non_maturity_deposits is not None
@@ -339,14 +360,15 @@ class MMPolicy(TreasuryPolicy):
                 self.loan_encoder((mortgages + enterprise_loans) / 100.0)
             ),
             torch.nn.functional.elu(
-                self.deposit_encoder(
-                    (non_maturity_deposits + term_deposits) / 100.0
-                )
+                self.deposit_encoder((non_maturity_deposits + term_deposits) / 100.0)
             ),
         )
         curve_factors = (curve - self.curve_center) @ self.curve_projection
         total_assets = (
-            cash + investments.sum(dim=1) + mortgages.sum(dim=1) + enterprise_loans.sum(dim=1)
+            cash
+            + investments.sum(dim=1)
+            + mortgages.sum(dim=1)
+            + enterprise_loans.sum(dim=1)
         ).clamp_min(torch.finfo(investments.dtype).eps)
         relative_balance_sheet = torch.stack(
             (
@@ -371,6 +393,49 @@ class MMPolicy(TreasuryPolicy):
             ),
             dim=1,
         )
+
+
+class TruncatedMMPolicy(TreasuryPolicy):
+    """Read-only first-five-year view of a selected fifteen-year MM policy.
+
+    The ALM rollout owns a 60-step terminal horizon, but the wrapped policy is
+    deliberately given its original 180-step state horizon.  Consequently its
+    time feature is ``t / 180`` and its frozen 15-year BM^D baseline remains in
+    force; this object is evaluation-only and creates no new trainable policy.
+    """
+
+    def __init__(self, policy: MMPolicy, *, decisions: int = 60) -> None:
+        super().__init__()
+        if policy.baseline.transitions != 180 or decisions != 60:
+            raise MMObservationError(
+                "MM truncation requires the first 60 decisions of a 15-year policy"
+            )
+        self.policy = policy
+        self.decisions = decisions
+        self.policy.eval()
+        for parameter in self.policy.parameters():
+            parameter.requires_grad_(False)
+
+    @property
+    def requires_full_state(self) -> bool:
+        return self.policy.requires_full_state
+
+    @property
+    def audit_metadata(self) -> dict[str, object]:
+        return {
+            **self.policy.audit_metadata,
+            "trained_horizon_years": self.policy.baseline.transitions // 12,
+            "truncated_decisions": self.decisions,
+            "time_normalization": "original-trained-horizon",
+            "optimizer_updates": 0,
+        }
+
+    def forward(self, state: TreasuryPolicyState) -> TreasuryAction:
+        if state.time >= self.decisions:
+            raise MMObservationError(
+                "Truncated MM may only execute its first 60 decisions"
+            )
+        return self.policy(replace(state, transitions=180))
 
 
 class _ELUResidualBlock(nn.Module):
@@ -399,7 +464,9 @@ class _ELUResidualBlock(nn.Module):
         return torch.nn.functional.elu(self.refine(transformed) + residual)
 
 
-def _validate_mm_state(state: TreasuryPolicyState, *, baseline_transitions: int) -> None:
+def _validate_mm_state(
+    state: TreasuryPolicyState, *, baseline_transitions: int
+) -> None:
     required = (
         state.mortgages,
         state.enterprise_loans,
@@ -419,7 +486,9 @@ def _validate_mm_state(state: TreasuryPolicyState, *, baseline_transitions: int)
     for value in (state.funding, *required):
         assert value is not None
         if value.device != reference.device or value.dtype != reference.dtype:
-            raise MMObservationError("MM observation tensors must share device and dtype")
+            raise MMObservationError(
+                "MM observation tensors must share device and dtype"
+            )
     if state.curve is not None and state.curve.shape != reference.shape:
         raise MMObservationError("MM curve must have shape [paths, 180]")
 
@@ -433,7 +502,9 @@ def _detached_baseline_state(state: TreasuryPolicyState) -> TreasuryPolicyState:
     )
 
 
-def _curve_training_matrix(training_curves: torch.Tensor) -> tuple[torch.Tensor, int, int]:
+def _curve_training_matrix(
+    training_curves: torch.Tensor,
+) -> tuple[torch.Tensor, int, int]:
     if training_curves.ndim == 2:
         _require_curve_matrix(training_curves, "Curve PCA training states")
         return training_curves.unsqueeze(1), training_curves.shape[0], 1
@@ -466,14 +537,18 @@ def _stratified_curve_indices(
 def _evenly_spaced_indices(upper_bound: int, count: int) -> tuple[int, ...]:
     if count <= 0 or count > upper_bound:
         raise MMObservationError("Curve PCA stratification has an invalid sample quota")
-    selected = torch.linspace(
-        0, upper_bound - 1, steps=count, dtype=torch.float64
-    ).round().to(torch.long)
+    selected = (
+        torch.linspace(0, upper_bound - 1, steps=count, dtype=torch.float64)
+        .round()
+        .to(torch.long)
+    )
     return tuple(int(index) for index in selected.tolist())
 
 
 def _flatten_indices(indices: tuple[tuple[int, int], ...], times: int) -> torch.Tensor:
-    return torch.tensor([path * times + time for path, time in indices], dtype=torch.long)
+    return torch.tensor(
+        [path * times + time for path, time in indices], dtype=torch.long
+    )
 
 
 def _orient_components(projection: torch.Tensor) -> torch.Tensor:

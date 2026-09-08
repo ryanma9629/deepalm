@@ -26,6 +26,7 @@ from deepalm.mm import (
     MMObservationError,
     MMPolicy,
     RegisteredTrainingCurves,
+    TruncatedMMPolicy,
 )
 from deepalm.objective import (
     ObjectiveParameters,
@@ -40,7 +41,7 @@ from deepalm.policies import (
 )
 from deepalm.reference_bank import ReferenceBankSnapshot
 from deepalm.resources import BudgetExceeded, ResourceMonitor, ResourceSnapshot
-from deepalm.runoff import ALMSimulator
+from deepalm.runoff import ALMSimulator, PassiveRunoffResult
 from deepalm.term_structures import (
     HistoricalTermStructures,
     HjmPcaCalibration,
@@ -273,6 +274,16 @@ class MMWidthCheckResult:
     baseline_reference_identity: str
     architecture: ArchitectureConfiguration
     resource_profile: ResourceProfile
+
+
+@dataclass(frozen=True)
+class MMTruncationResult:
+    """Evaluation evidence for MM(15y|5y), with no optimizer invocation."""
+
+    policy: TruncatedMMPolicy
+    market: MarketScenarioBatch
+    outcome: PassiveRunoffResult
+    optimizer_updates: int
 
 
 class BenchmarkTrainer:
@@ -1100,7 +1111,7 @@ class BMDateTrainer(BenchmarkTrainer):
 
 
 class MMTrainer(BenchmarkTrainer):
-    """Five-year, time-shared MM training around one frozen BM^D reference.
+    """Time-shared MM training around one frozen same-horizon BM^D reference.
 
     The shared :class:`BenchmarkTrainer` remains responsible for the actual
     multi-period optimization.  This adapter owns only the MM-specific
@@ -1120,17 +1131,17 @@ class MMTrainer(BenchmarkTrainer):
         market_model: MarketScenarioModel | None = None,
         resource_monitor: ResourceMonitor | None = None,
     ) -> None:
-        if baseline_reference.horizon_years != 5:
-            raise TrainingError("MM requires a frozen five-year BM^D baseline")
+        if baseline_reference.horizon_years not in {5, 15}:
+            raise TrainingError(
+                "MM requires a frozen five- or fifteen-year BM^D baseline"
+            )
         expected_baseline_data = {
             "market_source_hash": historical.source_hash,
             "hjm_calibration_identity": calibration.calibration_identity,
             "reference_bank_content_hash": snapshot.content_hash,
         }
         if dict(baseline_reference.data_identities) != expected_baseline_data:
-            raise TrainingError(
-                "Frozen five-year BM^D baseline was not selected for these inputs"
-            )
+            raise TrainingError("Frozen MM baseline was not selected for these inputs")
         super().__init__(
             configuration,
             snapshot=snapshot,
@@ -1150,7 +1161,7 @@ class MMTrainer(BenchmarkTrainer):
         horizon_years: int,
         control: TrainingControl | None = None,
     ) -> BenchmarkTrainingResult:
-        self._require_five_year_compact(horizon_years)
+        self._require_mm_horizon(horizon_years)
         self._materialize_baseline_reference(horizon_years)
         result = super().fit(horizon_years=horizon_years, control=control)
         return replace(
@@ -1164,7 +1175,7 @@ class MMTrainer(BenchmarkTrainer):
     ) -> tuple[DeviceValidationRecord, ...]:
         """Validate MM updates on available local devices with its frozen inputs."""
 
-        self._require_five_year_compact(horizon_years)
+        self._require_mm_horizon(horizon_years)
         records: list[DeviceValidationRecord] = []
         for device in ("cpu", "mps"):
             if device == "mps" and not torch.backends.mps.is_available():
@@ -1219,11 +1230,14 @@ class MMTrainer(BenchmarkTrainer):
             ) from error
         if not isinstance(checkpoint, dict) or checkpoint.get("policy") != "MM":
             raise TrainingError("Checkpoint is not an MM policy")
-        if checkpoint.get("horizon_years") != 5:
-            raise TrainingError("MM checkpoint must be five-year")
+        horizon_years = checkpoint.get("horizon_years")
+        if horizon_years != self._baseline_reference.horizon_years:
+            raise TrainingError("MM checkpoint horizon must match its frozen baseline")
+        self._require_mm_horizon(int(horizon_years))
         dependencies = checkpoint.get("policy_dependencies")
         expected = self._policy_dependencies(
-            horizon_years=5, policy=self._create_policy(horizon_years=5)
+            horizon_years=int(horizon_years),
+            policy=self._create_policy(horizon_years=int(horizon_years)),
         )
         if dependencies != expected:
             raise TrainingError("MM checkpoint immutable dependency identity mismatch")
@@ -1233,7 +1247,7 @@ class MMTrainer(BenchmarkTrainer):
                 expected_data_identity=self._historical.source_hash,
                 expected_calibration_identity=self._calibration.calibration_identity,
                 expected_training_state_identity=self._curve_feature_pca(
-                    horizon_years=5
+                    horizon_years=int(horizon_years)
                 ).training_state_identity,
             )
         except (KeyError, MMObservationError) as error:
@@ -1275,9 +1289,9 @@ class MMTrainer(BenchmarkTrainer):
         if (
             not isinstance(checkpoint, dict)
             or checkpoint.get("policy") != "MM"
-            or checkpoint.get("horizon_years") != 5
+            or checkpoint.get("horizon_years") not in {5, 15}
         ):
-            raise TrainingError("Checkpoint is not a five-year MM policy")
+            raise TrainingError("Checkpoint is not a supported MM policy")
         dependencies = checkpoint.get("policy_dependencies")
         if not isinstance(dependencies, dict):
             raise TrainingError("MM checkpoint has no immutable dependency record")
@@ -1336,6 +1350,59 @@ class MMTrainer(BenchmarkTrainer):
         policy.eval()
         return policy
 
+    def evaluate_five_year_truncation(
+        self,
+        *,
+        checkpoint_path: Path,
+        market: MarketScenarioBatch,
+    ) -> MMTruncationResult:
+        """Evaluate MM(15y|5y) without optimizing or renormalizing time.
+
+        The market prefix determines the 60-step balance-sheet rollout and its
+        five-year terminal objective.  ``TruncatedMMPolicy`` separately keeps
+        the trained policy's 180-step state horizon, so every decision uses
+        ``t / 15 years`` and the frozen 15-year BM^D baseline.
+        """
+
+        self._require_mm_horizon(15)
+        if market.horizon_years != 15:
+            raise TrainingError("MM(15y|5y) requires a fifteen-year source market")
+        policy = self.load_selected_checkpoint(checkpoint_path)
+        if policy.baseline.transitions != 180:
+            raise TrainingError("MM(15y|5y) requires a selected fifteen-year policy")
+        prefix = market.prefix(horizon_years=5)
+        truncated_policy = TruncatedMMPolicy(policy)
+        outcome = self._simulator.rollout(
+            self._snapshot,
+            prefix,
+            policy=truncated_policy,
+            device=self._device,
+            dtype=self._dtype,
+            include_loan_dynamics=True,
+            convention=self._configuration.convention.profile,
+            include_deposit_dynamics=True,
+            objective_parameters=evaluation_objective_parameters(
+                len(prefix.spot_rates),
+                horizon_years=5,
+                device=self._device,
+                dtype=self._dtype,
+            ),
+        )
+        if (
+            outcome.objective is None
+            or outcome.treasury_actions is None
+            or outcome.treasury_actions.shape[1] != 60
+        ):
+            raise TrainingError("MM(15y|5y) did not produce a complete 60-step rollout")
+        if not torch.isfinite(outcome.treasury_actions).all():
+            raise TrainingError("MM(15y|5y) produced non-finite actions")
+        return MMTruncationResult(
+            policy=truncated_policy,
+            market=prefix,
+            outcome=outcome,
+            optimizer_updates=0,
+        )
+
     def run_paper_width_check(self, *, horizon_years: int) -> MMWidthCheckResult:
         """Run one isolated two-path full-horizon update at paper width.
 
@@ -1344,7 +1411,7 @@ class MMTrainer(BenchmarkTrainer):
         never mutates the compact selected checkpoint.
         """
 
-        self._require_five_year_compact(horizon_years)
+        self._require_mm_horizon(horizon_years)
         self._materialize_baseline_reference(horizon_years)
         paper_architecture = ArchitectureConfiguration(
             profile="paper", widths=(512, 512, 256, 128)
@@ -1496,7 +1563,7 @@ class MMTrainer(BenchmarkTrainer):
         )
 
     def _create_policy(self, *, horizon_years: int) -> MMPolicy:
-        self._require_five_year_compact(horizon_years)
+        self._require_mm_horizon(horizon_years)
         return MMPolicy(
             reference=self._baseline_reference,
             curve_features=self._curve_feature_pca(horizon_years),
@@ -1529,7 +1596,7 @@ class MMTrainer(BenchmarkTrainer):
         }
 
     def _curve_feature_pca(self, horizon_years: int) -> CurveFeaturePCA:
-        self._require_five_year_compact(horizon_years)
+        self._require_mm_horizon(horizon_years)
         if self._curve_features is None:
             paths = self._configuration.run_scale.training_paths_per_epoch
             market = self._market_model.generate_hjm_scenarios(
@@ -1553,9 +1620,13 @@ class MMTrainer(BenchmarkTrainer):
             self._curve_features = CurveFeaturePCA.fit(registered)
         return self._curve_features
 
-    def _require_five_year_compact(self, horizon_years: int) -> None:
-        if horizon_years != 5:
-            raise TrainingError("MM implementation is limited to the five-year horizon")
+    def _require_mm_horizon(self, horizon_years: int) -> None:
+        if horizon_years not in {5, 15}:
+            raise TrainingError(
+                "MM implementation is limited to five- and fifteen-year horizons"
+            )
+        if horizon_years != self._baseline_reference.horizon_years:
+            raise TrainingError("MM horizon must match its frozen BM^D baseline")
         if self._configuration.architecture.profile != "compact":
             raise TrainingError(
                 "MM selection training must use the compact architecture"

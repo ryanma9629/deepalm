@@ -107,6 +107,42 @@ class MarketScenarioBatch:
     epoch: int = 0
     global_path_indices: tuple[int, ...] = ()
 
+    def prefix(self, *, horizon_years: int) -> MarketScenarioBatch:
+        """Return an identity-preserving prefix of a longer HJM path batch.
+
+        HJM innovations are generated path-by-path, so the first sixty shocks
+        of a fifteen-year batch are exactly the paired five-year shocks when
+        seed, split, epoch, and global path indices agree.  The returned batch
+        deliberately advertises the shorter horizon for the ALM terminal roll,
+        while retaining the original provenance fields.
+        """
+
+        if horizon_years not in {5, 15} or horizon_years > self.horizon_years:
+            raise TermStructureError(
+                "Market prefix horizon must be an enabled shorter horizon"
+            )
+        steps = 12 * horizon_years
+        spot_rates = _readonly(self.spot_rates[:, : steps + 1].copy())
+        discount_factors = _readonly(self.discount_factors[:, : steps + 1].copy())
+        monthly_forwards = _readonly(self.monthly_forwards[:, : steps + 1].copy())
+        innovations = _readonly(self.innovations[:, :steps].copy())
+        return MarketScenarioBatch(
+            spot_rates=spot_rates,
+            discount_factors=discount_factors,
+            monthly_forwards=monthly_forwards,
+            innovations=innovations,
+            convention=self.convention,
+            horizon_years=horizon_years,
+            seed=self.seed,
+            calibration_identity=self.calibration_identity,
+            round_trip_error=_scenario_round_trip_error(
+                spot_rates, discount_factors, monthly_forwards
+            ),
+            split=self.split,
+            epoch=self.epoch,
+            global_path_indices=self.global_path_indices,
+        )
+
 
 @dataclass(frozen=True)
 class HjmOneStepDiagnostics:
@@ -324,8 +360,10 @@ class MarketScenarioModel:
         if epoch < 0:
             raise TermStructureError("HJM scenario epoch must be non-negative")
         indices = global_path_indices or tuple(range(paths))
-        if len(indices) != paths or len(set(indices)) != paths or any(
-            index < 0 for index in indices
+        if (
+            len(indices) != paths
+            or len(set(indices)) != paths
+            or any(index < 0 for index in indices)
         ):
             raise TermStructureError(
                 "HJM global path indices must be unique non-negative values matching paths"
