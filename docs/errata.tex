@@ -1,0 +1,338 @@
+\documentclass[UTF8,11pt,a4paper,fontset=fandol]{ctexart}
+
+\usepackage[a4paper,margin=24mm,headheight=15pt,footskip=17mm]{geometry}
+\usepackage{amsmath,amssymb,mathtools,bm}
+\usepackage{booktabs,tabularx,longtable,array}
+\usepackage{xcolor}
+\usepackage[most]{tcolorbox}
+\usepackage{enumitem}
+\usepackage{fancyhdr,lastpage}
+\usepackage{hyperref}
+
+\definecolor{navy}{HTML}{16324F}
+\definecolor{blue}{HTML}{2E6F9E}
+\definecolor{lightblue}{HTML}{EAF3F8}
+\definecolor{warm}{HTML}{F7F3EA}
+\definecolor{red}{HTML}{A63D40}
+\definecolor{green}{HTML}{2E6B57}
+\definecolor{gray}{HTML}{5B6570}
+\definecolor{line}{HTML}{CAD5DF}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  urlcolor=blue,
+  pdftitle={Deep treasury management for banks：公式与算法勘误审阅},
+  pdfauthor={Independent technical review}
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{gray}\textit{Deep Treasury Management for Banks} · Errata Review}
+\fancyhead[R]{\small\color{gray}2026-09-08}
+\fancyfoot[L]{\small\color{gray}独立技术审阅｜非作者官方勘误}
+\fancyfoot[R]{\small\color{gray}\thepage/\pageref{LastPage}}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0pt}
+\setlength{\parindent}{2em}
+\setlength{\parskip}{0.25em}
+\setlist[itemize]{leftmargin=2em,itemsep=0.2em,topsep=0.3em}
+\setlist[enumerate]{leftmargin=2em,itemsep=0.2em,topsep=0.3em}
+\renewcommand{\arraystretch}{1.22}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+
+\ctexset{
+  section={format=\Large\bfseries\color{navy},beforeskip=1.1em,afterskip=0.55em},
+  subsection={format=\large\bfseries\color{blue},beforeskip=0.9em,afterskip=0.35em}
+}
+
+\newtcolorbox{summarybox}{
+  enhanced,breakable,colback=lightblue,colframe=blue,
+  boxrule=0.7pt,arc=2mm,left=3mm,right=3mm,top=2mm,bottom=2mm
+}
+\newtcolorbox{warningbox}{
+  enhanced,breakable,colback=warm,colframe=red,
+  boxrule=0.7pt,arc=2mm,left=3mm,right=3mm,top=2mm,bottom=2mm
+}
+\newtcolorbox{fixbox}[2][]{
+  enhanced,breakable,colback=white,colframe=line,
+  borderline west={2.2pt}{0pt}{blue},boxrule=0.45pt,arc=1mm,
+  title={#2},fonttitle=\bfseries\color{navy},coltitle=navy,
+  attach boxed title to top left={xshift=2mm,yshift*=-\tcboxedtitleheight/2},
+  boxed title style={colback=white,colframe=white,boxrule=0pt},
+  top=3mm,left=3mm,right=3mm,bottom=2mm,#1
+}
+
+\newcommand{\tagdefinite}{\textcolor{red}{\textbf{明确错误}}}
+\newcommand{\taghigh}{\textcolor{blue}{\textbf{高置信度问题}}}
+\newcommand{\tagclarify}{\textcolor{green}{\textbf{建议澄清}}}
+\newcommand{\original}{\textbf{论文写法：}}
+\newcommand{\problem}{\textbf{问题：}}
+\newcommand{\revision}{\textbf{建议修正：}}
+\newcommand{\impact}{\textbf{代码影响：}}
+
+\begin{document}
+
+\begin{titlepage}
+  \thispagestyle{empty}
+  \vspace*{18mm}
+  {\color{blue}\rule{24mm}{2.2pt}}\\[9mm]
+  {\fontsize{24}{30}\selectfont\bfseries\color{navy}
+    Deep treasury management for banks\\[3mm]
+    公式与算法勘误审阅\par}
+  \vspace{8mm}
+  {\Large\color{gray}面向 PyTorch 复现的独立技术核对}
+
+  \vfill
+  \begin{summarybox}
+  \textbf{审阅对象}\quad Frontiers in Artificial Intelligence（2023），DOI：
+  \href{https://doi.org/10.3389/frai.2023.1120297}{10.3389/frai.2023.1120297}\\
+  \textbf{审阅范围}\quad 正文公式、算法伪代码、附录设定及其在程序实现中的一致性\\
+  \textbf{结论概览}\quad 发现 10 项较高置信度的公式或算法问题、4 项符号/文字问题、4 项需要明确的建模约定。
+  \end{summarybox}
+
+  \vspace{7mm}
+  \begin{warningbox}
+  \textbf{说明}\quad 本文档不是作者或期刊发布的官方勘误。部分问题可能源于排版、公式转录或正文省略，并不必然意味着作者实验代码采用了同样的实现。复现时应把下列修正写成显式假设，并通过单元测试固定。
+  \end{warningbox}
+
+  \vfill
+  {\color{gray}\small 版本：1.0\quad｜\quad 日期：2026-09-08}
+\end{titlepage}
+
+\tableofcontents
+\clearpage
+
+\section{执行摘要}
+
+论文提出以可微分的多期资产负债模拟器训练银行司库策略。整体方法是可复现的，但若逐字照抄若干公式，会在现金流方向、监管约束罚项、利率情景协方差以及风险指标上得到明显错误的结果。对模型训练影响最大的两项是：
+
+\begin{itemize}
+  \item \textbf{约束罚项方向写反（E-05）}：会惩罚满足 LCR、NSFR 等下限的策略，却放过违反下限的策略；
+  \item \textbf{PCA 冲击缩放错误（E-08）}：若使用特征值而非其平方根，生成的利率冲击协方差将被错误平方。
+\end{itemize}
+
+其次，月度贷款利率、负利率现金成本、债券交易现金流和 Expected Shortfall 的尾部选取，也会直接改变训练目标或资产负债演化。建议在模型训练前先完成第~\ref{sec:tests} 节的最小验收测试。
+
+\begin{table}[htbp]
+\centering
+\caption{发现分类与实施优先级}
+\begin{tabularx}{\textwidth}{@{}lYl@{}}
+\toprule
+优先级 & 内容 & 编号 \\
+\midrule
+P0 & 会使关键约束或市场情景方向根本错误，应先修复 & E-05，E-08 \\
+P1 & 会显著改变现金流、收益或损失函数 & E-02，E-03，E-04，E-10 \\
+P2 & 时间、贴现和限额定义不一致，影响边界行为 & E-01，E-06，E-07，E-09 \\
+P3 & 符号、术语和实现约定需要统一 & N-01--N-04，C-01--C-04 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{公式与算法问题}
+
+\begin{fixbox}{E-01　式（4）：贴现因子中出现未定义的 $\Delta$\hfill\taghigh}
+\original $D_t(\tau)=\exp\{-\tau\Delta Y_t(\tau)\}$。\\
+\problem 若 $Y_t(\tau)$ 是连续复利的期限收益率，标准贴现因子不应再乘一个未定义的 $\Delta$。该符号也未在邻近文字中给出清楚含义。\\
+\revision
+\[
+  D_t(\tau)=\exp\{-\tau Y_t(\tau)\}.
+\]
+若作者本意是离散时间步长，则必须同时说明 $Y_t$ 的计量单位与 $\tau$ 的步数定义。\\
+\impact 贴现因子是债券、贷款和互换估值的共同底层函数。不要在代码中凭空加入 $\Delta t$；应先把期限统一为“年”。
+\end{fixbox}
+
+\begin{fixbox}{E-02　式（9）：月度贷款利率缺少年化到月度的换算\hfill\tagdefinite}
+\original $r=\bigl(\exp\{Y_t(\tau)+\kappa_L\}-1\bigr)^+$。\\
+\problem 文中随后把 $r$ 用作月度利率，而 $Y_t(\tau)+\kappa_L$ 是年化连续复利利率。直接指数化会把一年利率当成一个月利率。\\
+\revision
+\[
+  r=\left(\exp\left\{\frac{Y_t(\tau)+\kappa_L}{12}\right\}-1\right)^+.
+\]
+例如年化利率为 $4.5\%$ 时，月利率约为 $\exp(0.045/12)-1$，而不是 $\exp(0.045)-1$。\\
+\impact 会系统性放大贷款利息与摊还现金流，并通过资产规模递推影响所有后续时点。
+\end{fixbox}
+
+\begin{fixbox}{E-03　式（14）--（15）：负利率下现金持有成本的符号相反\hfill\tagdefinite}
+\original 论文构造的 $cp_t$ 在短端利率为负、$D_t(\Delta t)>1$ 时取负值，随后又从现金中减去 $cp_t$。\\
+\problem “减去负成本”等于增加现金，与负利率导致超额准备金产生持有成本的经济含义相反。\\
+\revision 可把成本定义为非负数：
+\[
+ cp_t=(C_t-30MR_t)^+
+ \left[1-\min\left\{D_t(\Delta t)^{-1},1\right\}\right]\ge0,
+\]
+并在现金递推中减去 $cp_t$。另一种等价方案是保留负现金流定义，但在递推式中\emph{加上}它。\\
+\impact 必须只选一种符号约定，避免成本定义和现金流记账各自反转一次。
+\end{fixbox}
+
+\begin{fixbox}{E-04　式（17）--（18）：债券交易现金流缺少数量与跨期限求和\hfill\tagdefinite}
+\original 式中只出现单个新债券价值，未完整体现动作向量中各期限债券的买入/发行数量。\\
+\problem 现金变化应等于“数量乘价格”的合计；否则策略改变交易规模时，现金账户可能不随之线性变化。新发行负债的定价时点也应与交易时点一致。\\
+\revision 以 $B$ 表示购买的资产债券、$K$ 表示发行的负债债券，可写为
+\[
+ C_{t+\Delta t}=C_{t+\Delta t}^{\mathrm{pre}}
+ -\sum_i a_{t+\Delta t}^{B,i}V_{t+\Delta t}(Z^{B,i})
+ +\sum_i a_{t+\Delta t}^{K,i}V_{t+\Delta t}(Z^{K,i}).
+\]
+若动作发生在区间起点，则所有下标应整体改为 $t$，关键是数量、价格和记账时点一致。\\
+\impact 在 PyTorch 中应使用向量点积，而不是只取某个期限或直接加总价格。
+\end{fixbox}
+
+\begin{fixbox}{E-05　式（30）：监管约束罚项的方向写反\hfill\tagdefinite}
+\original 对 LCR、NSFR、资本充足率等下限约束使用 $(x_t^i-\beta_i)^+$；对 IRS 上限约束使用 $(\beta_5-x_t^5)^+$。\\
+\problem 正部函数选择了“满足约束”的一侧，因此罚项在方向上与监管要求相反。\\
+\revision 对下限约束 $i\in\{1,2,3,4,6\}$ 使用
+\[
+  p_i(t)=\bigl(\beta_i-x_t^i\bigr)^+,
+\]
+对上限约束 IRS（$i=5$）使用
+\[
+  p_5(t)=\bigl(x_t^5-\beta_5\bigr)^+.
+\]
+\impact 这是训练损失的核心错误。建议为每个约束单独写具名函数，并分别测试“低于、等于、高于阈值”三种情况。
+\end{fixbox}
+
+\begin{fixbox}{E-06　算法 1：年度事件在 $i=0$ 被提前触发\hfill\tagdefinite}
+\original 条件为 $i\bmod 12=0$。\\
+\problem 在从零开始的循环中，$i=0$ 同样满足该条件，因此模型会在初始时点立即执行年度分红或年度更新。\\
+\revision 在当前索引约定下使用
+\[
+  i>0\quad\text{且}\quad i\bmod 12=0,
+\]
+或改用从 1 开始的月份编号，并明确动作发生在月初还是月末。\\
+\impact 时间轴测试应确认年度事件只在第 12、24、\ldots 月发生，而不是在 $t=0$。
+\end{fixbox}
+
+\begin{fixbox}{E-07　式（36）：互换限额的求和变量与被求和对象不一致\hfill\tagdefinite}
+\original 求和指标写为 $s$，但范数中的动作仍写成 $a_t$。\\
+\problem 这会把同一个时点的动作重复相加，而不是累计历史签订量。\\
+\revision 若限制累计签订的名义本金，应写成
+\[
+ \sum_{s=0}^{t}\lVert a_s^{\mathrm{pay}}\rVert_1\le 3800,
+ \qquad
+ \sum_{s=0}^{t}\lVert a_s^{\mathrm{rec}}\rVert_1\le 2800.
+\]
+若互换会到期，且限制的是当前存量，则更自然的是直接限制当前持仓 $\lVert h_t\rVert_1$。\\
+\impact 复现前必须确定限额针对“累计交易量”还是“未到期存量”，二者在长时间区间内差异很大。
+\end{fixbox}
+
+\begin{fixbox}{E-08　HJM--PCA 第 3 步：主成分冲击应乘特征值平方根\hfill\tagdefinite}
+\original 对协方差矩阵的第 $j$ 个特征对，论文写成 $\widetilde V^{(j)}=\lambda_jQ^{(j)}$。\\
+\problem 若 $\lambda_j$ 是协方差矩阵特征值，波动载荷必须使用 $\sqrt{\lambda_j}$。否则生成冲击的协方差包含 $\lambda_j^2$，无法重构原协方差。\\
+\revision
+\[
+  \widetilde V^{(j)}=\sqrt{\lambda_j}\,Q^{(j)},
+  \qquad
+  VV^\top=Q_d\Lambda_dQ_d^\top.
+\]
+\impact 这是利率情景生成器的关键修正。对载荷做期限平滑后，协方差会有小幅改变，因此应同时保留“平滑前精确重构”的测试和“平滑后误差容忍度”的测试。
+\end{fixbox}
+
+\begin{fixbox}{E-09　时间网格：$H$ 与 $H-1$ 的定义不一致\hfill\taghigh}
+\original 正文出现 $T=(H-1)\Delta t$，附录又使用 $\Delta t=T/H$，并把网格写到 $H\Delta t$。\\
+\problem 同一个 $H$ 有时表示状态节点数，有时表示时间区间数，导致网络数量、终值时点和年度事件整体错一格。\\
+\revision 建议统一为
+\[
+  T=H\Delta t,\qquad t_k=k\Delta t,\ k=0,\ldots,H,
+\]
+其中有 $H+1$ 个状态节点、$H$ 个决策区间，动作定义在 $k=0,\ldots,H-1$。\\
+\impact 代码中分别命名 \texttt{n\_steps}、\texttt{n\_states}，不要让一个变量同时承担两种含义。
+\end{fixbox}
+
+\begin{fixbox}{E-10　式（50e）与（51g）：用中心化 VaR 作为原始样本的尾部阈值\hfill\tagdefinite}
+\original 先把分位数减去均值形成中心化 VaR，随后又用该值去筛选未经中心化的损失或权益收益样本。\\
+\problem 阈值与被筛选样本不在同一坐标系中，尾部样本比例不再等于预期的 $\alpha$ 尾部。\\
+\revision 对损失上尾，先在原始尺度计算
+\[
+ q_\ell=\widehat F_\ell^{-1}(\alpha),\qquad
+ ES_\ell=\mathbb E[\ell\mid \ell\ge q_\ell]-\mathbb E[\ell].
+\]
+对权益回报下尾，可写成
+\[
+ q_{ER}=\widehat F_{ER}^{-1}(1-\alpha),\qquad
+ ES_{ER}=\mathbb E[ER\mid ER\le q_{ER}]-\mathbb E[ER].
+\]
+也可以先把全部样本中心化，再在中心化尺度上同时计算分位数和条件均值。\\
+\impact 分位数、掩码和尾部均值必须使用同一批样本、同一尺度，并明确 $\alpha$ 表示置信水平还是尾部概率。
+\end{fixbox}
+
+\section{符号与文字问题}
+
+\begin{longtable}{@{}p{15mm}p{43mm}p{94mm}@{}}
+\toprule
+编号 & 论文表述 & 建议 \\
+\midrule
+\endfirsthead
+\toprule
+编号 & 论文表述 & 建议 \\
+\midrule
+\endhead
+N-01 & 扩展动作维度写为 $2(b+s)$。 & 债券资产和债券负债期限数分别为 $b^B=13$、$b^K=16$ 时，动作维度应为 $b^B+b^K+2s=41$，不能用同一个 $b$ 代替两者。 \\
+N-02 & 式（35）后的文字说把 $N^B$ 加入负债。 & 按上下文应为贷款/负债新增量 $N^L$，否则资产侧债券被重复记入负债。 \\
+N-03 & 网络参数量多处按 $H-1$ 个决策网络计算。 & 应与统一后的时间网格一致；若有 $H$ 个决策区间，则独立参数网络的数量是 $H$。若采用跨时点共享网络，则另行说明时间输入。 \\
+N-04 & $R^E$ 在不同位置被称为企业贷款和个人贷款。 & 统一产品定义、风险权重、现金流与数据字段名称，避免同一符号对应两个业务口径。 \\
+\bottomrule
+\end{longtable}
+
+\section{需要明确的建模约定}
+
+\begin{fixbox}{C-01　$\pm100$bp 利率敏感性约束}
+式（25）只给出一个 $\widetilde E_t$，但“利率上升 100bp”和“下降 100bp”会产生两个不同的权益变化。应明确是分别施加两条约束，还是取两种冲击下绝对损失的最大值。
+\end{fixbox}
+
+\begin{fixbox}{C-02　资本比率与杠杆率的术语}
+$E/RWA$ 是风险加权资本比率的简化表达，并不是巴塞尔框架中以暴露总额为分母的非风险加权杠杆率。论文可以采用简化指标，但代码、图表和报告应使用一致名称。
+\end{fixbox}
+
+\begin{fixbox}{C-03　互换现金流的支付日与聚合规则}
+互换通常只在约定支付日产生净现金流。实现时应显式设置支付日指示变量，并对所有尚未到期的合约求和；否则月度模拟可能每月重复记入本应年度支付的现金流。
+\end{fixbox}
+
+\begin{fixbox}{C-04　现金和权益的非负性}
+附录写有 $C_t,E_t\ge0$，但正文采用软约束，且式（28）还使用 $(E_T)^+$。复现时不应未经说明就在每期对现金或权益执行 ReLU 截断；应明确破产、流动性不足和软罚项之间的处理顺序。
+\end{fixbox}
+
+\section{PyTorch 复现的最小验收测试}
+\label{sec:tests}
+
+在开始大规模训练前，建议用确定性小样本锁定下列行为。它们比观察总损失是否下降更能发现公式移植错误。
+
+\begin{longtable}{@{}p{36mm}p{106mm}@{}}
+\toprule
+测试对象 & 最低验收条件 \\
+\midrule
+\endfirsthead
+\toprule
+测试对象 & 最低验收条件 \\
+\midrule
+\endhead
+监管罚项 & LCR 下限为 $110\%$ 时：LCR$=110\%$ 罚项为 0，LCR$=100\%$ 罚项大于 0；IRS 上限测试方向相反。 \\
+月度贷款利率 & 年化连续复利 $4.5\%$ 时，月利率严格等于 $\exp(0.045/12)-1$（在数值容差内）。 \\
+负利率现金成本 & 短端利率为负且现金超过免计成本门槛时，成本非负，结算后现金下降。 \\
+债券交易现金流 & 多期限交易现金流等于“数量向量与价格向量的点积”；交易量翻倍时现金流绝对值翻倍。 \\
+PCA 载荷 & 平滑前满足 $VV^\top\approx Q_d\Lambda_dQ_d^\top$；平滑后记录可接受的协方差重构误差。 \\
+时间轴 & $t=0$ 不分红；年度事件只发生在第 12、24、\ldots 月；终值节点只结转、不再产生越过期限的新动作。 \\
+Expected Shortfall & 原始分位数用于筛选原始样本；尾部掩码比例接近设定尾部概率，且上下尾方向正确。 \\
+互换限额 & 若限制累计签订量，使用 $a_s$ 求和；若限制未到期存量，到期后 $h_t$ 应相应下降。 \\
+\bottomrule
+\end{longtable}
+
+\section{建议的实现顺序}
+
+\begin{enumerate}
+  \item 先固定单位体系：金额单位、年化/期化利率、期限单位和复利方式；
+  \item 统一时间轴，并把“市场被动变化”和“司库主动交易”拆成两个可单测的状态转换；
+  \item 修正罚项方向与 PCA 缩放，再实现贷款、现金、债券和互换现金流；
+  \item 用小规模 Monte Carlo 验证每个风险指标，再把它们组合进最终损失函数；
+  \item 最后才训练策略网络，并保存所有建模约定与论文公式之间的映射。
+\end{enumerate}
+
+\begin{summarybox}
+\textbf{复现原则}\quad 对有歧义的地方，不应默默选择一种解释。最稳妥的做法是：把选择写入配置、为两种口径分别保留测试，并在实验报告中注明最终采用的版本。
+\end{summarybox}
+
+\vfill
+\noindent{\small\color{gray}
+本文档用于技术复现与模型风险审阅，不构成投资、监管或法律意见。}
+
+\end{document}
