@@ -89,6 +89,33 @@ uv run deepalm workflow --config configs/quick-skeleton.yaml
 It includes BM^E, BM^C, BM^D, and MM, but remains a bounded no-swap
 development-validation workflow rather than a paper-result reproduction.
 
+### Initial four-policy comparison on the same MacBook
+
+Use the separate four-policy pilot when you need an initial, like-for-like
+comparison of BM^E, BM^C, BM^D, and MM. It keeps the same MPS/`float32`,
+compact-network, 600-second and 12-GiB guards, but performs eight tasks and
+32 updates. It is expected to take roughly 5--7 minutes on the target M5
+MacBook; the guard remains 10 minutes because the result is still a bounded
+technical comparison, not a convergence experiment.
+
+```bash
+uv run deepalm four-policy-pilot --config configs/four-policy-corrected-pilot.yaml
+
+uv run deepalm four-policy-evaluate \
+  --config configs/four-policy-corrected-pilot.yaml \
+  --source-run artifacts/four-policy-corrected-local-validation-pilot
+
+uv run deepalm four-policy-report \
+  --config configs/four-policy-corrected-pilot.yaml \
+  --source-run artifacts/four-policy-corrected-local-validation-pilot \
+  --evaluation-run artifacts/four-policy-corrected-local-validation-pilot-evaluation
+```
+
+The report contains all eight policy/term members on the same locked test
+scenarios. Compare annualized return, aggregate constraint penalty, and equity
+risk as point estimates only. One seed, 64 test paths, and two epochs cannot
+establish that one TreasuryPolicy is economically better.
+
 ## 2. Research path: configure a paper-oriented reproduction
 
 The closest supported configuration vocabulary is:

@@ -65,7 +65,36 @@ class CorrectedPilotReportArtifacts:
 def build_corrected_pilot_report(
     *, pilot_run_directory: Path, evaluation_directory: Path
 ) -> CorrectedPilotReportArtifacts:
-    """Build a report only from complete, identity-linked corrected evidence."""
+    """Build a report only from the complete BM^D/MM pilot evidence."""
+
+    return build_local_validation_pilot_report(
+        pilot_run_directory=pilot_run_directory,
+        evaluation_directory=evaluation_directory,
+        pilot_manifest_key="corrected_local_validation_pilot",
+        evaluation_kind="corrected-local-validation-pilot-evaluation",
+        report_kind="corrected-local-validation-pilot-report",
+        expected_members=tuple(
+            (policy, horizon_years)
+            for policy in ("BM^D", "MM")
+            for horizon_years in (5, 15)
+        ),
+        expected_updates=16,
+        label="Corrected pilot",
+    )
+
+
+def build_local_validation_pilot_report(
+    *,
+    pilot_run_directory: Path,
+    evaluation_directory: Path,
+    pilot_manifest_key: str,
+    evaluation_kind: str,
+    report_kind: str,
+    expected_members: tuple[tuple[str, int], ...],
+    expected_updates: int,
+    label: str,
+) -> CorrectedPilotReportArtifacts:
+    """Build a report only from one complete, identity-linked pilot matrix."""
 
     pilot_manifest_path = pilot_run_directory / "manifest.json"
     evaluation_path = evaluation_directory / "corrected-evaluation.json"
@@ -77,32 +106,27 @@ def build_corrected_pilot_report(
         raise ReportingError(error)
     if error := artifact_semantics_error(evaluation, "evaluation"):
         raise ReportingError(error)
-    pilot = pilot_manifest.get("corrected_local_validation_pilot")
+    pilot = pilot_manifest.get(pilot_manifest_key)
     if (
         pilot_manifest.get("status") != "completed"
         or not isinstance(pilot, dict)
         or pilot.get("status") != "completed"
-        or pilot.get("completed_primary_optimizer_updates") != 16
+        or pilot.get("completed_primary_optimizer_updates") != expected_updates
     ):
-        raise ReportingError("Corrected report requires a completed 16-update pilot")
+        raise ReportingError(f"{label} report requires a completed {expected_updates}-update pilot")
     if (
         evaluation.get("format_version") != 1
-        or evaluation.get("kind") != "corrected-local-validation-pilot-evaluation"
+        or evaluation.get("kind") != evaluation_kind
         or evaluation.get("status") != "completed"
         or evaluation.get("source_run") != str(pilot_run_directory.resolve())
         or evaluation.get("source_manifest_sha256") != _sha256(pilot_manifest_path)
     ):
-        raise ReportingError("Corrected evaluation is not identity-linked to the pilot")
+        raise ReportingError(f"{label} evaluation is not identity-linked to the pilot")
     jobs = pilot.get("completed_training_jobs")
     reports = evaluation.get("reports")
     locked = evaluation.get("locked_evaluation_manifest")
     if not isinstance(jobs, list) or not isinstance(reports, dict):
-        raise ReportingError("Corrected evidence lacks complete member reports")
-    expected_members = tuple(
-        (policy, horizon_years)
-        for policy in ("BM^D", "MM")
-        for horizon_years in (5, 15)
-    )
+        raise ReportingError(f"{label} evidence lacks complete member reports")
     expected_labels = {f"{policy}-{horizon_years}y" for policy, horizon_years in expected_members}
     jobs_by_member = {
         (str(job.get("policy")), job.get("horizon_years")): job
@@ -110,8 +134,8 @@ def build_corrected_pilot_report(
         if isinstance(job, dict) and isinstance(job.get("horizon_years"), int)
     }
     if (
-        len(jobs) != 4
-        or len(jobs_by_member) != 4
+        len(jobs) != len(expected_members)
+        or len(jobs_by_member) != len(expected_members)
         or set(jobs_by_member) != set(expected_members)
         or set(reports) != expected_labels
         or any(
@@ -124,9 +148,10 @@ def build_corrected_pilot_report(
             locked,
             jobs=jobs_by_member,
             shared_identities=pilot.get("shared_identities"),
+            expected_members=expected_members,
         )
     ):
-        raise ReportingError("Corrected evaluation is incomplete or incompatible")
+        raise ReportingError(f"{label} evaluation is incomplete or incompatible")
     members = [
         {
             "policy": policy,
@@ -138,7 +163,7 @@ def build_corrected_pilot_report(
     ]
     report = {
         "format_version": 1,
-        "kind": "corrected-local-validation-pilot-report",
+        "kind": report_kind,
         "status": "completed",
         "artifact_semantics": artifact_semantics("evaluation"),
         "pilot_source": {
@@ -162,7 +187,7 @@ def build_corrected_pilot_report(
             "full paper figures",
         ],
         "disclosure": (
-            "This corrected local-validation report is not convergence evidence, "
+            f"This {label.lower()} report is not convergence evidence, "
             "methodological reproduction, or bank-model approval."
         ),
     }
@@ -174,6 +199,9 @@ def _compatible_corrected_locked_evaluation(
     *,
     jobs: dict[tuple[str, int], dict[str, object]],
     shared_identities: object,
+    expected_members: tuple[tuple[str, int], ...] = (
+        ("BM^D", 5), ("BM^D", 15), ("MM", 5), ("MM", 15)
+    ),
 ) -> bool:
     if artifact_semantics_error(locked, "evaluation"):
         return False
@@ -181,7 +209,7 @@ def _compatible_corrected_locked_evaluation(
         return False
     expected_members = {
         f"{policy}-{horizon_years}y": (policy, horizon_years)
-        for policy, horizon_years in (("BM^D", 5), ("BM^D", 15), ("MM", 5), ("MM", 15))
+        for policy, horizon_years in expected_members
     }
     checkpoints = locked.get("checkpoints")
     if (

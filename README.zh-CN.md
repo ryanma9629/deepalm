@@ -71,6 +71,25 @@ uv run deepalm workflow --config configs/quick-skeleton.yaml
 
 该流程包含 BM^E、BM^C、BM^D 和 MM，但仍是受限的、无互换的 development-validation 流程，不是论文结果复现。
 
+### 同一台 MacBook 上的四策略初步比较
+
+如果需要让 BM^E、BM^C、BM^D、MM 在相同条件下得到一轮初步比较，使用独立的四策略试跑。它保持 MPS/`float32`、compact 网络、600 秒和 12GiB guard 不变，但会运行 8 个任务、共 32 次更新。目标 M5 MacBook 上预计约 5--7 分钟；仍保留 10 分钟上限，因为它只是有界的技术比较，不是收敛实验。
+
+```bash
+uv run deepalm four-policy-pilot --config configs/four-policy-corrected-pilot.yaml
+
+uv run deepalm four-policy-evaluate \
+  --config configs/four-policy-corrected-pilot.yaml \
+  --source-run artifacts/four-policy-corrected-local-validation-pilot
+
+uv run deepalm four-policy-report \
+  --config configs/four-policy-corrected-pilot.yaml \
+  --source-run artifacts/four-policy-corrected-local-validation-pilot \
+  --evaluation-run artifacts/four-policy-corrected-local-validation-pilot-evaluation
+```
+
+报告会在同一批锁定测试情景下列出 8 个“策略 × 期限”成员。年化收益、综合约束惩罚和权益风险只能作为点估计比较；单一随机种子、64 条测试路径和 2 个 epoch 不能证明某个 TreasuryPolicy 在经济上更好。
+
 ## 2. 研究路径：尽可能贴近论文设定
 
 当前配置模型中，最接近论文的组合为：

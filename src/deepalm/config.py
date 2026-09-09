@@ -187,6 +187,16 @@ _RUN_SCALE_PROFILES = {
         "early_stopping_patience": None,
         "minimum_relative_improvement": 0.0,
     },
+    "four_policy_pilot": {
+        "epochs": 2,
+        "training_paths_per_epoch": 16,
+        "selection_paths": 16,
+        "test_paths": 64,
+        "batch_size": 8,
+        "selection_start_epoch": 1,
+        "early_stopping_patience": None,
+        "minimum_relative_improvement": 0.0,
+    },
 }
 
 _ARCHITECTURE_PROFILES = {
@@ -313,7 +323,7 @@ def _resolve_run_scale(raw: object) -> RunScaleConfiguration:
     if values is None:
         raise ConfigurationError(
             "run_scale.profile must be 'local_flow', 'quick', 'paper_scale', "
-            "'corrected_pilot', or 'bank_training'"
+            "'corrected_pilot', 'four_policy_pilot', or 'bank_training'"
         )
     overrides = sorted(set(section) - {"profile"})
     if overrides:
@@ -581,6 +591,9 @@ def _validate_combinations(configuration: ResolvedRunConfiguration) -> None:
     if configuration.run_scale.profile == "corrected_pilot":
         _validate_corrected_pilot(configuration)
         return
+    if configuration.run_scale.profile == "four_policy_pilot":
+        _validate_four_policy_pilot(configuration)
+        return
     if (
         configuration.run_scale.profile == "bank_training"
         and configuration.acceptance.purpose != "bank-training"
@@ -638,6 +651,43 @@ def _validate_corrected_pilot(
     if configuration.reference_bank.sensitivity is not None:
         raise ConfigurationError(
             "corrected_pilot excludes sensitivity retraining"
+        )
+
+
+def _validate_four_policy_pilot(configuration: ResolvedRunConfiguration) -> None:
+    """Lock the compact eight-member local comparison pilot."""
+
+    if configuration.acceptance.purpose != "development-validation":
+        raise ConfigurationError(
+            "four_policy_pilot requires development-validation purpose"
+        )
+    if (
+        configuration.acceptance.required_status
+        != "development-validated"
+    ):
+        raise ConfigurationError(
+            "four_policy_pilot requires development-validated status"
+        )
+    if set(configuration.policy.names) != {"BM^E", "BM^C", "BM^D", "MM"}:
+        raise ConfigurationError(
+            "four_policy_pilot requires BM^E, BM^C, BM^D, and MM"
+        )
+    if set(configuration.experiment.horizons_years) != {5, 15}:
+        raise ConfigurationError(
+            "four_policy_pilot requires both 5- and 15-year horizons"
+        )
+    if configuration.experiment.include_swaps:
+        raise ConfigurationError("four_policy_pilot excludes swaps")
+    if (
+        configuration.optimization.device != "mps"
+        or configuration.optimization.dtype != "float32"
+    ):
+        raise ConfigurationError("four_policy_pilot requires MPS float32")
+    if configuration.architecture.profile != "compact":
+        raise ConfigurationError("four_policy_pilot requires compact architecture")
+    if configuration.reference_bank.sensitivity is not None:
+        raise ConfigurationError(
+            "four_policy_pilot excludes sensitivity retraining"
         )
     if configuration.resources.wall_clock_budget_seconds != 600:
         raise ConfigurationError("corrected_pilot requires a 600-second budget")

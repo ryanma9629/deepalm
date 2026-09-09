@@ -151,6 +151,36 @@ def main(argv: Sequence[str] | None = None) -> int:
     corrected_report_parser.add_argument(
         "--evaluation-run", type=Path, required=True, help="completed corrected evaluation artifact"
     )
+    four_policy_pilot_parser = subparsers.add_parser(
+        "four-policy-pilot",
+        help="run the bounded corrected BM^E/BM^C/BM^D/MM local comparison pilot",
+    )
+    four_policy_pilot_parser.add_argument(
+        "--config", type=Path, required=True, help="YAML four-policy pilot configuration"
+    )
+    four_policy_evaluation_parser = subparsers.add_parser(
+        "four-policy-evaluate",
+        help="evaluate a completed four-policy pilot on locked paths",
+    )
+    four_policy_evaluation_parser.add_argument(
+        "--config", type=Path, required=True, help="YAML four-policy pilot configuration"
+    )
+    four_policy_evaluation_parser.add_argument(
+        "--source-run", type=Path, required=True, help="completed four-policy pilot artifact"
+    )
+    four_policy_report_parser = subparsers.add_parser(
+        "four-policy-report",
+        help="publish an auditable comparison report from four-policy evaluation evidence",
+    )
+    four_policy_report_parser.add_argument(
+        "--config", type=Path, required=True, help="YAML four-policy pilot configuration"
+    )
+    four_policy_report_parser.add_argument(
+        "--source-run", type=Path, required=True, help="completed four-policy pilot artifact"
+    )
+    four_policy_report_parser.add_argument(
+        "--evaluation-run", type=Path, required=True, help="completed four-policy evaluation artifact"
+    )
     arguments = parser.parse_args(argv)
 
     try:
@@ -191,6 +221,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     elif arguments.command == "corrected-report":
         bundle = runner.generate_corrected_pilot_report(
+            configuration,
+            pilot_run_directory=arguments.source_run,
+            evaluation_directory=arguments.evaluation_run,
+        )
+    elif arguments.command == "four-policy-pilot":
+        bundle = runner.run_four_policy_pilot(configuration)
+    elif arguments.command == "four-policy-evaluate":
+        bundle = runner.evaluate_four_policy_pilot(
+            configuration, source_run_directory=arguments.source_run
+        )
+    elif arguments.command == "four-policy-report":
+        bundle = runner.generate_four_policy_pilot_report(
             configuration,
             pilot_run_directory=arguments.source_run,
             evaluation_directory=arguments.evaluation_run,

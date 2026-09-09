@@ -91,6 +91,47 @@ class RunBundle:
     acceptance_evidence: tuple[Path, ...] = ()
 
 
+@dataclass(frozen=True)
+class LocalValidationPilotDefinition:
+    """The fixed member matrix and artifact names for one local pilot."""
+
+    profile: str
+    label: str
+    manifest_key: str
+    evaluation_kind: str
+    report_kind: str
+    report_filename: str
+    policies: tuple[str, ...]
+
+    @property
+    def members(self) -> tuple[tuple[str, int], ...]:
+        return tuple(
+            (policy, horizon_years)
+            for policy in self.policies
+            for horizon_years in (5, 15)
+        )
+
+
+_CORRECTED_PILOT = LocalValidationPilotDefinition(
+    profile="corrected_pilot",
+    label="Corrected pilot",
+    manifest_key="corrected_local_validation_pilot",
+    evaluation_kind="corrected-local-validation-pilot-evaluation",
+    report_kind="corrected-local-validation-pilot-report",
+    report_filename="corrected-pilot-report.json",
+    policies=("BM^D", "MM"),
+)
+_FOUR_POLICY_PILOT = LocalValidationPilotDefinition(
+    profile="four_policy_pilot",
+    label="Four-policy corrected pilot",
+    manifest_key="four_policy_corrected_local_validation_pilot",
+    evaluation_kind="four-policy-corrected-local-validation-pilot-evaluation",
+    report_kind="four-policy-corrected-local-validation-pilot-report",
+    report_filename="four-policy-pilot-report.json",
+    policies=("BM^E", "BM^C", "BM^D", "MM"),
+)
+
+
 class ReproductionRunner:
     """Create an atomic, auditable bundle for one resolved run configuration."""
 
@@ -1317,12 +1358,29 @@ class ReproductionRunner:
     def run_corrected_pilot(
         self, configuration: ResolvedRunConfiguration
     ) -> RunBundle:
-        """Run the four-member corrected local-validation training matrix."""
+        """Run the compact BM^D/MM corrected local-validation pilot."""
+
+        return self._run_local_validation_pilot(configuration, pilot=_CORRECTED_PILOT)
+
+    def run_four_policy_pilot(
+        self, configuration: ResolvedRunConfiguration
+    ) -> RunBundle:
+        """Run the compact eight-member corrected local comparison pilot."""
+
+        return self._run_local_validation_pilot(configuration, pilot=_FOUR_POLICY_PILOT)
+
+    def _run_local_validation_pilot(
+        self,
+        configuration: ResolvedRunConfiguration,
+        *,
+        pilot: LocalValidationPilotDefinition,
+    ) -> RunBundle:
+        """Run one fixed compact pilot matrix and publish it atomically."""
 
         staging_directory: Path | None = None
         staged_configuration: ResolvedRunConfiguration | None = None
         try:
-            _validate_corrected_pilot_configuration(configuration)
+            _validate_local_validation_pilot_configuration(configuration, pilot=pilot)
             output_root = configuration.output.directory
             output_root.mkdir(parents=True, exist_ok=True)
             final_directory = output_root / configuration.output.run_name
@@ -1354,7 +1412,12 @@ class ReproductionRunner:
             from deepalm.baselines import FrozenDateBenchmarkReference
             from deepalm.reference_bank import ReferenceBankProvider
             from deepalm.term_structures import MarketScenarioModel
-            from deepalm.training import BMDateTrainer, MMTrainer
+            from deepalm.training import (
+                BMConstantTrainer,
+                BMDateTrainer,
+                BMETrainer,
+                MMTrainer,
+            )
 
             monitor.check("before-corrected-pilot")
             market_model = MarketScenarioModel()
@@ -1372,6 +1435,24 @@ class ReproductionRunner:
 
             training_results: dict[tuple[str, int], Any] = {}
             for horizon_years in (5, 15):
+                if "BM^E" in pilot.policies:
+                    training_results[("BM^E", horizon_years)] = BMETrainer(
+                        staged_configuration,
+                        snapshot=snapshot,
+                        historical=historical,
+                        calibration=calibration,
+                        market_model=market_model,
+                        resource_monitor=monitor,
+                    ).fit(horizon_years=horizon_years)
+                if "BM^C" in pilot.policies:
+                    training_results[("BM^C", horizon_years)] = BMConstantTrainer(
+                        staged_configuration,
+                        snapshot=snapshot,
+                        historical=historical,
+                        calibration=calibration,
+                        market_model=market_model,
+                        resource_monitor=monitor,
+                    ).fit(horizon_years=horizon_years)
                 benchmark = BMDateTrainer(
                     staged_configuration,
                     snapshot=snapshot,
@@ -1405,18 +1486,19 @@ class ReproductionRunner:
             )
             if (
                 {(job["policy"], job["horizon_years"]) for job in jobs}
-                != {("BM^D", 5), ("BM^D", 15), ("MM", 5), ("MM", 15)}
-                or sum(int(job["optimizer_updates"]) for job in jobs) != 16
+                != set(pilot.members)
+                or sum(int(job["optimizer_updates"]) for job in jobs)
+                != 4 * len(pilot.members)
                 or not all(job["finite_nonzero_optimization_signal"] for job in jobs)
             ):
                 raise OperationalRunError(
-                    "Corrected pilot did not complete its finite four-member matrix"
+                    f"{pilot.label} did not complete its finite member matrix"
                 )
             manifest = _build_manifest(
                 staged_configuration, RunStatus.COMPLETED, AcceptanceStatus.PENDING
             )
             manifest["requested_configuration"] = configuration.to_dict()
-            manifest["corrected_local_validation_pilot"] = {
+            manifest[pilot.manifest_key] = {
                 "status": "completed",
                 "shared_identities": {
                     "reference_bank_content_hash": snapshot.content_hash,
@@ -1425,7 +1507,7 @@ class ReproductionRunner:
                     "seed_registry": configuration.seeds,
                 },
                 "completed_training_jobs": jobs,
-                "completed_primary_optimizer_updates": 16,
+                "completed_primary_optimizer_updates": 4 * len(pilot.members),
                 "resource_measurements": monitor.snapshot().to_dict(),
                 "deferred": [
                     "locked corrected evaluation",
@@ -1434,7 +1516,7 @@ class ReproductionRunner:
                 ],
             }
             _write_json_artifact(staging_directory / "manifest.json", manifest)
-            monitor.check("after-corrected-pilot")
+            monitor.check(f"after-{pilot.profile}")
             os.replace(staging_directory, final_directory)
             return RunBundle(
                 status=RunStatus.COMPLETED,
@@ -1447,15 +1529,16 @@ class ReproductionRunner:
                 ),
             )
         except BudgetExceeded as error:
-            return _corrected_pilot_failure_bundle(
+            return _local_validation_pilot_failure_bundle(
                 configuration,
                 staging_directory=staging_directory,
                 staged_configuration=staged_configuration,
                 error=error,
                 status=RunStatus.INCOMPLETE,
+                pilot=pilot,
             )
         except (OperationalRunError, OSError, RuntimeError, ValueError) as error:
-            return _corrected_pilot_failure_bundle(
+            return _local_validation_pilot_failure_bundle(
                 configuration,
                 staging_directory=staging_directory,
                 staged_configuration=staged_configuration,
@@ -1466,6 +1549,7 @@ class ReproductionRunner:
                     in {"budget_exhausted", "cancelled", "out_of_memory"}
                     else RunStatus.FAILED
                 ),
+                pilot=pilot,
             )
 
     def evaluate_corrected_pilot(
@@ -1474,19 +1558,44 @@ class ReproductionRunner:
         *,
         source_run_directory: Path,
     ) -> RunBundle:
-        """Evaluate one complete corrected pilot on its locked final-test paths."""
+        """Evaluate one complete BM^D/MM pilot on locked final-test paths."""
+
+        return self._evaluate_local_validation_pilot(
+            configuration, source_run_directory=source_run_directory, pilot=_CORRECTED_PILOT
+        )
+
+    def evaluate_four_policy_pilot(
+        self,
+        configuration: ResolvedRunConfiguration,
+        *,
+        source_run_directory: Path,
+    ) -> RunBundle:
+        """Evaluate all eight members of one local comparison pilot."""
+
+        return self._evaluate_local_validation_pilot(
+            configuration, source_run_directory=source_run_directory, pilot=_FOUR_POLICY_PILOT
+        )
+
+    def _evaluate_local_validation_pilot(
+        self,
+        configuration: ResolvedRunConfiguration,
+        *,
+        source_run_directory: Path,
+        pilot: LocalValidationPilotDefinition,
+    ) -> RunBundle:
+        """Evaluate one complete fixed pilot on its locked final-test paths."""
 
         staging_directory: Path | None = None
         source: Path | None = None
         try:
-            _validate_corrected_pilot_configuration(configuration)
+            _validate_local_validation_pilot_configuration(configuration, pilot=pilot)
             source = source_run_directory.resolve()
             manifest = _read_json_artifact(source / "manifest.json")
-            jobs = _completed_corrected_pilot_jobs(source, manifest)
+            jobs = _completed_local_validation_pilot_jobs(source, manifest, pilot=pilot)
             final_directory = source.parent / f"{source.name}-evaluation"
             if final_directory.exists():
                 raise OperationalRunError(
-                    f"Corrected evaluation artifact directory already exists: {final_directory}"
+                    f"{pilot.label} evaluation artifact directory already exists: {final_directory}"
                 )
             staging_directory = Path(
                 tempfile.mkdtemp(prefix=f".{final_directory.name}-", dir=source.parent)
@@ -1501,7 +1610,7 @@ class ReproductionRunner:
                 accelerator_memory_limit_bytes=configuration.resources.accelerator_memory_limit_bytes,
                 device=configuration.optimization.device,
             )
-            monitor.check("before-corrected-evaluation")
+            monitor.check(f"before-{pilot.profile}-evaluation")
             market_model = MarketScenarioModel()
             historical = market_model.load_historical_term_structures(
                 configuration.source_data.snb_csv,
@@ -1527,18 +1636,19 @@ class ReproductionRunner:
                 bootstrap_resamples=100,
                 include_paired_bootstrap=False,
             )
-            _validate_corrected_locked_evaluation(
+            _validate_local_validation_locked_evaluation(
                 evaluation.manifest,
                 jobs=jobs,
-                shared_identities=manifest["corrected_local_validation_pilot"][
+                shared_identities=manifest[pilot.manifest_key][
                     "shared_identities"
                 ],
+                pilot=pilot,
             )
-            monitor.check("after-corrected-evaluation")
+            monitor.check(f"after-{pilot.profile}-evaluation")
 
             evidence = {
                 "format_version": 1,
-                "kind": "corrected-local-validation-pilot-evaluation",
+                "kind": pilot.evaluation_kind,
                 "artifact_semantics": artifact_semantics("evaluation"),
                 "status": "completed",
                 "source_run": str(source),
@@ -1548,7 +1658,7 @@ class ReproductionRunner:
                 "locked_evaluation_manifest": evaluation.manifest,
                 "resource_measurements": monitor.snapshot().to_dict(),
                 "interpretation": (
-                    "Corrected local-validation evidence only; it does not establish "
+                    f"{pilot.label} evidence only; it does not establish "
                     "convergence, methodological reproduction, or bank-model approval."
                 ),
             }
@@ -1572,7 +1682,7 @@ class ReproductionRunner:
                 error,
                 extra_manifest={
                     "artifact_semantics": artifact_semantics("evaluation"),
-                    "corrected_evaluation_source": {"source_run": str(source)}
+                    f"{pilot.profile}_evaluation_source": {"source_run": str(source)}
                     if source is not None
                     else None,
                 },
@@ -1680,17 +1790,56 @@ class ReproductionRunner:
         pilot_run_directory: Path,
         evaluation_directory: Path,
     ) -> RunBundle:
-        """Publish an atomic report from compatible corrected-pilot evidence."""
+        """Publish an atomic report from compatible BM^D/MM evidence."""
+
+        return self._generate_local_validation_pilot_report(
+            configuration,
+            pilot_run_directory=pilot_run_directory,
+            evaluation_directory=evaluation_directory,
+            pilot=_CORRECTED_PILOT,
+        )
+
+    def generate_four_policy_pilot_report(
+        self,
+        configuration: ResolvedRunConfiguration,
+        *,
+        pilot_run_directory: Path,
+        evaluation_directory: Path,
+    ) -> RunBundle:
+        """Publish an atomic report from compatible eight-member evidence."""
+
+        return self._generate_local_validation_pilot_report(
+            configuration,
+            pilot_run_directory=pilot_run_directory,
+            evaluation_directory=evaluation_directory,
+            pilot=_FOUR_POLICY_PILOT,
+        )
+
+    def _generate_local_validation_pilot_report(
+        self,
+        configuration: ResolvedRunConfiguration,
+        *,
+        pilot_run_directory: Path,
+        evaluation_directory: Path,
+        pilot: LocalValidationPilotDefinition,
+    ) -> RunBundle:
+        """Publish an atomic report from one exact local pilot matrix."""
 
         try:
             from deepalm.reporting import (
                 ReportingError,
-                build_corrected_pilot_report,
+                build_local_validation_pilot_report,
             )
 
-            artifacts = build_corrected_pilot_report(
+            artifacts = build_local_validation_pilot_report(
                 pilot_run_directory=pilot_run_directory,
                 evaluation_directory=evaluation_directory,
+                pilot_manifest_key=pilot.manifest_key,
+                evaluation_kind=pilot.evaluation_kind,
+                report_kind=pilot.report_kind,
+                expected_members=pilot.members,
+                expected_updates=4 * len(pilot.members),
+                label=pilot.label,
             )
             report_configuration = replace(
                 configuration,
@@ -1705,7 +1854,7 @@ class ReproductionRunner:
                 RunStatus.COMPLETED,
                 AcceptanceStatus.PENDING,
             )
-            manifest["corrected_pilot_report"] = {
+            manifest[f"{pilot.profile}_report"] = {
                 "kind": artifacts.report["kind"],
                 "pilot_source": artifacts.report["pilot_source"],
                 "evaluation_source": artifacts.report["evaluation_source"],
@@ -1715,7 +1864,7 @@ class ReproductionRunner:
             artifact_directory = _write_bundle_atomically(
                 report_configuration,
                 manifest,
-                extra_artifacts={"corrected-pilot-report.json": artifacts.report},
+                extra_artifacts={pilot.report_filename: artifacts.report},
             )
             return RunBundle(
                 status=RunStatus.COMPLETED,
@@ -1723,7 +1872,7 @@ class ReproductionRunner:
                 artifact_directory=artifact_directory,
                 artifacts=(
                     artifact_directory / "manifest.json",
-                    artifact_directory / "corrected-pilot-report.json",
+                    artifact_directory / pilot.report_filename,
                 ),
             )
         except (ReportingError, OSError, ValueError, KeyError) as error:
@@ -1776,34 +1925,48 @@ def _validate_local_workflow_configuration(
 def _validate_corrected_pilot_configuration(
     configuration: ResolvedRunConfiguration,
 ) -> None:
-    """Defend the compact corrected pilot when callers bypass YAML resolution."""
+    """Backward-compatible validator for the BM^D/MM pilot."""
+
+    _validate_local_validation_pilot_configuration(
+        configuration, pilot=_CORRECTED_PILOT
+    )
+
+
+def _validate_local_validation_pilot_configuration(
+    configuration: ResolvedRunConfiguration,
+    *,
+    pilot: LocalValidationPilotDefinition,
+) -> None:
+    """Defend one fixed compact pilot when callers bypass YAML resolution."""
 
     scale = configuration.run_scale
-    if scale.profile != "corrected_pilot":
-        raise OperationalRunError("Corrected pilot requires corrected_pilot scale")
+    if scale.profile != pilot.profile:
+        raise OperationalRunError(f"{pilot.label} requires {pilot.profile} scale")
     if configuration.acceptance.purpose != "development-validation":
         raise OperationalRunError(
-            "Corrected pilot requires development-validation purpose"
+            f"{pilot.label} requires development-validation purpose"
         )
     if configuration.acceptance.required_status != "development-validated":
         raise OperationalRunError(
-            "Corrected pilot requires development-validated status"
+            f"{pilot.label} requires development-validated status"
         )
-    if set(configuration.policy.names) != {"BM^D", "MM"}:
-        raise OperationalRunError("Corrected pilot requires BM^D and MM exactly once")
+    if set(configuration.policy.names) != set(pilot.policies):
+        raise OperationalRunError(
+            f"{pilot.label} requires {' and '.join(pilot.policies)} exactly once"
+        )
     if set(configuration.experiment.horizons_years) != {5, 15}:
-        raise OperationalRunError("Corrected pilot requires 5- and 15-year horizons")
+        raise OperationalRunError(f"{pilot.label} requires 5- and 15-year horizons")
     if configuration.experiment.include_swaps:
-        raise OperationalRunError("Corrected pilot excludes swaps")
+        raise OperationalRunError(f"{pilot.label} excludes swaps")
     if (
         configuration.optimization.device != "mps"
         or configuration.optimization.dtype != "float32"
     ):
-        raise OperationalRunError("Corrected pilot requires MPS float32")
+        raise OperationalRunError(f"{pilot.label} requires MPS float32")
     if not torch.backends.mps.is_available():
-        raise OperationalRunError("Corrected pilot requires an available MPS runtime")
+        raise OperationalRunError(f"{pilot.label} requires an available MPS runtime")
     if configuration.architecture.profile != "compact":
-        raise OperationalRunError("Corrected pilot requires compact architecture")
+        raise OperationalRunError(f"{pilot.label} requires compact architecture")
     if (
         scale.epochs,
         scale.training_paths_per_epoch,
@@ -1812,18 +1975,18 @@ def _validate_corrected_pilot_configuration(
         scale.batch_size,
     ) != (2, 16, 16, 64, 8):
         raise OperationalRunError(
-            "Corrected pilot scale differs from its locked M5 budget"
+            f"{pilot.label} scale differs from its locked M5 budget"
         )
     if configuration.resources.wall_clock_budget_seconds != 600:
-        raise OperationalRunError("Corrected pilot requires a 600-second total budget")
+        raise OperationalRunError(f"{pilot.label} requires a 600-second total budget")
     limit = 12 * 1024**3
     if (
         configuration.resources.process_rss_limit_bytes != limit
         or configuration.resources.accelerator_memory_limit_bytes != limit
     ):
-        raise OperationalRunError("Corrected pilot requires 12 GiB RSS and MPS guards")
+        raise OperationalRunError(f"{pilot.label} requires 12 GiB RSS and MPS guards")
     if configuration.reference_bank.sensitivity is not None:
-        raise OperationalRunError("Corrected pilot excludes sensitivity retraining")
+        raise OperationalRunError(f"{pilot.label} excludes sensitivity retraining")
 
 
 def _corrected_pilot_training_jobs(
@@ -1861,27 +2024,42 @@ def _corrected_pilot_training_jobs(
 def _completed_corrected_pilot_jobs(
     source: Path, manifest: Mapping[str, object]
 ) -> list[dict[str, object]]:
-    """Return the complete, content-verified corrected pilot matrix only."""
+    """Return the complete BM^D/MM pilot matrix for legacy callers."""
+
+    return _completed_local_validation_pilot_jobs(
+        source, manifest, pilot=_CORRECTED_PILOT
+    )
+
+
+def _completed_local_validation_pilot_jobs(
+    source: Path,
+    manifest: Mapping[str, object],
+    *,
+    pilot: LocalValidationPilotDefinition,
+) -> list[dict[str, object]]:
+    """Return only a complete, content-verified fixed pilot matrix."""
 
     if error := artifact_semantics_error(manifest.get("training_identity"), "training"):
         raise OperationalRunError(error)
-    pilot = manifest.get("corrected_local_validation_pilot")
+    pilot_manifest = manifest.get(pilot.manifest_key)
     if (
         manifest.get("status") != RunStatus.COMPLETED.value
-        or not isinstance(pilot, Mapping)
-        or pilot.get("status") != "completed"
-        or pilot.get("completed_primary_optimizer_updates") != 16
+        or not isinstance(pilot_manifest, Mapping)
+        or pilot_manifest.get("status") != "completed"
+        or pilot_manifest.get("completed_primary_optimizer_updates")
+        != 4 * len(pilot.members)
     ):
         raise OperationalRunError(
-            "Corrected evaluation requires a completed 16-update pilot"
+            f"{pilot.label} evaluation requires a completed "
+            f"{4 * len(pilot.members)}-update pilot"
         )
-    raw_jobs = pilot.get("completed_training_jobs")
-    if not isinstance(raw_jobs, list) or len(raw_jobs) != 4:
-        raise OperationalRunError("Corrected pilot lacks its complete four-job matrix")
+    raw_jobs = pilot_manifest.get("completed_training_jobs")
+    if not isinstance(raw_jobs, list) or len(raw_jobs) != len(pilot.members):
+        raise OperationalRunError(f"{pilot.label} lacks its complete job matrix")
     jobs: list[dict[str, object]] = []
     for job in raw_jobs:
         if not isinstance(job, dict):
-            raise OperationalRunError("Corrected pilot job record is invalid")
+            raise OperationalRunError(f"{pilot.label} job record is invalid")
         try:
             policy = str(job["policy"])
             horizon = int(job["horizon_years"])
@@ -1889,11 +2067,10 @@ def _completed_corrected_pilot_jobs(
             expected_hash = str(job["checkpoint_sha256"])
         except (KeyError, TypeError, ValueError) as error:
             raise OperationalRunError(
-                "Corrected pilot job is missing identity fields"
+                f"{pilot.label} job is missing identity fields"
             ) from error
         if (
-            policy not in {"BM^D", "MM"}
-            or horizon not in {5, 15}
+            (policy, horizon) not in set(pilot.members)
             or int(job.get("optimizer_updates", -1)) != 4
             or job.get("selected_epoch") != 2
             or job.get("finite_nonzero_optimization_signal") is not True
@@ -1901,12 +2078,12 @@ def _completed_corrected_pilot_jobs(
             or _sha256(checkpoint) != expected_hash
         ):
             raise OperationalRunError(
-                "Corrected pilot checkpoint is incomplete or incompatible"
+                f"{pilot.label} checkpoint is incomplete or incompatible"
             )
         jobs.append(job)
-    expected_members = {("BM^D", 5), ("BM^D", 15), ("MM", 5), ("MM", 15)}
+    expected_members = set(pilot.members)
     if {(str(job["policy"]), int(job["horizon_years"])) for job in jobs} != expected_members:
-        raise OperationalRunError("Corrected pilot matrix is incomplete")
+        raise OperationalRunError(f"{pilot.label} matrix is incomplete")
     for horizon_years in (5, 15):
         bmd = _corrected_pilot_job(jobs, policy="BM^D", horizon_years=horizon_years)
         mm = _corrected_pilot_job(jobs, policy="MM", horizon_years=horizon_years)
@@ -1914,7 +2091,7 @@ def _completed_corrected_pilot_jobs(
             "baseline_reference_identity"
         ) != bmd.get("baseline_reference_identity"):
             raise OperationalRunError(
-                f"Corrected MM {horizon_years}y lacks its matching frozen BM^D baseline"
+                f"{pilot.label} MM {horizon_years}y lacks its matching frozen BM^D baseline"
             )
     return jobs
 
@@ -1934,15 +2111,32 @@ def _validate_corrected_locked_evaluation(
     jobs: list[dict[str, object]],
     shared_identities: object,
 ) -> None:
-    """Fail closed unless locked evidence is exact for this corrected matrix."""
+    """Fail closed unless locked evidence is exact for the BM^D/MM matrix."""
+
+    _validate_local_validation_locked_evaluation(
+        locked,
+        jobs=jobs,
+        shared_identities=shared_identities,
+        pilot=_CORRECTED_PILOT,
+    )
+
+
+def _validate_local_validation_locked_evaluation(
+    locked: object,
+    *,
+    jobs: list[dict[str, object]],
+    shared_identities: object,
+    pilot: LocalValidationPilotDefinition,
+) -> None:
+    """Fail closed unless locked evidence is exact for one fixed matrix."""
 
     if error := artifact_semantics_error(locked, "evaluation"):
         raise OperationalRunError(error)
     if not isinstance(locked, Mapping) or not isinstance(shared_identities, Mapping):
-        raise OperationalRunError("Corrected locked evaluation has invalid identity data")
+        raise OperationalRunError(f"{pilot.label} locked evaluation has invalid identity data")
     expected_members = {
         f"{policy}-{horizon_years}y": (policy, horizon_years)
-        for policy, horizon_years in (("BM^D", 5), ("BM^D", 15), ("MM", 5), ("MM", 15))
+        for policy, horizon_years in pilot.members
     }
     checkpoints = locked.get("checkpoints")
     expected_data = {
@@ -1959,7 +2153,7 @@ def _validate_corrected_locked_evaluation(
         or set(checkpoints) != set(expected_members)
         or locked.get("data_identities") != expected_data
     ):
-        raise OperationalRunError("Corrected locked evaluation is incompatible")
+        raise OperationalRunError(f"{pilot.label} locked evaluation is incompatible")
     for label, (policy, horizon_years) in expected_members.items():
         checkpoint = checkpoints[label]
         job = _corrected_pilot_job(
@@ -1971,7 +2165,7 @@ def _validate_corrected_locked_evaluation(
             or checkpoint.get("horizon_years") != horizon_years
             or checkpoint.get("sha256") != job.get("checkpoint_sha256")
         ):
-            raise OperationalRunError("Corrected locked checkpoint is incompatible")
+            raise OperationalRunError(f"{pilot.label} locked checkpoint is incompatible")
 
 
 def _workflow_stage_artifacts(stage: str) -> tuple[str, ...]:
@@ -2781,15 +2975,16 @@ def _workflow_failure_bundle(
     )
 
 
-def _corrected_pilot_failure_bundle(
+def _local_validation_pilot_failure_bundle(
     configuration: ResolvedRunConfiguration,
     *,
     staging_directory: Path | None,
     staged_configuration: ResolvedRunConfiguration | None,
     error: Exception,
     status: RunStatus,
+    pilot: LocalValidationPilotDefinition,
 ) -> RunBundle:
-    """Preserve failed corrected-pilot diagnostics without promoting evidence."""
+    """Preserve failed local-pilot diagnostics without promoting evidence."""
 
     if staging_directory is None or not staging_directory.is_dir():
         failure_directory = _write_failure_bundle(configuration, error, status=status)
@@ -2803,7 +2998,7 @@ def _corrected_pilot_failure_bundle(
                 "requested_configuration": configuration.to_dict(),
                 "error": str(error),
                 "diagnostics": _diagnostics_for(error),
-                "corrected_local_validation_pilot": {
+                pilot.manifest_key: {
                     "status": "incomplete"
                     if status is RunStatus.INCOMPLETE
                     else "failed",
