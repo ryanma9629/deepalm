@@ -76,6 +76,8 @@ def test_corrected_evaluation_and_report_accept_only_one_complete_current_bundle
     configuration.source_data.paper_pdf.write_bytes(b"paper")
     source = tmp_path / "completed-pilot"
     manifest = _write_completed_corrected_pilot(source)
+    manifest["resolved_configuration"] = configuration.to_dict()
+    (source / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
     class FakeMonitor:
         def __init__(self, **_: object) -> None:
@@ -155,7 +157,7 @@ def test_corrected_evaluation_and_report_accept_only_one_complete_current_bundle
     monkeypatch.setattr("deepalm.evaluation.LockedEvaluator", FakeLockedEvaluator)
 
     runner = ReproductionRunner()
-    evaluation = runner.evaluate_corrected_pilot(
+    evaluation = runner.evaluate_configured_workflow(
         configuration, source_run_directory=source
     )
 
@@ -174,10 +176,12 @@ def test_corrected_evaluation_and_report_accept_only_one_complete_current_bundle
         "MM-15y",
     }
     assert "paired_intervals" not in evidence
+    assert evidence["workflow_contract"] == "local-two-policy-validation"
+    assert evidence["execution_profile"] == "m5-compact"
 
-    report = runner.generate_corrected_pilot_report(
+    report = runner.report_configured_workflow(
         configuration,
-        pilot_run_directory=source,
+        source_run_directories=(source,),
         evaluation_directory=evaluation.artifact_directory,
     )
 
@@ -208,6 +212,36 @@ def test_corrected_evaluation_and_report_accept_only_one_complete_current_bundle
             pilot_run_directory=source,
             evaluation_directory=evaluation.artifact_directory,
         )
+
+
+def test_generic_two_policy_actions_reject_a_source_from_another_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("torch.backends.mps.is_available", lambda: True)
+    configuration = resolve_configuration(_corrected_pilot_data(tmp_path))
+    source = tmp_path / "incompatible-source"
+    manifest = _write_completed_corrected_pilot(source)
+    resolved = configuration.to_dict()
+    resolved["workflow_contract"] = {"name": "local-four-policy-comparison"}
+    manifest["resolved_configuration"] = resolved
+    (source / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    runner = ReproductionRunner()
+    evaluation = runner.evaluate_configured_workflow(
+        configuration, source_run_directory=source
+    )
+    report = runner.report_configured_workflow(
+        configuration,
+        source_run_directories=(source,),
+        evaluation_directory=tmp_path / "untrusted-evaluation",
+    )
+
+    assert evaluation.status is RunStatus.FAILED
+    assert evaluation.error is not None
+    assert "Workflow Contract" in evaluation.error
+    assert report.status is RunStatus.FAILED
+    assert report.error is not None
+    assert "Workflow Contract" in report.error
 
 
 @pytest.mark.parametrize("command", ["paired-evaluate", "paired-report"])

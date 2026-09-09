@@ -91,6 +91,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         required=True,
         help="completed source run directory; repeat to combine independent evidence",
     )
+    report_parser.add_argument(
+        "--evaluation-run",
+        type=Path,
+        help="completed locked evaluation artifact required by the selected contract",
+    )
     train_parser = subparsers.add_parser(
         "train", help="run the local workflow or validate a compatible trained workflow"
     )
@@ -207,9 +212,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             policy_name=arguments.policy,
         )
     elif arguments.command == "report":
-        bundle = runner.generate_compact_report(
+        bundle = runner.report_configured_workflow(
             configuration,
             source_run_directories=tuple(arguments.source_run),
+            evaluation_directory=arguments.evaluation_run,
         )
     elif arguments.command == "workflow":
         bundle = runner.run_local_workflow(configuration)
@@ -247,14 +253,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             if arguments.source_run is not None
             else runner.run_local_workflow(configuration)
         )
-    elif arguments.command in {"resume", "evaluate", "accept"}:
+    elif arguments.command == "evaluate":
+        bundle = runner.evaluate_configured_workflow(
+            configuration, source_run_directory=arguments.source_run
+        )
+    elif arguments.command in {"resume", "accept"}:
         bundle = runner.reuse_completed_workflow_stage(
             configuration,
             source_run_directory=arguments.source_run,
             stage=arguments.command,
         )
     else:
-        bundle = runner.run(configuration)
+        bundle = runner.run_configured_workflow(configuration)
     if bundle.status is RunStatus.COMPLETED:
         assert bundle.artifact_directory is not None
         print(bundle.artifact_directory)

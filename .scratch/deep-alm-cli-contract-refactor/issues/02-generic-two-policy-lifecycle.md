@@ -4,8 +4,12 @@
 
 **Blocked by:** 01: Workflow Contract 与通用计划.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] 通用生命周期发布四个预期 policy-horizon 成员、16 个更新和 MM 的同期限冻结基准引用。
-- [ ] 通用评估与报告拒绝合同、市场、Reference Bank 或锁定情景身份不兼容的证据。
-- [ ] 行为级 CLI 测试覆盖完整两策略生命周期而不依赖内部 Runner 路由。
+- [x] 通用生命周期发布四个预期 policy-horizon 成员、16 个更新和 MM 的同期限冻结基准引用。
+- [x] 通用评估与报告拒绝合同、市场、Reference Bank 或锁定情景身份不兼容的证据。
+- [x] 行为级 CLI 测试覆盖完整两策略生命周期而不依赖内部 Runner 路由。
+
+## Answer
+
+`run`、`evaluate` 与 `report` 现按 local-two-policy-validation Workflow Contract 分派到完整 BM^D/MM 生命周期。通用评估和报告在消费来源前验证 Workflow Contract、Execution Profile、市场/Reference Bank 配置、策略矩阵、期限、种子及 artifact semantics；锁定评估证据也记录合同与资源档身份。现有场景化命令保留至收缩 ticket。

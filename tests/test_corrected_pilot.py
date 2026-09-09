@@ -202,7 +202,7 @@ def test_corrected_pilot_publishes_four_updated_members_and_matching_baselines(
     monkeypatch.setattr(training_module, "BMDateTrainer", FakeBMDateTrainer)
     monkeypatch.setattr(training_module, "MMTrainer", FakeMMTrainer)
 
-    bundle = ReproductionRunner().run_corrected_pilot(configuration)
+    bundle = ReproductionRunner().run_configured_workflow(configuration)
 
     assert bundle.status is RunStatus.COMPLETED
     assert bundle.acceptance_status is AcceptanceStatus.PENDING

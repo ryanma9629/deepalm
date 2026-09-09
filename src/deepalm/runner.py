@@ -166,6 +166,89 @@ class ReproductionRunner:
             artifacts=(artifact_directory / "manifest.json",),
         )
 
+    def run_configured_workflow(
+        self, configuration: ResolvedRunConfiguration
+    ) -> RunBundle:
+        """Run the workflow selected by the configuration's Workflow Contract."""
+
+        if configuration.workflow_contract.name == "local-two-policy-validation":
+            return self._run_local_validation_pilot(
+                configuration, pilot=_CORRECTED_PILOT
+            )
+        return self.run(configuration)
+
+    def evaluate_configured_workflow(
+        self,
+        configuration: ResolvedRunConfiguration,
+        *,
+        source_run_directory: Path,
+    ) -> RunBundle:
+        """Evaluate a completed workflow only through its declared contract."""
+
+        if configuration.workflow_contract.name == "local-two-policy-validation":
+            try:
+                _validate_local_validation_source_contract(
+                    configuration,
+                    source_run_directory=source_run_directory,
+                    pilot=_CORRECTED_PILOT,
+                )
+            except (OperationalRunError, OSError, ValueError) as error:
+                return _configured_workflow_failure_bundle(configuration, error)
+            return self._evaluate_local_validation_pilot(
+                configuration,
+                source_run_directory=source_run_directory,
+                pilot=_CORRECTED_PILOT,
+            )
+        return self.reuse_completed_workflow_stage(
+            configuration, source_run_directory=source_run_directory, stage="evaluate"
+        )
+
+    def report_configured_workflow(
+        self,
+        configuration: ResolvedRunConfiguration,
+        *,
+        source_run_directories: tuple[Path, ...],
+        evaluation_directory: Path | None,
+    ) -> RunBundle:
+        """Report completed evidence only through its declared contract."""
+
+        if configuration.workflow_contract.name == "local-two-policy-validation":
+            if len(source_run_directories) != 1 or evaluation_directory is None:
+                return _configured_workflow_failure_bundle(
+                    configuration,
+                    OperationalRunError(
+                        "local-two-policy-validation report requires one source run "
+                        "and one evaluation run"
+                    ),
+                )
+            try:
+                _validate_local_validation_source_contract(
+                    configuration,
+                    source_run_directory=source_run_directories[0],
+                    pilot=_CORRECTED_PILOT,
+                )
+                _validate_local_validation_evaluation_contract(
+                    configuration, evaluation_directory=evaluation_directory
+                )
+            except (OperationalRunError, OSError, ValueError) as error:
+                return _configured_workflow_failure_bundle(configuration, error)
+            return self._generate_local_validation_pilot_report(
+                configuration,
+                pilot_run_directory=source_run_directories[0],
+                evaluation_directory=evaluation_directory,
+                pilot=_CORRECTED_PILOT,
+            )
+        if evaluation_directory is not None:
+            return _configured_workflow_failure_bundle(
+                configuration,
+                OperationalRunError(
+                    "This Workflow Contract does not accept an evaluation run for report"
+                ),
+            )
+        return self.generate_compact_report(
+            configuration, source_run_directories=source_run_directories
+        )
+
     def reuse_completed_workflow_stage(
         self,
         configuration: ResolvedRunConfiguration,
@@ -1654,6 +1737,8 @@ class ReproductionRunner:
                 "source_run": str(source),
                 "source_manifest_sha256": _sha256(source / "manifest.json"),
                 "source_git_revision": manifest["git_revision"],
+                "workflow_contract": configuration.workflow_contract.name,
+                "execution_profile": configuration.execution_profile.name,
                 "reports": evaluation.reports,
                 "locked_evaluation_manifest": evaluation.manifest,
                 "resource_measurements": monitor.snapshot().to_dict(),
@@ -1987,6 +2072,92 @@ def _validate_local_validation_pilot_configuration(
         raise OperationalRunError(f"{pilot.label} requires 12 GiB RSS and MPS guards")
     if configuration.reference_bank.sensitivity is not None:
         raise OperationalRunError(f"{pilot.label} excludes sensitivity retraining")
+
+
+def _validate_local_validation_source_contract(
+    configuration: ResolvedRunConfiguration,
+    *,
+    source_run_directory: Path,
+    pilot: LocalValidationPilotDefinition,
+) -> None:
+    """Reject source evidence outside the configuration's exact pilot contract."""
+
+    source = source_run_directory.resolve()
+    manifest = _read_json_artifact(source / "manifest.json")
+    if error := artifact_semantics_error(manifest.get("training_identity"), "training"):
+        raise OperationalRunError(error)
+    resolved = manifest.get("resolved_configuration")
+    if not isinstance(resolved, Mapping):
+        raise OperationalRunError("Source run lacks resolved Workflow Contract evidence")
+    source_identity = _local_validation_contract_identity(resolved)
+    expected_identity = _local_validation_contract_identity(configuration.to_dict())
+    if source_identity != expected_identity:
+        raise OperationalRunError(
+            f"{pilot.label} source differs in Workflow Contract, market, "
+            "Reference Bank, policy matrix, horizon, seed, or execution profile"
+        )
+
+
+def _validate_local_validation_evaluation_contract(
+    configuration: ResolvedRunConfiguration,
+    *,
+    evaluation_directory: Path,
+) -> None:
+    """Reject evaluation evidence produced for another declared contract."""
+
+    evidence = _read_json_artifact(
+        evaluation_directory.resolve() / "corrected-evaluation.json"
+    )
+    if error := artifact_semantics_error(evidence, "evaluation"):
+        raise OperationalRunError(error)
+    if (
+        evidence.get("workflow_contract") != configuration.workflow_contract.name
+        or evidence.get("execution_profile") != configuration.execution_profile.name
+    ):
+        raise OperationalRunError(
+            "Evaluation evidence differs in Workflow Contract or Execution Profile"
+        )
+
+
+def _local_validation_contract_identity(
+    resolved_configuration: Mapping[str, object],
+) -> dict[str, object]:
+    """Select every identity field that makes local pilot evidence comparable."""
+
+    return {
+        name: resolved_configuration.get(name)
+        for name in (
+            "workflow_contract",
+            "execution_profile",
+            "source_data",
+            "run_scale",
+            "architecture",
+            "reference_bank",
+            "experiment",
+            "policy",
+            "optimization",
+            "resources",
+            "seeds",
+            "acceptance",
+        )
+    }
+
+
+def _configured_workflow_failure_bundle(
+    configuration: ResolvedRunConfiguration, error: Exception
+) -> RunBundle:
+    """Write a non-promotable bundle when generic contract dispatch rejects evidence."""
+
+    failure_directory = _write_failure_bundle(configuration, error)
+    return RunBundle(
+        status=RunStatus.FAILED,
+        acceptance_status=AcceptanceStatus.PENDING,
+        artifact_directory=failure_directory,
+        error=str(error),
+        artifacts=(failure_directory / "manifest.json",)
+        if failure_directory is not None
+        else (),
+    )
 
 
 def _corrected_pilot_training_jobs(
