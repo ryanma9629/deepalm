@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,11 +12,10 @@ import pytest
 import yaml
 from test_run_skeleton import configuration_data
 
-from deepalm import reporting
 from deepalm.cli import main
 from deepalm.config import resolve_configuration
 from deepalm.planning import build_execution_plan
-from deepalm.runner import AcceptanceStatus, ReproductionRunner, RunBundle, RunStatus
+from deepalm.runner import ReproductionRunner, RunBundle, RunStatus
 from deepalm.semantics import artifact_semantics
 
 
@@ -77,15 +77,20 @@ def test_four_policy_pilot_command_dispatches_to_runner(
 
 
 def test_four_policy_pilot_publishes_all_members_before_locked_evaluation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     import deepalm.reference_bank as reference_bank_module
     import deepalm.training as training_module
 
     monkeypatch.setattr("torch.backends.mps.is_available", lambda: True)
-    configuration = resolve_configuration(_four_policy_pilot_data(tmp_path))
+    data = _four_policy_pilot_data(tmp_path)
+    configuration = resolve_configuration(data)
     configuration.source_data.snb_csv.write_text("snb", encoding="utf-8")
     configuration.source_data.paper_pdf.write_bytes(b"paper")
+    config_path = tmp_path / "local-four-policy.yaml"
+    config_path.write_text(yaml.safe_dump(data), encoding="utf-8")
     order: list[tuple[str, int]] = []
     mm_baselines: dict[int, Path] = {}
 
@@ -168,15 +173,22 @@ def test_four_policy_pilot_publishes_all_members_before_locked_evaluation(
     monkeypatch.setattr(training_module, "BMDateTrainer", trainer("BM^D"))
     monkeypatch.setattr(training_module, "MMTrainer", trainer("MM"))
 
-    bundle = ReproductionRunner().run_four_policy_pilot(configuration)
+    assert main(["plan", "--config", str(config_path)]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["workflow_contract"] == "local-four-policy-comparison"
+    assert plan["execution_profile"] == "m5-compact"
+    assert plan["primary_training_jobs"] == 8
+    assert plan["primary_optimizer_updates"] == 32
 
-    assert bundle.status is RunStatus.COMPLETED
-    assert bundle.acceptance_status is AcceptanceStatus.PENDING
+    assert main(["run", "--config", str(config_path)]) == 0
+    bundle_directory = Path(capsys.readouterr().out.strip())
+
+    assert bundle_directory.is_dir()
     assert order == [
         ("BM^E", 5), ("BM^C", 5), ("BM^D", 5), ("MM", 5),
         ("BM^E", 15), ("BM^C", 15), ("BM^D", 15), ("MM", 15),
     ]
-    manifest = json.loads((bundle.artifact_directory / "manifest.json").read_text())
+    manifest = json.loads((bundle_directory / "manifest.json").read_text())
     pilot = manifest["four_policy_corrected_local_validation_pilot"]
     assert pilot["completed_primary_optimizer_updates"] == 32
     jobs = {
@@ -197,11 +209,24 @@ def test_four_policy_pilot_publishes_all_members_before_locked_evaluation(
 
 def test_four_policy_report_requires_all_eight_identity_linked_members(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
+    import deepalm.reference_bank as reference_bank_module
+    import deepalm.term_structures as term_structures_module
+
+    # The evaluator imports the shared bank provider at module load time.
+    importlib.import_module("deepalm.evaluation")
+    monkeypatch.setattr("torch.backends.mps.is_available", lambda: True)
+    configuration = resolve_configuration(_four_policy_pilot_data(tmp_path))
+    configuration.source_data.snb_csv.write_text("snb", encoding="utf-8")
+    configuration.source_data.paper_pdf.write_bytes(b"paper")
+    config_path = tmp_path / "local-four-policy.yaml"
+    config_path.write_text(
+        yaml.safe_dump(_four_policy_pilot_data(tmp_path)), encoding="utf-8"
+    )
     source = tmp_path / "pilot"
-    evaluation = tmp_path / "evaluation"
     source.mkdir()
-    evaluation.mkdir()
     members = tuple(
         (policy, horizon)
         for policy in ("BM^E", "BM^C", "BM^D", "MM")
@@ -254,38 +279,119 @@ def test_four_policy_report_requires_all_eight_identity_linked_members(
             "shared_identities": {**shared, "seed_registry": {}},
             "completed_training_jobs": jobs,
         },
+        "resolved_configuration": configuration.to_dict(),
     }
     manifest_path = source / "manifest.json"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    evidence = {
-        "format_version": 1,
-        "kind": "four-policy-corrected-local-validation-pilot-evaluation",
-        "artifact_semantics": artifact_semantics("evaluation"),
-        "status": "completed",
-        "source_run": str(source.resolve()),
-        "source_manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
-        "reports": reports,
-        "locked_evaluation_manifest": {
-            "kind": "locked-final-test-evaluation",
-            "artifact_semantics": artifact_semantics("evaluation"),
-            "data_identities": shared,
-            "checkpoints": checkpoints,
-        },
-    }
-    (evaluation / "corrected-evaluation.json").write_text(
-        json.dumps(evidence), encoding="utf-8"
+    (source / "reference-bank.json").write_text("reference-bank", encoding="utf-8")
+
+    class FakeMonitor:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def check(self, _: str) -> None:
+            pass
+
+        def snapshot(self) -> object:
+            return SimpleNamespace(to_dict=lambda: {"elapsed_seconds": 1.0})
+
+    class FakeMarketScenarioModel:
+        def load_historical_term_structures(self, *_: object, **__: object) -> object:
+            return SimpleNamespace(source_hash="market")
+
+        def calibrate_hjm_pca(self, _: object) -> object:
+            return SimpleNamespace(calibration_identity="calibration")
+
+    class FakeReferenceBankProvider:
+        def load(self, _: Path) -> object:
+            return SimpleNamespace(content_hash="bank")
+
+    class FakeLockedEvaluator:
+        def __init__(self, *_: object, **__: object) -> None:
+            pass
+
+        def evaluate(self, received: tuple[object, ...], **_: object) -> object:
+            assert {checkpoint.label for checkpoint in received} == set(checkpoints)
+            return SimpleNamespace(
+                reports=reports,
+                manifest={
+                    "kind": "locked-final-test-evaluation",
+                    "artifact_semantics": artifact_semantics("evaluation"),
+                    "data_identities": shared,
+                    "checkpoints": checkpoints,
+                },
+            )
+
+    monkeypatch.setattr("deepalm.runner.ResourceMonitor", FakeMonitor)
+    monkeypatch.setattr(
+        term_structures_module, "MarketScenarioModel", FakeMarketScenarioModel
+    )
+    monkeypatch.setattr(
+        reference_bank_module, "ReferenceBankProvider", FakeReferenceBankProvider
+    )
+    monkeypatch.setattr("deepalm.evaluation.LockedEvaluator", FakeLockedEvaluator)
+
+    assert main(
+        ["evaluate", "--config", str(config_path), "--source-run", str(source)]
+    ) == 0
+    evaluation_directory = Path(capsys.readouterr().out.strip())
+    evidence = json.loads(
+        (evaluation_directory / "corrected-evaluation.json").read_text()
+    )
+    assert evidence["workflow_contract"] == "local-four-policy-comparison"
+    assert evidence["execution_profile"] == "m5-compact"
+    assert evidence["locked_evaluation_manifest"]["data_identities"] == shared
+
+    assert main(
+        [
+            "report",
+            "--config",
+            str(config_path),
+            "--source-run",
+            str(source),
+            "--evaluation-run",
+            str(evaluation_directory),
+        ]
+    ) == 0
+    report_directory = Path(capsys.readouterr().out.strip())
+    report_data = json.loads(
+        (report_directory / "four-policy-pilot-report.json").read_text()
+    )
+    assert report_data["kind"] == "four-policy-corrected-local-validation-pilot-report"
+    assert len(report_data["members"]) == 8
+    assert report_data["locked_evaluation_identity"]["data_identities"] == shared
+    assert "not convergence evidence" in report_data["disclosure"]
+
+
+def test_generic_four_policy_report_names_its_contract_on_source_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Contract diagnostics must not fall back to the two-policy pilot label."""
+
+    monkeypatch.setattr("torch.backends.mps.is_available", lambda: True)
+    configuration = resolve_configuration(_four_policy_pilot_data(tmp_path))
+    source = tmp_path / "two-policy-source"
+    source.mkdir()
+    incompatible = configuration.to_dict()
+    incompatible["workflow_contract"] = {"name": "local-two-policy-validation"}
+    (source / "manifest.json").write_text(
+        json.dumps(
+            {
+                "training_identity": {
+                    "artifact_semantics": artifact_semantics("training")
+                },
+                "resolved_configuration": incompatible,
+            }
+        ),
+        encoding="utf-8",
     )
 
-    report = reporting.build_local_validation_pilot_report(
-        pilot_run_directory=source,
-        evaluation_directory=evaluation,
-        pilot_manifest_key="four_policy_corrected_local_validation_pilot",
-        evaluation_kind="four-policy-corrected-local-validation-pilot-evaluation",
-        report_kind="four-policy-corrected-local-validation-pilot-report",
-        expected_members=members,
-        expected_updates=32,
-        label="Four-policy corrected pilot",
+    report = ReproductionRunner().report_configured_workflow(
+        configuration,
+        source_run_directories=(source,),
+        evaluation_directory=tmp_path / "evaluation",
     )
 
-    assert report.report["kind"] == "four-policy-corrected-local-validation-pilot-report"
-    assert len(report.report["members"]) == 8
+    assert report.status is RunStatus.FAILED
+    assert report.error is not None
+    assert "Four-policy corrected pilot source differs" in report.error

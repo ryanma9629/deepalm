@@ -95,6 +95,7 @@ class RunBundle:
 class LocalValidationPilotDefinition:
     """The fixed member matrix and artifact names for one local pilot."""
 
+    workflow_contract: str
     profile: str
     label: str
     manifest_key: str
@@ -113,6 +114,7 @@ class LocalValidationPilotDefinition:
 
 
 _CORRECTED_PILOT = LocalValidationPilotDefinition(
+    workflow_contract="local-two-policy-validation",
     profile="corrected_pilot",
     label="Corrected pilot",
     manifest_key="corrected_local_validation_pilot",
@@ -122,6 +124,7 @@ _CORRECTED_PILOT = LocalValidationPilotDefinition(
     policies=("BM^D", "MM"),
 )
 _FOUR_POLICY_PILOT = LocalValidationPilotDefinition(
+    workflow_contract="local-four-policy-comparison",
     profile="four_policy_pilot",
     label="Four-policy corrected pilot",
     manifest_key="four_policy_corrected_local_validation_pilot",
@@ -130,6 +133,10 @@ _FOUR_POLICY_PILOT = LocalValidationPilotDefinition(
     report_filename="four-policy-pilot-report.json",
     policies=("BM^E", "BM^C", "BM^D", "MM"),
 )
+
+_LOCAL_VALIDATION_PILOTS = {
+    pilot.workflow_contract: pilot for pilot in (_CORRECTED_PILOT, _FOUR_POLICY_PILOT)
+}
 
 
 class ReproductionRunner:
@@ -171,9 +178,9 @@ class ReproductionRunner:
     ) -> RunBundle:
         """Run the workflow selected by the configuration's Workflow Contract."""
 
-        if configuration.workflow_contract.name == "local-two-policy-validation":
+        if pilot := _LOCAL_VALIDATION_PILOTS.get(configuration.workflow_contract.name):
             return self._run_local_validation_pilot(
-                configuration, pilot=_CORRECTED_PILOT
+                configuration, pilot=pilot
             )
         return self.run(configuration)
 
@@ -185,19 +192,19 @@ class ReproductionRunner:
     ) -> RunBundle:
         """Evaluate a completed workflow only through its declared contract."""
 
-        if configuration.workflow_contract.name == "local-two-policy-validation":
+        if pilot := _LOCAL_VALIDATION_PILOTS.get(configuration.workflow_contract.name):
             try:
                 _validate_local_validation_source_contract(
                     configuration,
                     source_run_directory=source_run_directory,
-                    pilot=_CORRECTED_PILOT,
+                    pilot=pilot,
                 )
             except (OperationalRunError, OSError, ValueError) as error:
                 return _configured_workflow_failure_bundle(configuration, error)
             return self._evaluate_local_validation_pilot(
                 configuration,
                 source_run_directory=source_run_directory,
-                pilot=_CORRECTED_PILOT,
+                pilot=pilot,
             )
         return self.reuse_completed_workflow_stage(
             configuration, source_run_directory=source_run_directory, stage="evaluate"
@@ -212,12 +219,12 @@ class ReproductionRunner:
     ) -> RunBundle:
         """Report completed evidence only through its declared contract."""
 
-        if configuration.workflow_contract.name == "local-two-policy-validation":
+        if pilot := _LOCAL_VALIDATION_PILOTS.get(configuration.workflow_contract.name):
             if len(source_run_directories) != 1 or evaluation_directory is None:
                 return _configured_workflow_failure_bundle(
                     configuration,
                     OperationalRunError(
-                        "local-two-policy-validation report requires one source run "
+                        f"{pilot.workflow_contract} report requires one source run "
                         "and one evaluation run"
                     ),
                 )
@@ -225,7 +232,7 @@ class ReproductionRunner:
                 _validate_local_validation_source_contract(
                     configuration,
                     source_run_directory=source_run_directories[0],
-                    pilot=_CORRECTED_PILOT,
+                    pilot=pilot,
                 )
                 _validate_local_validation_evaluation_contract(
                     configuration, evaluation_directory=evaluation_directory
@@ -236,7 +243,7 @@ class ReproductionRunner:
                 configuration,
                 pilot_run_directory=source_run_directories[0],
                 evaluation_directory=evaluation_directory,
-                pilot=_CORRECTED_PILOT,
+                pilot=pilot,
             )
         if evaluation_directory is not None:
             return _configured_workflow_failure_bundle(
