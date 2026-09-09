@@ -1,0 +1,133 @@
+\documentclass[UTF8,10pt,a4paper,fontset=fandol]{ctexart}
+
+\usepackage[a4paper,margin=20mm,headheight=15pt,footskip=16mm]{geometry}
+\usepackage{booktabs,tabularx,longtable,array}
+\usepackage{xcolor}
+\usepackage[most]{tcolorbox}
+\usepackage{enumitem}
+\usepackage{fancyhdr,lastpage}
+\usepackage{hyperref}
+
+\definecolor{navy}{HTML}{16324F}
+\definecolor{blue}{HTML}{2E6F9E}
+\definecolor{lightblue}{HTML}{EAF3F8}
+\definecolor{warm}{HTML}{F7F3EA}
+\definecolor{gray}{HTML}{5B6570}
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue,
+  pdftitle={Deep ALM 实现版勘误与差异说明},pdfauthor={Deep ALM project}}
+\setCJKmainfont{LXGW Neo XiHei}
+\setCJKsansfont{LXGW Neo XiHei}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{gray}\textit{Deep Treasury Management for Banks} · Implementation Errata}
+\fancyhead[R]{\small\color{gray}2026-09-09}
+\fancyfoot[L]{\small\color{gray}已修正金融语义 · 技术流程验证}
+\fancyfoot[R]{\small\color{gray}\thepage/\pageref{LastPage}}
+\renewcommand{\headrulewidth}{0.4pt}
+\setlength{\parindent}{2em}
+\setlength{\parskip}{0.3em}
+\renewcommand{\arraystretch}{1.25}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+\newcolumntype{P}[1]{>{\raggedright\arraybackslash}p{#1}}
+\ctexset{section={format=\Large\bfseries\color{navy},beforeskip=1.1em,afterskip=.5em},
+  subsection={format=\large\bfseries\color{blue},beforeskip=.8em,afterskip=.35em}}
+\newtcolorbox{summarybox}{enhanced,breakable,colback=lightblue,colframe=blue,
+  boxrule=.7pt,arc=2mm,left=3mm,right=3mm,top=2mm,bottom=2mm}
+\newtcolorbox{warningbox}{enhanced,breakable,colback=warm,colframe=navy,
+  boxrule=.7pt,arc=2mm,left=3mm,right=3mm,top=2mm,bottom=2mm}
+
+\begin{document}
+\begin{titlepage}
+  \thispagestyle{empty}
+  \vspace*{20mm}
+  {\color{blue}\rule{26mm}{2.2pt}}\\[9mm]
+  {\fontsize{24}{30}\selectfont\bfseries\color{navy}Deep ALM\\[2mm]实现版勘误与差异说明\par}
+  \vspace{6mm}
+  {\large\color{gray}从论文与原始 errata 到当前可执行实现的边界说明}
+  \vfill
+  \begin{summarybox}
+  \textbf{当前运行时身份}\quad \texttt{corrected-financial-semantics-v1}\\
+  \textbf{本文回答}\quad 哪些地方是论文错误、哪些是早期代码错误、哪些是有意简化、哪些只是本机资源限制。\\
+  \textbf{不作的主张}\quad 不主张收敛、论文数值复现、银行模型批准或生产就绪。
+  \end{summarybox}
+  \vfill
+  {\color{gray}\small 版本：1.1\quad｜\quad 日期：2026-09-09}
+\end{titlepage}
+
+\section{定位与阅读方式}
+本文件是项目唯一的“论文--实现”映射说明。它把论文、原始勘误审阅
+（\texttt{docs/errata.pdf}）和实现审计，映射到唯一可执行的\textbf{已修正金融语义}
+（Corrected Financial Semantics）。论文和 errata 是方法与审计来源，不构成可执行的替代公式 profile。
+
+\begin{warningbox}
+“差异”必须分清来源：\textbf{原文错误}按 errata 修正；\textbf{实现错误}是论文意图正确而早期代码未落实；\textbf{明确简化}是有意模型边界；\textbf{能力缺口}是本机资源限制下尚未交付的正式训练能力。后两类不是“发现论文错了”。
+\end{warningbox}
+
+\section{原文错误：按 errata 采用的修正}
+\begin{longtable}{@{}P{14mm}P{72mm}P{70mm}@{}}
+\toprule
+Errata & 当前采用行为 & 影响边界与验证 \\
+\midrule
+\endfirsthead
+\toprule Errata & 当前采用行为 & 影响边界与验证 \\ \midrule
+\endhead
+E-01 & 连续复利贴现不额外乘未定义步长。 & 债券、贷款、负债估值；\texttt{tests/test\_term\_structures.py}。 \\
+E-02 & 年化贷款票息先转换为月利率，再进入月度结算。 & 既有和新发贷款；\texttt{tests/test\_loans.py}。 \\
+E-03 & 负利率现金收费为非负成本，并从现金中扣除。 & 月度现金；\texttt{tests/test\_deposits.py}。 \\
+E-04 & 各期限 Treasury 交易按“名义数量乘当期价值”入账。 & 交易现金和守恒；\texttt{tests/test\_runoff.py}。 \\
+E-05 & 下限约束惩罚 shortfall，IRS 上限惩罚 excess。 & 目标函数和梯度；\texttt{tests/test\_constraints.py}。 \\
+E-06 / E-09 & 初始时点不触发年度事件；5/15 年使用 60/180 个决策区间与 61/181 个状态。 & 分红、EYR、终值、时间网格。 \\
+E-07 & 当前无 swaps 或 \texttt{MM\textasciicircum S}；不把未实现说成已修正。 & 配置拒绝 swaps。 \\
+E-08 & PCA 载荷为特征值平方根乘特征向量。 & HJM-PCA；\texttt{tests/test\_term\_structures.py}。 \\
+E-10 & 原尺度选择尾部，再减全样本均值。 & 风险项和锁定评估；\texttt{tests/test\_evaluation.py}。 \\
+\bottomrule
+\end{longtable}
+
+\section{原文正确、但早期代码实现错误：已采纳修正}
+\begin{longtable}{@{}P{26mm}P{66mm}P{64mm}@{}}
+\toprule
+审计项 & 当前采用行为 & 含义 \\
+\midrule
+\endfirsthead
+\toprule 审计项 & 当前采用行为 & 含义 \\ \midrule
+\endhead
+C-1 / C-2，Eq. 45 & MM 在动作前读取当期经济比率；非 IRS 约束特征按阈值平移，顺序固定。 & 对论文观测定义的代码落实。 \\
+C-3，Eq. 43 & BM\textasciicircum D 总动作量为当前最先到期 bucket 加学习到的日期调整。 & 当前到期量不是初始 bucket。 \\
+C-5 / C-6，Eq. 11c & 存款保留 1/2/12/120 月类别；前两个窗口使用估值日前对应日期的六个月收益率。 & 不重复使用初始 \texttt{Y0}。 \\
+C-7 / C-8 / R-1 & 股息收益率只平均非终端年度；报告保留原始违规值，并显式标记不可用总体矩。 & 对定义与可审计报告的落实。 \\
+R-2 & 覆盖清单逐项标出 Table 1--5、Figure 3--17 的主题和缺失证据。 & 防止把未生成内容说成已复现。 \\
+\bottomrule
+\end{longtable}
+
+\section{原文未错、但项目有意不同：明确简化}
+\begin{itemize}[leftmargin=2em]
+  \item \textbf{新发贷款定价}：所有期限共用当前六个月收益率，而不是使用每期限收益率曲线；接入真实产品曲线后必须重新训练。
+  \item \textbf{Reference Bank}：使用透明 CHF 参考银行，替代不可获得的论文私有初始资产负债表、成本与合同数据。
+  \item \textbf{产品范围}：当前只覆盖无互换 BM\textasciicircum D/MM、5 年和 15 年；swaps 与 MM\textasciicircum S 单独立项。
+  \item \textbf{交付目标}：本机只验证训练、冻结 baseline、锁定评估和报告闭环，不以经济优越性调参。
+\end{itemize}
+
+\section{原文未错、但尚未做到：能力缺口}
+\begin{longtable}{@{}P{29mm}P{64mm}P{63mm}@{}}
+\toprule
+本机参数或缺口 & 当前状态 & 银行 GPU 阶段 \\
+\midrule
+\endfirsthead
+\toprule 本机参数或缺口 & 当前状态 & 银行 GPU 阶段 \\ \midrule
+\endhead
+设备与数值类型 & Apple MPS、\texttt{float32}。 & 先完成 Linux CUDA 单 GPU commissioning。 \\
+网络 & compact \texttt{64/64/32/32}。 & 用目标宽度重新初始化；不同宽度不得复用 compact 权重。 \\
+训练规模 & 2 epochs；每 epoch 16 条训练、16 条 selection；batch 8；64 条 test。 & 用真实数据和资源重新设定路径、epoch、seed、超参数。 \\
+优化矩阵 & BM\textasciicircum D/MM 乘以 5/15 年，4 任务、16 次更新。 & 多 seed、敏感性和经济验收另设协议。 \\
+资源 guard & 600 秒；RSS 与 MPS 各 12 GiB。 & 依据 profiling 显式扩大资源，不改变金融公式。 \\
+部署 & 未实现 multi-GPU/DDP、混合精度调优、集群调度或监管验收。 & 银行侧环境、数据治理和模型风险流程分别验收。 \\
+\bottomrule
+\end{longtable}
+
+本机实际验收中，pilot 用时 151.30 秒，峰值 RSS 约 0.96 GiB、MPS 已分配内存约 0.22 GiB；锁定评估用时 21.04 秒。这证明资源预算内链路可运行，不提供经济收敛证据。
+
+\section{保持不变的东西与可扩展的东西}
+银行环境扩大实验时，不能改变金融修正、\texttt{corrected-financial-semantics-v1} 身份、同期限冻结 BM\textasciicircum D baseline 依赖，以及数据/市场身份校验。可以在重新训练后扩大网络、epoch、路径、batch size、随机种子、真实 Reference Bank 输入、CUDA 或多 GPU 执行和超参数搜索。扩大后必须重新生成 checkpoint、冻结 baseline、锁定评估和报告。
+
+\end{document}
