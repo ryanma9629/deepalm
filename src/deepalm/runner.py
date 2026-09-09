@@ -43,7 +43,6 @@ class AcceptanceStatus(StrEnum):
     PENDING = "pending"
     PASSED = "passed"
     FAILED = "failed"
-    PAIRED_CONVENTION_RESEARCH_PILOT = "paired-convention-research-pilot"
 
 
 class OperationalRunError(RuntimeError):
@@ -1469,43 +1468,32 @@ class ReproductionRunner:
                 ),
             )
 
-    def evaluate_paired_convention_pilot(
+    def evaluate_corrected_pilot(
         self,
         configuration: ResolvedRunConfiguration,
         *,
         source_run_directory: Path,
     ) -> RunBundle:
-        """Evaluate a completed paired pilot once per frozen checkpoint.
-
-        This deliberately writes a sibling evidence bundle instead of mutating
-        the training bundle.  Paper and Corrected have their own locked market
-        construction, but retain matching split/epoch/path identities.
-        """
+        """Evaluate one complete corrected pilot on its locked final-test paths."""
 
         staging_directory: Path | None = None
         source: Path | None = None
         try:
-            _validate_paired_pilot_configuration(configuration)
+            _validate_corrected_pilot_configuration(configuration)
             source = source_run_directory.resolve()
             manifest = _read_json_artifact(source / "manifest.json")
-            jobs = _completed_paired_pilot_jobs(source, manifest)
+            jobs = _completed_corrected_pilot_jobs(source, manifest)
             final_directory = source.parent / f"{source.name}-evaluation"
             if final_directory.exists():
                 raise OperationalRunError(
-                    f"Paired evaluation artifact directory already exists: {final_directory}"
+                    f"Corrected evaluation artifact directory already exists: {final_directory}"
                 )
             staging_directory = Path(
                 tempfile.mkdtemp(prefix=f".{final_directory.name}-", dir=source.parent)
             )
-            from deepalm.baselines import FrozenDateBenchmarkReference
-            from deepalm.evaluation import (
-                LockedEvaluator,
-                PolicyCheckpoint,
-                _report_outcome,
-            )
+            from deepalm.evaluation import LockedEvaluator, PolicyCheckpoint
             from deepalm.reference_bank import ReferenceBankProvider
             from deepalm.term_structures import MarketScenarioModel
-            from deepalm.training import MMTrainer
 
             monitor = ResourceMonitor(
                 wall_clock_budget_seconds=configuration.resources.wall_clock_budget_seconds,
@@ -1513,7 +1501,7 @@ class ReproductionRunner:
                 accelerator_memory_limit_bytes=configuration.resources.accelerator_memory_limit_bytes,
                 device=configuration.optimization.device,
             )
-            monitor.check("before-paired-evaluation")
+            monitor.check("before-corrected-evaluation")
             market_model = MarketScenarioModel()
             historical = market_model.load_historical_term_structures(
                 configuration.source_data.snb_csv,
@@ -1521,105 +1509,56 @@ class ReproductionRunner:
             )
             calibration = market_model.calibrate_hjm_pca(historical)
             snapshot = ReferenceBankProvider().load(source / "reference-bank.json")
-            convention_configurations = _paired_pilot_convention_configurations(
-                configuration, staging_directory=staging_directory
+            checkpoints = tuple(
+                PolicyCheckpoint(
+                    f"{job['policy']}-{job['horizon_years']}y",
+                    source / str(job["checkpoint"]),
+                )
+                for job in jobs
             )
-            evaluations: dict[str, Any] = {}
-            for label, convention_configuration in convention_configurations.items():
-                checkpoints = tuple(
-                    PolicyCheckpoint(
-                        f"{job['policy']}-{job['horizon_years']}y",
-                        source / str(job["checkpoint"]),
-                    )
-                    for job in jobs[label]
-                )
-                evaluations[label] = LockedEvaluator(
-                    convention_configuration,
-                    snapshot=snapshot,
-                    historical=historical,
-                    calibration=calibration,
-                    market_model=market_model,
-                ).evaluate(checkpoints, bootstrap_resamples=100)
-                monitor.check(f"after-{label}-paired-evaluation")
-
-            comparisons = _paired_convention_intervals(
-                evaluations["paper"].path_metrics,
-                evaluations["corrected"].path_metrics,
-                seed=configuration.seeds["bootstrap"],
+            evaluation = LockedEvaluator(
+                configuration,
+                snapshot=snapshot,
+                historical=historical,
+                calibration=calibration,
+                market_model=market_model,
+            ).evaluate(
+                checkpoints,
+                bootstrap_resamples=100,
+                include_paired_bootstrap=False,
             )
-            truncations: dict[str, dict[str, object]] = {}
-            for label, convention_configuration in convention_configurations.items():
-                mm_job = _paired_job(jobs[label], policy="MM", horizon_years=15)
-                bmd_job = _paired_job(jobs[label], policy="BM^D", horizon_years=15)
-                baseline = FrozenDateBenchmarkReference.load(
-                    source / str(bmd_job["baseline_reference"])
-                )
-                trainer = MMTrainer(
-                    convention_configuration,
-                    snapshot=snapshot,
-                    historical=historical,
-                    calibration=calibration,
-                    baseline_reference=baseline,
-                    market_model=market_model,
-                    resource_monitor=monitor,
-                )
-                fifteen_market = evaluations[label].markets[15]
-                result = trainer.evaluate_five_year_truncation(
-                    checkpoint_path=source / str(mm_job["checkpoint"]),
-                    market=fifteen_market,
-                )
-                report, _ = _report_outcome(result.outcome, horizon_years=5)
-                truncations[label] = {
-                    "artifact_semantics": artifact_semantics("evaluation"),
-                    "status": "available",
-                    "convention": label,
-                    "source_checkpoint": str(mm_job["checkpoint"]),
-                    "source_checkpoint_sha256": str(mm_job["checkpoint_sha256"]),
-                    "source_horizon_years": 15,
-                    "evaluation_horizon_years": 5,
-                    "time_feature_horizon_years": 15,
-                    "action_steps": int(result.outcome.treasury_actions.shape[1]),
-                    "optimizer_updates": result.optimizer_updates,
-                    "report": report,
-                }
-                monitor.check(f"after-{label}-mm-truncation")
+            _validate_corrected_locked_evaluation(
+                evaluation.manifest,
+                jobs=jobs,
+                shared_identities=manifest["corrected_local_validation_pilot"][
+                    "shared_identities"
+                ],
+            )
+            monitor.check("after-corrected-evaluation")
 
             evidence = {
                 "format_version": 1,
-                "kind": "paired-convention-pilot-evaluation",
+                "kind": "corrected-local-validation-pilot-evaluation",
                 "artifact_semantics": artifact_semantics("evaluation"),
                 "status": "completed",
-                "label": "paired-convention-research-pilot",
                 "source_run": str(source),
                 "source_manifest_sha256": _sha256(source / "manifest.json"),
                 "source_git_revision": manifest["git_revision"],
-                "financial_semantics_version": manifest.get(
-                    "financial_semantics_version"
-                ),
-                "reports": {
-                    label: evaluation.reports
-                    for label, evaluation in evaluations.items()
-                },
-                "locked_evaluation_manifests": {
-                    label: evaluation.manifest
-                    for label, evaluation in evaluations.items()
-                },
-                "paired_intervals": comparisons,
-                "mm_fifteen_year_truncation": truncations,
+                "reports": evaluation.reports,
+                "locked_evaluation_manifest": evaluation.manifest,
                 "resource_measurements": monitor.snapshot().to_dict(),
                 "interpretation": (
-                    "Descriptive paired-convention evidence only; it does not establish "
-                    "economic superiority, convergence, methodological reproduction, "
-                    "or bank-model approval."
+                    "Corrected local-validation evidence only; it does not establish "
+                    "convergence, methodological reproduction, or bank-model approval."
                 ),
             }
-            _write_json_artifact(staging_directory / "paired-evaluation.json", evidence)
+            _write_json_artifact(staging_directory / "corrected-evaluation.json", evidence)
             os.replace(staging_directory, final_directory)
             return RunBundle(
                 status=RunStatus.COMPLETED,
-                acceptance_status=AcceptanceStatus.PAIRED_CONVENTION_RESEARCH_PILOT,
+                acceptance_status=AcceptanceStatus.PENDING,
                 artifact_directory=final_directory,
-                artifacts=(final_directory / "paired-evaluation.json",),
+                artifacts=(final_directory / "corrected-evaluation.json",),
             )
         except (
             OperationalRunError,
@@ -1628,20 +1567,24 @@ class ReproductionRunner:
             ValueError,
             KeyError,
         ) as error:
-            return _paired_pilot_failure_bundle(
+            failure_directory = _write_failure_bundle(
                 configuration,
-                staging_directory=staging_directory,
-                staged_configuration=configuration,
-                error=error,
+                error,
+                extra_manifest={
+                    "artifact_semantics": artifact_semantics("evaluation"),
+                    "corrected_evaluation_source": {"source_run": str(source)}
+                    if source is not None
+                    else None,
+                },
+            )
+            return RunBundle(
                 status=RunStatus.FAILED,
-                evaluation_source=(
-                    {
-                        "source_run": str(source),
-                        "source_manifest_sha256": _sha256(source / "manifest.json"),
-                    }
-                    if source is not None and (source / "manifest.json").is_file()
-                    else None
-                ),
+                acceptance_status=AcceptanceStatus.PENDING,
+                artifact_directory=failure_directory,
+                error=str(error),
+                artifacts=(failure_directory / "manifest.json",)
+                if failure_directory is not None
+                else (),
             )
 
     def generate_compact_report(
@@ -1730,22 +1673,22 @@ class ReproductionRunner:
                 else (),
             )
 
-    def generate_paired_pilot_report(
+    def generate_corrected_pilot_report(
         self,
         configuration: ResolvedRunConfiguration,
         *,
         pilot_run_directory: Path,
         evaluation_directory: Path,
     ) -> RunBundle:
-        """Publish a separate, atomic report from completed paired-pilot evidence."""
+        """Publish an atomic report from compatible corrected-pilot evidence."""
 
         try:
             from deepalm.reporting import (
                 ReportingError,
-                build_paired_convention_pilot_report,
+                build_corrected_pilot_report,
             )
 
-            artifacts = build_paired_convention_pilot_report(
+            artifacts = build_corrected_pilot_report(
                 pilot_run_directory=pilot_run_directory,
                 evaluation_directory=evaluation_directory,
             )
@@ -1757,37 +1700,30 @@ class ReproductionRunner:
                     run_name=f"{pilot_run_directory.name}-report",
                 ),
             )
-            report_status = (
-                RunStatus.COMPLETED
-                if artifacts.report["status"] == "completed"
-                else RunStatus.INCOMPLETE
-            )
             manifest = _build_manifest(
                 report_configuration,
-                report_status,
-                AcceptanceStatus.PAIRED_CONVENTION_RESEARCH_PILOT,
+                RunStatus.COMPLETED,
+                AcceptanceStatus.PENDING,
             )
-            manifest["paired_pilot_report"] = {
+            manifest["corrected_pilot_report"] = {
                 "kind": artifacts.report["kind"],
-                "label": artifacts.report["label"],
                 "pilot_source": artifacts.report["pilot_source"],
                 "evaluation_source": artifacts.report["evaluation_source"],
-                "conventions": list(artifacts.report["conventions"]),
-                "paired_interval_count": len(artifacts.report["paired_intervals"]),
+                "members": artifacts.report["members"],
                 "deferred_work": artifacts.report["deferred_work"],
             }
             artifact_directory = _write_bundle_atomically(
                 report_configuration,
                 manifest,
-                extra_artifacts={"paired-pilot-report.json": artifacts.report},
+                extra_artifacts={"corrected-pilot-report.json": artifacts.report},
             )
             return RunBundle(
-                status=report_status,
-                acceptance_status=AcceptanceStatus.PAIRED_CONVENTION_RESEARCH_PILOT,
+                status=RunStatus.COMPLETED,
+                acceptance_status=AcceptanceStatus.PENDING,
                 artifact_directory=artifact_directory,
                 artifacts=(
                     artifact_directory / "manifest.json",
-                    artifact_directory / "paired-pilot-report.json",
+                    artifact_directory / "corrected-pilot-report.json",
                 ),
             )
         except (ReportingError, OSError, ValueError, KeyError) as error:
@@ -1835,58 +1771,6 @@ def _validate_local_workflow_configuration(
         raise OperationalRunError(
             "Local workflow requires two epochs to exercise epoch-boundary recovery"
         )
-
-
-def _validate_paired_pilot_configuration(
-    configuration: ResolvedRunConfiguration,
-) -> None:
-    """Defend the opt-in pilot contract for callers that bypass YAML resolution."""
-
-    scale = configuration.run_scale
-    if scale.profile != "paired_convention_pilot":
-        raise OperationalRunError("Paired pilot requires paired_convention_pilot scale")
-    if configuration.acceptance.purpose != "research":
-        raise OperationalRunError("Paired pilot requires research purpose")
-    if (
-        configuration.acceptance.required_status
-        != AcceptanceStatus.PAIRED_CONVENTION_RESEARCH_PILOT.value
-    ):
-        raise OperationalRunError("Paired pilot requires its research-pilot label")
-    if set(configuration.policy.names) != {"BM^D", "MM"}:
-        raise OperationalRunError("Paired pilot requires BM^D and MM exactly once")
-    if set(configuration.experiment.horizons_years) != {5, 15}:
-        raise OperationalRunError("Paired pilot requires 5- and 15-year horizons")
-    if configuration.experiment.include_swaps:
-        raise OperationalRunError("Paired pilot excludes swaps")
-    if (
-        configuration.optimization.device != "mps"
-        or configuration.optimization.dtype != "float32"
-    ):
-        raise OperationalRunError("Paired pilot requires MPS float32")
-    if not torch.backends.mps.is_available():
-        raise OperationalRunError("Paired pilot requires an available MPS runtime")
-    if configuration.architecture.profile != "compact":
-        raise OperationalRunError("Paired pilot requires compact architecture")
-    if (
-        scale.epochs,
-        scale.training_paths_per_epoch,
-        scale.selection_paths,
-        scale.test_paths,
-        scale.batch_size,
-    ) != (2, 16, 16, 64, 8):
-        raise OperationalRunError(
-            "Paired pilot scale differs from its locked M5 budget"
-        )
-    if configuration.resources.wall_clock_budget_seconds != 600:
-        raise OperationalRunError("Paired pilot requires a 600-second total budget")
-    limit = 12 * 1024**3
-    if (
-        configuration.resources.process_rss_limit_bytes != limit
-        or configuration.resources.accelerator_memory_limit_bytes != limit
-    ):
-        raise OperationalRunError("Paired pilot requires 12 GiB RSS and MPS guards")
-    if configuration.reference_bank.sensitivity is not None:
-        raise OperationalRunError("Paired pilot excludes sensitivity retraining")
 
 
 def _validate_corrected_pilot_configuration(
@@ -1942,23 +1826,6 @@ def _validate_corrected_pilot_configuration(
         raise OperationalRunError("Corrected pilot excludes sensitivity retraining")
 
 
-def _paired_pilot_convention_configurations(
-    configuration: ResolvedRunConfiguration, *, staging_directory: Path
-) -> dict[str, ResolvedRunConfiguration]:
-    """Derive isolated historical labels without selecting a formula."""
-    return {
-        label: replace(
-            configuration,
-            output=replace(
-                configuration.output,
-                directory=staging_directory,
-                run_name=label,
-            ),
-        )
-        for label in ("corrected", "paper")
-    }
-
-
 def _corrected_pilot_training_jobs(
     results: Mapping[tuple[str, int], Any], *, artifact_root: Path
 ) -> list[dict[str, object]]:
@@ -1991,129 +1858,120 @@ def _corrected_pilot_training_jobs(
     ]
 
 
-def _completed_paired_pilot_jobs(
+def _completed_corrected_pilot_jobs(
     source: Path, manifest: Mapping[str, object]
-) -> dict[str, list[dict[str, object]]]:
-    """Return only identity-checked, complete convention-local pilot jobs."""
+) -> list[dict[str, object]]:
+    """Return the complete, content-verified corrected pilot matrix only."""
 
     if error := artifact_semantics_error(manifest.get("training_identity"), "training"):
         raise OperationalRunError(error)
-    pilot = manifest.get("paired_convention_pilot")
+    pilot = manifest.get("corrected_local_validation_pilot")
     if (
         manifest.get("status") != RunStatus.COMPLETED.value
         or not isinstance(pilot, Mapping)
         or pilot.get("status") != "completed"
-        or pilot.get("label") != AcceptanceStatus.PAIRED_CONVENTION_RESEARCH_PILOT.value
-        or pilot.get("completed_primary_optimizer_updates") != 32
+        or pilot.get("completed_primary_optimizer_updates") != 16
     ):
         raise OperationalRunError(
-            "Paired evaluation requires a completed 32-update pilot"
+            "Corrected evaluation requires a completed 16-update pilot"
         )
     raw_jobs = pilot.get("completed_training_jobs")
-    if not isinstance(raw_jobs, list) or len(raw_jobs) != 8:
-        raise OperationalRunError("Paired pilot lacks its complete eight-job matrix")
-    grouped: dict[str, list[dict[str, object]]] = {"paper": [], "corrected": []}
+    if not isinstance(raw_jobs, list) or len(raw_jobs) != 4:
+        raise OperationalRunError("Corrected pilot lacks its complete four-job matrix")
+    jobs: list[dict[str, object]] = []
     for job in raw_jobs:
         if not isinstance(job, dict):
-            raise OperationalRunError("Paired pilot job record is invalid")
+            raise OperationalRunError("Corrected pilot job record is invalid")
         try:
-            label = str(job["convention"])
             policy = str(job["policy"])
             horizon = int(job["horizon_years"])
             checkpoint = source / str(job["checkpoint"])
             expected_hash = str(job["checkpoint_sha256"])
         except (KeyError, TypeError, ValueError) as error:
             raise OperationalRunError(
-                "Paired pilot job is missing identity fields"
+                "Corrected pilot job is missing identity fields"
             ) from error
         if (
-            label not in grouped
-            or policy not in {"BM^D", "MM"}
+            policy not in {"BM^D", "MM"}
             or horizon not in {5, 15}
             or int(job.get("optimizer_updates", -1)) != 4
             or job.get("selected_epoch") != 2
-            or job.get("finite_clipped_gradients") is not True
+            or job.get("finite_nonzero_optimization_signal") is not True
             or not checkpoint.is_file()
             or _sha256(checkpoint) != expected_hash
         ):
             raise OperationalRunError(
-                "Paired pilot checkpoint is incomplete or incompatible"
+                "Corrected pilot checkpoint is incomplete or incompatible"
             )
-        grouped[label].append(job)
-    for label, jobs in grouped.items():
-        if len(jobs) != 4 or {
-            (str(job["policy"]), int(job["horizon_years"])) for job in jobs
-        } != {("BM^D", 5), ("BM^D", 15), ("MM", 5), ("MM", 15)}:
-            raise OperationalRunError(f"Paired pilot {label} matrix is incomplete")
-        for horizon in (5, 15):
-            bmd = _paired_job(jobs, policy="BM^D", horizon_years=horizon)
-            mm = _paired_job(jobs, policy="MM", horizon_years=horizon)
-            if mm.get("baseline_reference") != bmd.get("baseline_reference") or mm.get(
-                "baseline_reference_identity"
-            ) != bmd.get("baseline_reference_identity"):
-                raise OperationalRunError(
-                    f"Paired pilot {label} MM {horizon}y lacks its matching frozen BM^D baseline"
-                )
-    return grouped
+        jobs.append(job)
+    expected_members = {("BM^D", 5), ("BM^D", 15), ("MM", 5), ("MM", 15)}
+    if {(str(job["policy"]), int(job["horizon_years"])) for job in jobs} != expected_members:
+        raise OperationalRunError("Corrected pilot matrix is incomplete")
+    for horizon_years in (5, 15):
+        bmd = _corrected_pilot_job(jobs, policy="BM^D", horizon_years=horizon_years)
+        mm = _corrected_pilot_job(jobs, policy="MM", horizon_years=horizon_years)
+        if mm.get("baseline_reference") != bmd.get("baseline_reference") or mm.get(
+            "baseline_reference_identity"
+        ) != bmd.get("baseline_reference_identity"):
+            raise OperationalRunError(
+                f"Corrected MM {horizon_years}y lacks its matching frozen BM^D baseline"
+            )
+    return jobs
 
 
-def _paired_job(
+def _corrected_pilot_job(
     jobs: list[dict[str, object]], *, policy: str, horizon_years: int
 ) -> dict[str, object]:
     for job in jobs:
         if job["policy"] == policy and job["horizon_years"] == horizon_years:
             return job
-    raise OperationalRunError(f"Paired pilot lacks {policy} {horizon_years}y")
+    raise OperationalRunError(f"Corrected pilot lacks {policy} {horizon_years}y")
 
 
-def _paired_convention_intervals(
-    paper: Mapping[str, Mapping[str, torch.Tensor]],
-    corrected: Mapping[str, Mapping[str, torch.Tensor]],
+def _validate_corrected_locked_evaluation(
+    locked: object,
     *,
-    seed: int,
-) -> list[dict[str, object]]:
-    """Bootstrap Paper minus Corrected only on matching finite locked paths."""
+    jobs: list[dict[str, object]],
+    shared_identities: object,
+) -> None:
+    """Fail closed unless locked evidence is exact for this corrected matrix."""
 
-    from deepalm.evaluation import paired_bootstrap
-
-    intervals: list[dict[str, object]] = []
-    metrics = ("equity_ratio", "annualized_return", "total_loss", "penalty")
-    for label in sorted(set(paper) | set(corrected)):
-        for metric in metrics:
-            left = paper.get(label, {}).get(metric)
-            right = corrected.get(label, {}).get(metric)
-            record: dict[str, object] = {
-                "paper_label": label,
-                "corrected_label": label,
-                "metric": metric,
-                "paths": 0,
-                "resamples": 100,
-            }
-            if (
-                left is None
-                or right is None
-                or left.ndim != 1
-                or right.shape != left.shape
-                or not torch.isfinite(left).all()
-                or not torch.isfinite(right).all()
-            ):
-                record.update(
-                    status="not-applicable",
-                    reason="missing, non-finite, or identity-incompatible locked path metric",
-                )
-            else:
-                point, lower, upper = paired_bootstrap(
-                    left, right, seed=seed, resamples=100
-                )
-                record.update(
-                    status="available",
-                    point_difference=point,
-                    lower_95=lower,
-                    upper_95=upper,
-                    paths=int(left.numel()),
-                )
-            intervals.append(record)
-    return intervals
+    if error := artifact_semantics_error(locked, "evaluation"):
+        raise OperationalRunError(error)
+    if not isinstance(locked, Mapping) or not isinstance(shared_identities, Mapping):
+        raise OperationalRunError("Corrected locked evaluation has invalid identity data")
+    expected_members = {
+        f"{policy}-{horizon_years}y": (policy, horizon_years)
+        for policy, horizon_years in (("BM^D", 5), ("BM^D", 15), ("MM", 5), ("MM", 15))
+    }
+    checkpoints = locked.get("checkpoints")
+    expected_data = {
+        key: shared_identities.get(key)
+        for key in (
+            "market_source_hash",
+            "hjm_calibration_identity",
+            "reference_bank_content_hash",
+        )
+    }
+    if (
+        locked.get("kind") != "locked-final-test-evaluation"
+        or not isinstance(checkpoints, Mapping)
+        or set(checkpoints) != set(expected_members)
+        or locked.get("data_identities") != expected_data
+    ):
+        raise OperationalRunError("Corrected locked evaluation is incompatible")
+    for label, (policy, horizon_years) in expected_members.items():
+        checkpoint = checkpoints[label]
+        job = _corrected_pilot_job(
+            jobs, policy=policy, horizon_years=horizon_years
+        )
+        if (
+            not isinstance(checkpoint, Mapping)
+            or checkpoint.get("policy") != policy
+            or checkpoint.get("horizon_years") != horizon_years
+            or checkpoint.get("sha256") != job.get("checkpoint_sha256")
+        ):
+            raise OperationalRunError("Corrected locked checkpoint is incompatible")
 
 
 def _workflow_stage_artifacts(stage: str) -> tuple[str, ...]:
@@ -2965,76 +2823,6 @@ def _workflow_failure_bundle(
                 },
             }
         )
-        _write_json_artifact(staging_directory / "manifest.json", manifest)
-        suffix = staging_directory.name.rsplit("-", 1)[-1]
-        failure_directory = configuration.output.directory / (
-            f"{configuration.output.run_name}.{status.value}-{suffix}"
-        )
-        try:
-            os.replace(staging_directory, failure_directory)
-        except OSError:
-            failure_directory = None
-    return RunBundle(
-        status=status,
-        acceptance_status=AcceptanceStatus.PENDING,
-        artifact_directory=failure_directory,
-        error=str(error),
-        artifacts=(failure_directory / "manifest.json",)
-        if failure_directory is not None
-        else (),
-    )
-
-
-def _paired_pilot_failure_bundle(
-    configuration: ResolvedRunConfiguration,
-    *,
-    staging_directory: Path | None,
-    staged_configuration: ResolvedRunConfiguration | None,
-    error: Exception,
-    status: RunStatus,
-    evaluation_source: Mapping[str, object] | None = None,
-) -> RunBundle:
-    """Preserve pilot-stage diagnostics without labeling a partial matrix complete."""
-
-    if staging_directory is None or not staging_directory.is_dir():
-        failure_directory = _write_failure_bundle(
-            configuration,
-            error,
-            status=status,
-            extra_manifest=(
-                {
-                    "artifact_semantics": artifact_semantics("evaluation"),
-                    "paired_evaluation_source": dict(evaluation_source),
-                }
-                if evaluation_source is not None
-                else None
-            ),
-        )
-    else:
-        effective_configuration = staged_configuration or configuration
-        manifest = _build_manifest(
-            effective_configuration, status, AcceptanceStatus.PENDING
-        )
-        manifest.update(
-            {
-                "requested_configuration": configuration.to_dict(),
-                "error": str(error),
-                "diagnostics": _diagnostics_for(error),
-                "paired_convention_pilot": {
-                    "label": "paired-convention-research-pilot",
-                    "status": "incomplete"
-                    if status is RunStatus.INCOMPLETE
-                    else "failed",
-                    "generated_artifacts": sorted(
-                        str(path.relative_to(staging_directory))
-                        for path in staging_directory.rglob("*")
-                        if path.is_file()
-                    ),
-                },
-            }
-        )
-        if evaluation_source is not None:
-            manifest["paired_evaluation_source"] = dict(evaluation_source)
         _write_json_artifact(staging_directory / "manifest.json", manifest)
         suffix = staging_directory.name.rsplit("-", 1)[-1]
         failure_directory = configuration.output.directory / (

@@ -36,237 +36,6 @@ class CompactReportArtifacts:
     reference_bank_summary: dict[str, object]
 
 
-@dataclass(frozen=True)
-class PairedPilotReportArtifacts:
-    """The immutable evidence assembled into the bounded paired-pilot report."""
-
-    report: dict[str, object]
-
-
-def build_paired_convention_pilot_report(
-    *, pilot_run_directory: Path, evaluation_directory: Path
-) -> PairedPilotReportArtifacts:
-    """Build a descriptive report from identity-linked paired-pilot evidence."""
-
-    pilot_manifest_path = pilot_run_directory / "manifest.json"
-    evaluation_path = evaluation_directory / "paired-evaluation.json"
-    pilot_manifest = _read_report_object(pilot_manifest_path, "pilot manifest")
-    evaluation = _read_paired_evaluation(
-        evaluation_path, evaluation_directory=evaluation_directory
-    )
-    if error := artifact_semantics_error(
-        pilot_manifest.get("training_identity"), "training"
-    ):
-        raise ReportingError(error)
-    if error := artifact_semantics_error(evaluation, "evaluation"):
-        raise ReportingError(error)
-    pilot = pilot_manifest.get("paired_convention_pilot")
-    if (
-        pilot_manifest.get("status") not in {"completed", "incomplete", "failed"}
-        or not isinstance(pilot, dict)
-        or pilot.get("status") not in {"completed", "incomplete", "failed"}
-        or pilot.get("label") != "paired-convention-research-pilot"
-    ):
-        raise ReportingError(
-            "Paired-pilot report requires an identity-linked pilot bundle"
-        )
-    if (
-        evaluation.get("format_version") != 1
-        or evaluation.get("kind") != "paired-convention-pilot-evaluation"
-        or evaluation.get("status") not in {"completed", "incomplete", "failed"}
-        or evaluation.get("label") != "paired-convention-research-pilot"
-        or evaluation.get("source_run") != str(pilot_run_directory.resolve())
-        or evaluation.get("source_manifest_sha256") != _sha256(pilot_manifest_path)
-    ):
-        raise ReportingError("Paired evaluation is not identity-linked to the pilot")
-    jobs = pilot.get("completed_training_jobs", [])
-    reports = evaluation.get("reports")
-    locked_manifests = evaluation.get("locked_evaluation_manifests")
-    truncations = evaluation.get("mm_fifteen_year_truncation")
-    intervals = evaluation.get("paired_intervals")
-    if not isinstance(jobs, list):
-        raise ReportingError("Paired pilot must expose its completed-job evidence")
-    if not isinstance(reports, dict):
-        reports = {}
-    if not isinstance(locked_manifests, dict):
-        locked_manifests = {}
-    if not isinstance(truncations, dict):
-        truncations = {}
-    if not isinstance(intervals, list):
-        intervals = []
-    conventions: dict[str, dict[str, object]] = {}
-    resolved_configuration = pilot_manifest.get("resolved_configuration")
-    runtime = pilot_manifest.get("runtime")
-    architecture = (
-        resolved_configuration.get("architecture")
-        if isinstance(resolved_configuration, dict)
-        else None
-    )
-    for convention in ("paper", "corrected"):
-        convention_jobs = [
-            job
-            for job in jobs
-            if isinstance(job, dict) and job.get("convention") == convention
-        ]
-        convention_reports = reports.get(convention)
-        locked = locked_manifests.get(convention)
-        truncation = truncations.get(convention)
-        expected_members = tuple(
-            (policy, horizon) for policy in ("BM^D", "MM") for horizon in (5, 15)
-        )
-        expected_labels = {
-            f"{policy}-{horizon}y" for policy, horizon in expected_members
-        }
-        reports_for_convention = (
-            convention_reports if isinstance(convention_reports, dict) else {}
-        )
-        jobs_by_member = {
-            (str(job.get("policy")), job.get("horizon_years")): job
-            for job in convention_jobs
-            if isinstance(job.get("horizon_years"), int)
-        }
-        members = [
-            _paired_member_evidence(
-                convention=convention,
-                policy=policy,
-                horizon_years=horizon,
-                job=jobs_by_member.get((policy, horizon)),
-                report=reports_for_convention.get(f"{policy}-{horizon}y"),
-            )
-            for policy, horizon in expected_members
-        ]
-        formula_choices = (
-            {
-                "pca_loading_scale": "eigenvalue",
-                "loan_interest_annualization": "unannualized",
-            }
-            if convention == "paper"
-            else {
-                "pca_loading_scale": "sqrt_eigenvalue",
-                "loan_interest_annualization": "monthly",
-            }
-        )
-        for evidence in (locked, truncation):
-            if isinstance(evidence, dict) and (
-                error := artifact_semantics_error(evidence, "evaluation")
-            ):
-                raise ReportingError(error)
-        if isinstance(locked, dict) and not _compatible_locked_pilot_evaluation(
-            locked,
-            convention=convention,
-            jobs=jobs_by_member,
-            shared_identities=pilot.get("shared_identities"),
-        ):
-            raise ReportingError(
-                f"Paired report has incompatible {convention} locked evidence"
-            )
-        if isinstance(truncation, dict) and not _compatible_pilot_truncation(
-            truncation,
-            convention=convention,
-            jobs=jobs_by_member,
-        ):
-            raise ReportingError(
-                f"Paired report has incompatible {convention} truncation evidence"
-            )
-        convention_complete = (
-            all(member["status"] == "available" for member in members)
-            and set(reports_for_convention) == expected_labels
-            and isinstance(locked, dict)
-            and _complete_locked_pilot_evaluation(
-                locked,
-                convention=convention,
-                jobs=jobs_by_member,
-                shared_identities=pilot.get("shared_identities"),
-            )
-            and isinstance(truncation, dict)
-            and _complete_pilot_truncation(
-                truncation,
-                convention=convention,
-                jobs=jobs_by_member,
-            )
-        )
-        conventions[convention] = {
-            "status": "completed" if convention_complete else "incomplete",
-            "formula_choices": formula_choices,
-            "architecture": architecture,
-            "runtime": runtime,
-            "financial_semantics_version": (
-                locked.get("financial_semantics_version")
-                if isinstance(locked, dict)
-                else None
-            ),
-            "jobs": convention_jobs,
-            "members": members,
-            "locked_reports": reports_for_convention,
-            "locked_evaluation_identity": locked,
-            "mm_fifteen_year_truncation": truncation,
-            "resource_use": evaluation.get("resource_measurements"),
-        }
-    report_complete = (
-        pilot_manifest.get("status") == "completed"
-        and pilot.get("status") == "completed"
-        and evaluation.get("status") == "completed"
-        and all(details["status"] == "completed" for details in conventions.values())
-    )
-    normalized_intervals = _paired_intervals_with_availability(
-        intervals, complete=report_complete, conventions=conventions
-    )
-    report = {
-        "format_version": 1,
-        "kind": "paired-convention-pilot-report",
-        "status": "completed" if report_complete else "incomplete",
-        "artifact_semantics": artifact_semantics("evaluation"),
-        "label": "paired-convention-research-pilot",
-        "pilot_source": {
-            "directory": str(pilot_run_directory.resolve()),
-            "manifest_sha256": _sha256(pilot_manifest_path),
-            "git_revision": pilot_manifest.get("git_revision"),
-            "financial_semantics_version": {
-                convention: details["financial_semantics_version"]
-                for convention, details in conventions.items()
-            },
-            "shared_identities": pilot.get("shared_identities"),
-            "resource_use": pilot.get("resource_measurements"),
-        },
-        "evaluation_source": {
-            "directory": str(evaluation_directory.resolve()),
-            "resource_use": evaluation.get("resource_measurements"),
-            "failure_bundle": evaluation.get("failure_bundle"),
-        },
-        "conventions": conventions,
-        "paired_intervals": normalized_intervals,
-        "numerical_behavior": _paired_pilot_numerical_behavior(pilot_run_directory),
-        "diagnostics": {
-            "pilot_error": pilot_manifest.get("error"),
-            "pilot": pilot_manifest.get("diagnostics"),
-            "evaluation": evaluation.get("diagnostics"),
-            "source_statuses": {
-                "pilot_manifest": pilot_manifest.get("status"),
-                "pilot": pilot.get("status"),
-                "evaluation": evaluation.get("status"),
-            },
-        },
-        "deferred_work": [
-            "paper widths",
-            "three MM seeds",
-            "sensitivity retraining",
-            "10,000 bootstrap",
-            "full paper figures",
-            "Ticket 24 economic acceptance gates",
-        ],
-        "scope_gaps": [
-            "New-loan originations use one shared six-month reference rate rather than a maturity-specific curve.",
-            "The compact pilot does not establish formal fit at paper network widths.",
-            "BM^E and BM^C have regression and integration coverage only; their historical trained results are not newly certified by this paired pilot.",
-        ],
-        "disclosure": (
-            "This is a paired-convention-research-pilot. It is neither convergence "
-            "evidence, paper-result replication, methodologically-reproduced, nor "
-            "bank-model approval."
-        ),
-    }
-    return PairedPilotReportArtifacts(report=report)
-
 
 def _read_report_object(path: Path, label: str) -> dict[str, object]:
     try:
@@ -274,249 +43,170 @@ def _read_report_object(path: Path, label: str) -> dict[str, object]:
             path.read_text(encoding="utf-8"), parse_constant=_reject_nonfinite_json
         )
     except (OSError, ValueError, json.JSONDecodeError) as error:
-        raise ReportingError(f"Paired-pilot {label} is unreadable: {path}") from error
+        raise ReportingError(f"Report {label} is unreadable: {path}") from error
     if not isinstance(value, dict):
-        raise ReportingError(f"Paired-pilot {label} must be a JSON object")
+        raise ReportingError(f"Report {label} must be a JSON object")
     return value
 
-
-def _read_paired_evaluation(
-    evaluation_path: Path, *, evaluation_directory: Path
-) -> dict[str, object]:
-    if evaluation_path.is_file():
-        return _read_report_object(evaluation_path, "paired evaluation")
-    failure_path = evaluation_directory / "manifest.json"
-    failure = _read_report_object(failure_path, "paired-evaluation failure bundle")
-    source = failure.get("paired_evaluation_source")
-    if not isinstance(source, dict):
-        raise ReportingError(
-            "Paired evaluation is missing and its failure bundle has no source identity"
-        )
-    return {
-        "format_version": 1,
-        "kind": "paired-convention-pilot-evaluation",
-        "artifact_semantics": failure.get("artifact_semantics"),
-        "status": failure.get("status"),
-        "label": "paired-convention-research-pilot",
-        "source_run": source.get("source_run"),
-        "source_manifest_sha256": source.get("source_manifest_sha256"),
-        "reports": {},
-        "paired_intervals": [],
-        "diagnostics": failure.get("diagnostics"),
-        "failure_bundle": str(failure_path.resolve()),
-    }
 
 
 def _reject_nonfinite_json(token: str) -> object:
     raise ValueError(f"Non-finite JSON token is not permitted: {token}")
 
 
-def _paired_member_evidence(
-    *, convention: str, policy: str, horizon_years: int, job: object, report: object
-) -> dict[str, object]:
-    job_record = job if isinstance(job, dict) else None
-    report_record = report if isinstance(report, dict) else None
-    job_status = job_record.get("status") if job_record is not None else None
-    report_status = report_record.get("status") if report_record is not None else None
-    if report_status in {"failed", "incomplete", "unavailable"}:
-        status = "missing" if report_status == "unavailable" else str(report_status)
-        reason = "Locked-evaluation member did not produce finite paired evidence."
-    elif job_status in {"failed", "incomplete"}:
-        status = str(job_status)
-        reason = "Training job did not complete; no paired evaluation is available."
-    elif job_record is None or report_record is None:
-        status = "missing"
-        reason = "Required training-job or locked-evaluation member is absent."
-    else:
-        status = "available"
-        reason = None
-    return {
-        "convention": convention,
-        "stage": (
-            job_record.get("stage")
-            if job_record is not None and isinstance(job_record.get("stage"), str)
-            else "training-and-locked-evaluation"
-        ),
-        "policy": policy,
-        "horizon_years": horizon_years,
-        "status": status,
-        "reason": reason,
-        "job": job_record,
-        "locked_report": report_record,
-        "evidence_references": {
-            "training_job": job_record.get("checkpoint") if job_record else None,
-            "locked_report_key": (
-                f"{policy}-{horizon_years}y" if report_record is not None else None
-            ),
-        },
-        "diagnostics": {
-            "job": job_record.get("diagnostics") if job_record is not None else None,
-            "locked_report": (
-                report_record.get("diagnostics") if report_record is not None else None
-            ),
-        },
+
+@dataclass(frozen=True)
+class CorrectedPilotReportArtifacts:
+    """The immutable evidence assembled into a corrected pilot report."""
+
+    report: dict[str, object]
+
+
+def build_corrected_pilot_report(
+    *, pilot_run_directory: Path, evaluation_directory: Path
+) -> CorrectedPilotReportArtifacts:
+    """Build a report only from complete, identity-linked corrected evidence."""
+
+    pilot_manifest_path = pilot_run_directory / "manifest.json"
+    evaluation_path = evaluation_directory / "corrected-evaluation.json"
+    pilot_manifest = _read_report_object(pilot_manifest_path, "pilot manifest")
+    evaluation = _read_report_object(evaluation_path, "corrected evaluation")
+    if error := artifact_semantics_error(
+        pilot_manifest.get("training_identity"), "training"
+    ):
+        raise ReportingError(error)
+    if error := artifact_semantics_error(evaluation, "evaluation"):
+        raise ReportingError(error)
+    pilot = pilot_manifest.get("corrected_local_validation_pilot")
+    if (
+        pilot_manifest.get("status") != "completed"
+        or not isinstance(pilot, dict)
+        or pilot.get("status") != "completed"
+        or pilot.get("completed_primary_optimizer_updates") != 16
+    ):
+        raise ReportingError("Corrected report requires a completed 16-update pilot")
+    if (
+        evaluation.get("format_version") != 1
+        or evaluation.get("kind") != "corrected-local-validation-pilot-evaluation"
+        or evaluation.get("status") != "completed"
+        or evaluation.get("source_run") != str(pilot_run_directory.resolve())
+        or evaluation.get("source_manifest_sha256") != _sha256(pilot_manifest_path)
+    ):
+        raise ReportingError("Corrected evaluation is not identity-linked to the pilot")
+    jobs = pilot.get("completed_training_jobs")
+    reports = evaluation.get("reports")
+    locked = evaluation.get("locked_evaluation_manifest")
+    if not isinstance(jobs, list) or not isinstance(reports, dict):
+        raise ReportingError("Corrected evidence lacks complete member reports")
+    expected_members = tuple(
+        (policy, horizon_years)
+        for policy in ("BM^D", "MM")
+        for horizon_years in (5, 15)
+    )
+    expected_labels = {f"{policy}-{horizon_years}y" for policy, horizon_years in expected_members}
+    jobs_by_member = {
+        (str(job.get("policy")), job.get("horizon_years")): job
+        for job in jobs
+        if isinstance(job, dict) and isinstance(job.get("horizon_years"), int)
     }
+    if (
+        len(jobs) != 4
+        or len(jobs_by_member) != 4
+        or set(jobs_by_member) != set(expected_members)
+        or set(reports) != expected_labels
+        or any(
+            job.get("optimizer_updates") != 4
+            or job.get("selected_epoch") != 2
+            or job.get("finite_nonzero_optimization_signal") is not True
+            for job in jobs_by_member.values()
+        )
+        or not _compatible_corrected_locked_evaluation(
+            locked,
+            jobs=jobs_by_member,
+            shared_identities=pilot.get("shared_identities"),
+        )
+    ):
+        raise ReportingError("Corrected evaluation is incomplete or incompatible")
+    members = [
+        {
+            "policy": policy,
+            "horizon_years": horizon_years,
+            "training_job": jobs_by_member[(policy, horizon_years)],
+            "locked_report": reports[f"{policy}-{horizon_years}y"],
+        }
+        for policy, horizon_years in expected_members
+    ]
+    report = {
+        "format_version": 1,
+        "kind": "corrected-local-validation-pilot-report",
+        "status": "completed",
+        "artifact_semantics": artifact_semantics("evaluation"),
+        "pilot_source": {
+            "directory": str(pilot_run_directory.resolve()),
+            "manifest_sha256": _sha256(pilot_manifest_path),
+            "git_revision": pilot_manifest.get("git_revision"),
+            "shared_identities": pilot.get("shared_identities"),
+            "resource_use": pilot.get("resource_measurements"),
+        },
+        "evaluation_source": {
+            "directory": str(evaluation_directory.resolve()),
+            "sha256": _sha256(evaluation_path),
+            "resource_use": evaluation.get("resource_measurements"),
+        },
+        "members": members,
+        "locked_evaluation_identity": locked,
+        "deferred_work": [
+            "paper widths",
+            "three MM seeds",
+            "sensitivity retraining",
+            "full paper figures",
+        ],
+        "disclosure": (
+            "This corrected local-validation report is not convergence evidence, "
+            "methodological reproduction, or bank-model approval."
+        ),
+    }
+    return CorrectedPilotReportArtifacts(report=report)
 
 
-def _compatible_locked_pilot_evaluation(
-    locked: dict[str, object],
+def _compatible_corrected_locked_evaluation(
+    locked: object,
     *,
-    convention: str,
     jobs: dict[tuple[str, int], dict[str, object]],
     shared_identities: object,
 ) -> bool:
+    if artifact_semantics_error(locked, "evaluation"):
+        return False
+    if not isinstance(locked, dict) or not isinstance(shared_identities, dict):
+        return False
     expected_members = {
-        f"{policy}-{horizon}y": (policy, horizon)
-        for policy in ("BM^D", "MM")
-        for horizon in (5, 15)
+        f"{policy}-{horizon_years}y": (policy, horizon_years)
+        for policy, horizon_years in (("BM^D", 5), ("BM^D", 15), ("MM", 5), ("MM", 15))
     }
     checkpoints = locked.get("checkpoints")
-    data_identities = locked.get("data_identities")
     if (
         locked.get("kind") != "locked-final-test-evaluation"
-        or locked.get("convention") != convention
         or not isinstance(checkpoints, dict)
-        or not set(checkpoints).issubset(expected_members)
-        or not isinstance(data_identities, dict)
-        or not isinstance(shared_identities, dict)
-    ):
-        return False
-    for key in (
-        "market_source_hash",
-        "hjm_calibration_identity",
-        "reference_bank_content_hash",
-    ):
-        if data_identities.get(key) != shared_identities.get(key):
-            return False
-    for label, (policy, horizon_years) in expected_members.items():
-        if label not in checkpoints:
-            continue
-        checkpoint = checkpoints[label]
-        job = jobs.get((policy, horizon_years))
-        if not isinstance(checkpoint, dict) or job is None:
-            return False
-        if (
-            checkpoint.get("policy") != policy
-            or checkpoint.get("horizon_years") != horizon_years
-            or checkpoint.get("sha256") != job.get("checkpoint_sha256")
-        ):
-            return False
-    return True
-
-
-def _complete_locked_pilot_evaluation(
-    locked: dict[str, object],
-    *,
-    convention: str,
-    jobs: dict[tuple[str, int], dict[str, object]],
-    shared_identities: object,
-) -> bool:
-    expected_labels = {
-        f"{policy}-{horizon}y" for policy in ("BM^D", "MM") for horizon in (5, 15)
-    }
-    checkpoints = locked.get("checkpoints")
-    return bool(
-        _compatible_locked_pilot_evaluation(
-            locked,
-            convention=convention,
-            jobs=jobs,
-            shared_identities=shared_identities,
-        )
-        and isinstance(checkpoints, dict)
-        and set(checkpoints) == expected_labels
-    )
-
-
-def _compatible_pilot_truncation(
-    truncation: dict[str, object],
-    *,
-    convention: str,
-    jobs: dict[tuple[str, int], dict[str, object]],
-) -> bool:
-    job = jobs.get(("MM", 15))
-    if truncation.get("convention") != convention:
-        return False
-    if truncation.get("status") in {"unavailable", "incomplete", "failed"}:
-        return isinstance(truncation.get("reason"), str)
-    return bool(
-        truncation.get("status") == "available"
-        and truncation.get("source_horizon_years") == 15
-        and truncation.get("evaluation_horizon_years") == 5
-        and truncation.get("source_checkpoint") == (job or {}).get("checkpoint")
-        and truncation.get("source_checkpoint_sha256")
-        == (job or {}).get("checkpoint_sha256")
-    )
-
-
-def _complete_pilot_truncation(
-    truncation: dict[str, object],
-    *,
-    convention: str,
-    jobs: dict[tuple[str, int], dict[str, object]],
-) -> bool:
-    return bool(
-        _compatible_pilot_truncation(truncation, convention=convention, jobs=jobs)
-        and truncation.get("status") == "available"
-        and isinstance(truncation.get("report"), dict)
-    )
-
-
-def _paired_intervals_with_availability(
-    intervals: list[object],
-    *,
-    complete: bool,
-    conventions: dict[str, dict[str, object]],
-) -> list[dict[str, object]]:
-    missing_members = [
-        {
-            "convention": convention,
-            "policy": member["policy"],
-            "horizon_years": member["horizon_years"],
-            "status": member["status"],
-        }
-        for convention, details in conventions.items()
-        for member in details["members"]
-        if member["status"] != "available"
-    ]
-    normalized: list[dict[str, object]] = []
-    for interval in intervals:
-        if not isinstance(interval, dict):
-            continue
-        if complete:
-            normalized.append(interval)
-        else:
-            normalized.append(
-                {
-                    "metric": interval.get("metric", "unidentified"),
-                    "status": "not_applicable",
-                    "reason": "Paired interval is unavailable because one or more paired members are incomplete.",
-                    "missing_members": missing_members,
-                    "source_interval": interval,
-                }
+        or set(checkpoints) != set(expected_members)
+        or locked.get("data_identities")
+        != {
+            key: shared_identities.get(key)
+            for key in (
+                "market_source_hash",
+                "hjm_calibration_identity",
+                "reference_bank_content_hash",
             )
-    if not normalized and missing_members:
-        normalized.append(
-            {
-                "metric": "paired-comparison",
-                "status": "not_applicable",
-                "reason": "Paired intervals are unavailable because paired members are missing.",
-                "missing_members": missing_members,
-                "source_interval": None,
-            }
-        )
-    return normalized
-
-
-def _paired_pilot_numerical_behavior(directory: Path) -> list[dict[str, object]]:
-    """Expose recovery probes and failures without treating them as current failures."""
-
-    evidence: list[dict[str, object]] = []
-    for path in sorted(directory.glob("*/*.interruption.json")):
-        contents = _read_report_object(path, "interruption evidence")
-        evidence.append(
-            {"path": str(path.relative_to(directory)), "evidence": contents}
-        )
-    return evidence
+        }
+    ):
+        return False
+    return all(
+        isinstance(checkpoints[label], dict)
+        and checkpoints[label].get("policy") == policy
+        and checkpoints[label].get("horizon_years") == horizon_years
+        and checkpoints[label].get("sha256")
+        == jobs[(policy, horizon_years)].get("checkpoint_sha256")
+        for label, (policy, horizon_years) in expected_members.items()
+    )
 
 
 def build_compact_no_swap_report(

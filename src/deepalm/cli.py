@@ -128,28 +128,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     corrected_pilot_parser.add_argument(
         "--config", type=Path, required=True, help="YAML corrected-pilot configuration"
     )
-    paired_evaluation_parser = subparsers.add_parser(
-        "paired-evaluate",
-        help="evaluate a completed paired-convention pilot on locked paths",
+    corrected_evaluation_parser = subparsers.add_parser(
+        "corrected-evaluate",
+        help="evaluate a completed corrected pilot on locked paths",
     )
-    paired_evaluation_parser.add_argument(
-        "--config", type=Path, required=True, help="YAML paired-pilot configuration"
+    corrected_evaluation_parser.add_argument(
+        "--config", type=Path, required=True, help="YAML corrected-pilot configuration"
     )
-    paired_evaluation_parser.add_argument(
-        "--source-run", type=Path, required=True, help="completed paired-pilot artifact"
+    corrected_evaluation_parser.add_argument(
+        "--source-run", type=Path, required=True, help="completed corrected-pilot artifact"
     )
-    paired_report_parser = subparsers.add_parser(
-        "paired-report",
-        help="publish an auditable report from paired-pilot evaluation evidence",
+    corrected_report_parser = subparsers.add_parser(
+        "corrected-report",
+        help="publish an auditable report from corrected-pilot evaluation evidence",
     )
-    paired_report_parser.add_argument(
-        "--config", type=Path, required=True, help="YAML paired-pilot configuration"
+    corrected_report_parser.add_argument(
+        "--config", type=Path, required=True, help="YAML corrected-pilot configuration"
     )
-    paired_report_parser.add_argument(
-        "--source-run", type=Path, required=True, help="completed paired-pilot artifact"
+    corrected_report_parser.add_argument(
+        "--source-run", type=Path, required=True, help="completed corrected-pilot artifact"
     )
-    paired_report_parser.add_argument(
-        "--evaluation-run", type=Path, required=True, help="completed paired evaluation artifact"
+    corrected_report_parser.add_argument(
+        "--evaluation-run", type=Path, required=True, help="completed corrected evaluation artifact"
     )
     arguments = parser.parse_args(argv)
 
@@ -185,12 +185,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         bundle = runner.run_local_workflow(configuration)
     elif arguments.command == "corrected-pilot":
         bundle = runner.run_corrected_pilot(configuration)
-    elif arguments.command == "paired-evaluate":
-        bundle = runner.evaluate_paired_convention_pilot(
+    elif arguments.command == "corrected-evaluate":
+        bundle = runner.evaluate_corrected_pilot(
             configuration, source_run_directory=arguments.source_run
         )
-    elif arguments.command == "paired-report":
-        bundle = runner.generate_paired_pilot_report(
+    elif arguments.command == "corrected-report":
+        bundle = runner.generate_corrected_pilot_report(
             configuration,
             pilot_run_directory=arguments.source_run,
             evaluation_directory=arguments.evaluation_run,

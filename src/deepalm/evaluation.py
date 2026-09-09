@@ -202,6 +202,7 @@ class LockedEvaluator:
         checkpoints: tuple[PolicyCheckpoint, ...],
         *,
         bootstrap_resamples: int = 100,
+        include_paired_bootstrap: bool = True,
     ) -> LockedEvaluationResult:
         """Run every checkpoint once, grouped on common locked paths by horizon."""
 
@@ -270,13 +271,22 @@ class LockedEvaluator:
             reports[item.label], path_metrics[item.label] = _report_outcome(
                 outcome, horizon
             )
-        intervals = _paired_intervals(
-            path_metrics,
-            metadata,
-            seed=self._configuration.seeds["bootstrap"],
-            resamples=bootstrap_resamples,
+        intervals = (
+            _paired_intervals(
+                path_metrics,
+                metadata,
+                seed=self._configuration.seeds["bootstrap"],
+                resamples=bootstrap_resamples,
+            )
+            if include_paired_bootstrap
+            else ()
         )
-        manifest = self._manifest(checkpoints, metadata, markets, bootstrap_resamples)
+        manifest = self._manifest(
+            checkpoints,
+            metadata,
+            markets,
+            bootstrap_resamples if include_paired_bootstrap else None,
+        )
         return LockedEvaluationResult(
             reports=reports,
             markets=markets,
@@ -316,7 +326,7 @@ class LockedEvaluator:
         checkpoints: tuple[PolicyCheckpoint, ...],
         metadata: dict[str, dict[str, object]],
         markets: dict[int, MarketScenarioBatch],
-        resamples: int,
+        resamples: int | None,
     ) -> dict[str, object]:
         return {
             "format_version": 1,
@@ -356,7 +366,11 @@ class LockedEvaluator:
                 }
                 for item in checkpoints
             },
-            "statistical_status": "small-sample demonstration; intervals do not gate superiority",
+            "statistical_status": (
+                "small-sample demonstration; intervals do not gate superiority"
+                if resamples is not None
+                else "paired bootstrap disabled for corrected local validation"
+            ),
         }
 
 
