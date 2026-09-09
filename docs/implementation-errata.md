@@ -71,7 +71,7 @@
 
 | 依据 | 尚未交付的能力 | 影响边界 | 公开验证 / 下一步 |
 | --- | --- | --- | --- |
-| Paper network scale | The local compact 64/64/32/32 network is a technical-flow validation, not paper-width convergence evidence. | Local pilot results and claims. | `configs/corrected-pilot.yaml`; `tests/test_corrected_pilot.py`. |
+| Paper network scale | The local compact 64/64/32/32 network is a technical-flow validation, not paper-width convergence evidence. | Local pilot results and claims. | `configs/local-two-policy-m5.yaml`; `tests/test_corrected_pilot.py`. |
 | Bank training handoff | Formal paper-width training, realistic sample sizes, and hyperparameter optimisation require real bank data and approved GPU resources. | Any performance or production claim. | [bank commissioning guide](bank-single-gpu-commissioning.md). |
 | Deployment | CUDA cluster, multi-GPU/DDP, mixed precision tuning, and bank/regulatory acceptance are not implemented by this repository. | Production readiness. | Bank-owned commissioning and acceptance process. |
 
@@ -91,12 +91,14 @@
 
 ## Current executable lifecycle
 
-The bounded local validation flow has exactly three dedicated commands:
+The bounded local validation flow uses generic actions. Its complete YAML
+configuration is the authority for the Workflow Contract and Execution Profile:
 
 ```bash
-uv run deepalm corrected-pilot --config configs/corrected-pilot.yaml
-uv run deepalm corrected-evaluate --config configs/corrected-pilot.yaml --source-run artifacts/corrected-local-validation-pilot
-uv run deepalm corrected-report --config configs/corrected-pilot.yaml --source-run artifacts/corrected-local-validation-pilot --evaluation-run artifacts/corrected-local-validation-pilot-evaluation
+uv run deepalm plan --config configs/local-two-policy-m5.yaml
+uv run deepalm run --config configs/local-two-policy-m5.yaml
+uv run deepalm evaluate --config configs/local-two-policy-m5.yaml --source-run artifacts/corrected-local-validation-pilot
+uv run deepalm report --config configs/local-two-policy-m5.yaml --source-run artifacts/corrected-local-validation-pilot --evaluation-run artifacts/corrected-local-validation-pilot-evaluation
 ```
 
 It trains BM^D and MM at 5 and 15 years, requiring content-linked frozen BM^D

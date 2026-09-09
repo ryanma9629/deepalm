@@ -19,11 +19,12 @@ The PyTorch wheel, NVIDIA driver, CUDA runtime and host policy must be approved
 by the bank; this repository does not install drivers or silently fall back
 from a requested CUDA device.
 
-## 2. Verify synthetic inputs and the device path
+## 2. Verify the configured bank input and device path
 
 Review `configs/bank-single-gpu-commissioning.yaml`. It selects `cuda` and
-`float32`, has explicit `bank_training` bounds, and deliberately uses the
-synthetic canonical Reference Bank. Run:
+`float32`, has explicit `bank_training` bounds, and declares an imported
+Reference Bank through `reference_bank.snapshot_path`. Replace the placeholder
+with the bank-controlled validated snapshot before running. Run:
 
 ```bash
 uv run deepalm plan --config configs/bank-single-gpu-commissioning.yaml
@@ -76,9 +77,10 @@ and obtain the bank's mapping sign-off. Also supply market data/scenarios that
 are compatible with the imported snapshot; a changed market, source identity or
 preprocessing identity cannot reuse a local checkpoint.
 
-Synthetic commissioning artifacts contain no private bank data. Bank-source
-extraction, data connections, mapping approval, and financial reconciliation
-are bank-owned acceptance steps.
+The repository never ships bank-source data. Bank-source extraction, data
+connections, mapping approval, and financial reconciliation are bank-owned
+acceptance steps; keep the configured snapshot and resulting artifacts in
+bank-controlled storage.
 
 ## 5. Measure before scaling
 

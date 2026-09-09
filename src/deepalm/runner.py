@@ -444,8 +444,6 @@ class ReproductionRunner:
     def build_reference_bank(
         self,
         configuration: ResolvedRunConfiguration,
-        *,
-        snapshot_path: Path | None = None,
     ) -> RunBundle:
         """Build or import a reviewable Reference Bank without policy training."""
 
@@ -457,6 +455,7 @@ class ReproductionRunner:
             from deepalm.term_structures import MarketScenarioModel
 
             provider = ReferenceBankProvider()
+            snapshot_path = configuration.reference_bank.snapshot_path
             if snapshot_path is None:
                 historical = MarketScenarioModel().load_historical_term_structures(
                     configuration.source_data.snb_csv,

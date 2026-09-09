@@ -55,7 +55,7 @@ def test_corrected_pilot_has_the_locked_four_member_local_budget(
 def test_versioned_corrected_pilot_config_exposes_no_paired_profile() -> None:
     repository = Path(__file__).resolve().parents[1]
     raw = yaml.safe_load(
-        (repository / "configs/corrected-pilot.yaml").read_text(encoding="utf-8")
+        (repository / "configs/local-two-policy-m5.yaml").read_text(encoding="utf-8")
     )
 
     assert raw["run_scale"] == {"profile": "corrected_pilot"}

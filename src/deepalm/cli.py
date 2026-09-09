@@ -47,15 +47,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--config", type=Path, required=True, help="YAML run configuration"
     )
     bank_parser = subparsers.add_parser(
-        "bank", help="build the canonical Reference Bank and reviewable Table 1"
+        "bank", help="build or import the configured Reference Bank and reviewable Table 1"
     )
     bank_parser.add_argument(
         "--config", type=Path, required=True, help="YAML run configuration"
-    )
-    bank_parser.add_argument(
-        "--snapshot",
-        type=Path,
-        help="versioned imported Reference Bank snapshot; omit to build canonical",
     )
     device_check_parser = subparsers.add_parser(
         "device-check",
@@ -202,9 +197,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments.command in {"preflight", "calibrate"}:
         bundle = runner.preflight_market(configuration)
     elif arguments.command == "bank":
-        bundle = runner.build_reference_bank(
-            configuration, snapshot_path=arguments.snapshot
-        )
+        bundle = runner.build_reference_bank(configuration)
     elif arguments.command == "device-check":
         bundle = runner.commission_single_device_portability(
             configuration,

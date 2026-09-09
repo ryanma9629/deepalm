@@ -1,5 +1,5 @@
-# Synthetic, single-GPU commissioning only. Replace source inputs and import a
-# validated Reference Bank only after the checks in the accompanying guide.
+# Single-GPU commissioning only. Before running on the bank host, replace this
+# placeholder with the bank-controlled, validated imported Reference Bank path.
 source_data:
   snb_csv: data/snb-data-rendopar-en-all_19880401-20250731.csv
   paper_pdf: docs/Deep treasury management for banks.pdf
@@ -27,10 +27,8 @@ architecture:
   profile: compact
 
 reference_bank:
-  profile: canonical
-  initial_assets:
-    value: 10000
-    unit: mCHF
+  profile: imported
+  snapshot_path: /secure/path/reference-bank.json
 
 experiment:
   horizons_years: [5, 15]

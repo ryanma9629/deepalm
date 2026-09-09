@@ -302,8 +302,8 @@ def test_runner_bank_stage_imports_a_versioned_noncanonical_snapshot(
             "run_scale": {"profile": "local_flow"},
             "architecture": {"profile": "compact"},
             "reference_bank": {
-                "profile": "canonical",
-                "initial_assets": {"value": 10_000, "unit": "mCHF"},
+                "profile": "imported",
+                "snapshot_path": str(source),
             },
             "experiment": {"horizons_years": [5], "include_swaps": False},
             "policy": {"names": ["BM^E"]},
@@ -329,15 +329,16 @@ def test_runner_bank_stage_imports_a_versioned_noncanonical_snapshot(
         }
     )
 
-    bundle = ReproductionRunner().build_reference_bank(
-        configuration, snapshot_path=source
-    )
+    bundle = ReproductionRunner().build_reference_bank(configuration)
 
     assert bundle.status is RunStatus.COMPLETED
     assert bundle.artifact_directory is not None
     manifest = json.loads((bundle.artifact_directory / "manifest.json").read_text())
     assert manifest["reference_bank"]["profile"] == "imported"
     assert manifest["reference_bank"]["unit"] == "mUSD"
+    assert manifest["resolved_configuration"]["reference_bank"]["snapshot_path"] == str(
+        source
+    )
 
 
 def test_canonical_profile_rejects_an_unlocked_valuation_date(tmp_path: Path) -> None:

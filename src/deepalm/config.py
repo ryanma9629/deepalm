@@ -58,7 +58,8 @@ class ReferenceBankSensitivityConfiguration:
 @dataclass(frozen=True)
 class ReferenceBankConfiguration:
     profile: str
-    initial_assets_mchf: float
+    initial_assets_mchf: float | None
+    snapshot_path: Path | None
     sensitivity: ReferenceBankSensitivityConfiguration | None = None
 
 
@@ -173,6 +174,11 @@ class ResolvedRunConfiguration:
         result["experiment"]["horizons_years"] = list(self.experiment.horizons_years)
         result["policy"]["names"] = list(self.policy.names)
         result["architecture"]["widths"] = list(self.architecture.widths)
+        result["reference_bank"]["snapshot_path"] = (
+            str(self.reference_bank.snapshot_path)
+            if self.reference_bank.snapshot_path is not None
+            else None
+        )
         return result
 
 
@@ -545,12 +551,30 @@ def _resolve_reference_bank(raw: object) -> ReferenceBankConfiguration:
     section = _section(
         raw,
         "reference_bank",
-        {"profile", "initial_assets", "sensitivity"},
-        required_keys={"profile", "initial_assets"},
+        {"profile", "initial_assets", "snapshot_path", "sensitivity"},
+        required_keys={"profile"},
     )
     profile = _string(section["profile"], "reference_bank.profile")
+    if profile == "imported":
+        if set(section) != {"profile", "snapshot_path"}:
+            raise ConfigurationError(
+                "reference_bank imported requires only profile and snapshot_path"
+            )
+        return ReferenceBankConfiguration(
+            profile=profile,
+            initial_assets_mchf=None,
+            snapshot_path=Path(
+                _string(section["snapshot_path"], "reference_bank.snapshot_path")
+            ),
+        )
     if profile != "canonical":
-        raise ConfigurationError("reference_bank.profile must be 'canonical'")
+        raise ConfigurationError(
+            "reference_bank.profile must be 'canonical' or 'imported'"
+        )
+    if "snapshot_path" in section:
+        raise ConfigurationError("reference_bank canonical excludes snapshot_path")
+    if "initial_assets" not in section:
+        raise ConfigurationError("reference_bank canonical requires initial_assets")
 
     quantity = _section(
         section["initial_assets"],
@@ -600,6 +624,7 @@ def _resolve_reference_bank(raw: object) -> ReferenceBankConfiguration:
     return ReferenceBankConfiguration(
         profile=profile,
         initial_assets_mchf=float(value),
+        snapshot_path=None,
         sensitivity=sensitivity,
     )
 
