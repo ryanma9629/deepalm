@@ -3,9 +3,8 @@ source_data:
   paper_pdf: docs/Deep treasury management for banks.pdf
   nss_beta_unit: percentage_points
 
-
 run_scale:
-  profile: paired_convention_pilot
+  profile: corrected_pilot
 
 architecture:
   profile: compact
@@ -42,8 +41,8 @@ seeds:
 
 output:
   directory: artifacts
-  run_name: paired-convention-pilot-financial-corrections
+  run_name: corrected-local-validation-pilot
 
 acceptance:
-  purpose: research
-  required_status: paired-convention-research-pilot
+  purpose: development-validation
+  required_status: development-validated

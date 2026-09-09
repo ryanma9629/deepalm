@@ -1315,20 +1315,15 @@ class ReproductionRunner:
                 ),
             )
 
-    def run_paired_convention_pilot(
+    def run_corrected_pilot(
         self, configuration: ResolvedRunConfiguration
     ) -> RunBundle:
-        """Run the bounded, opt-in Paper/Corrected M5 training pilot.
-
-        The two conventions deliberately share only immutable inputs and named
-        random streams.  Their checkpoint directories and frozen BM^D baselines
-        remain convention-local, preventing accidental cross-convention reuse.
-        """
+        """Run the four-member corrected local-validation training matrix."""
 
         staging_directory: Path | None = None
         staged_configuration: ResolvedRunConfiguration | None = None
         try:
-            _validate_paired_pilot_configuration(configuration)
+            _validate_corrected_pilot_configuration(configuration)
             output_root = configuration.output.directory
             output_root.mkdir(parents=True, exist_ok=True)
             final_directory = output_root / configuration.output.run_name
@@ -1360,161 +1355,70 @@ class ReproductionRunner:
             from deepalm.baselines import FrozenDateBenchmarkReference
             from deepalm.reference_bank import ReferenceBankProvider
             from deepalm.term_structures import MarketScenarioModel
-            from deepalm.training import (
-                BMDateTrainer,
-                MMTrainer,
-                TrainingControl,
-                TrainingInterrupted,
-            )
+            from deepalm.training import BMDateTrainer, MMTrainer
 
-            monitor.check("before-paired-pilot")
+            monitor.check("before-corrected-pilot")
             market_model = MarketScenarioModel()
             historical = market_model.load_historical_term_structures(
                 configuration.source_data.snb_csv,
                 beta_unit=configuration.source_data.nss_beta_unit,
             )
             calibration = market_model.calibrate_hjm_pca(historical)
-            snapshot = ReferenceBankProvider().build_canonical(historical)
-            ReferenceBankProvider().save(
+            reference_bank_provider = ReferenceBankProvider()
+            snapshot = reference_bank_provider.build_canonical(historical)
+            reference_bank_provider.save(
                 snapshot, staging_directory / "reference-bank.json"
             )
-            monitor.check("after-paired-pilot-inputs")
+            monitor.check("after-corrected-pilot-inputs")
 
-            convention_configurations = _paired_pilot_convention_configurations(
-                configuration, staging_directory=staging_directory
-            )
-            training_results: dict[tuple[str, str, int], Any] = {}
-            baselines: dict[tuple[str, int], Any] = {}
-            mm_trainers: dict[str, Any] = {}
-            recoveries: dict[str, Path] = {}
-            probe_started = monitor.snapshot().elapsed_seconds
-
-            for label, convention_configuration in convention_configurations.items():
-                bmd = BMDateTrainer(
-                    convention_configuration,
+            training_results: dict[tuple[str, int], Any] = {}
+            for horizon_years in (5, 15):
+                benchmark = BMDateTrainer(
+                    staged_configuration,
                     snapshot=snapshot,
                     historical=historical,
                     calibration=calibration,
                     market_model=market_model,
                     resource_monitor=monitor,
-                )
-                result = bmd.fit(horizon_years=15)
-                if result.baseline_reference_path is None:
-                    raise OperationalRunError("BM^D 15y did not freeze a baseline")
-                training_results[(label, "BM^D", 15)] = result
-                baselines[(label, 15)] = FrozenDateBenchmarkReference.load(
-                    result.baseline_reference_path
-                )
-                trainer = MMTrainer(
-                    convention_configuration,
-                    snapshot=snapshot,
-                    historical=historical,
-                    calibration=calibration,
-                    baseline_reference=baselines[(label, 15)],
-                    market_model=market_model,
-                    resource_monitor=monitor,
-                )
-                mm_trainers[label] = trainer
-                try:
-                    trainer.fit(
-                        horizon_years=15,
-                        control=TrainingControl(stop_after_completed_epoch=1),
-                    )
-                except TrainingInterrupted as interruption:
-                    if (
-                        interruption.diagnostics.get("completed_epoch") != 1
-                        or not interruption.recovery_path.is_file()
-                    ):
-                        raise
-                    recoveries[label] = interruption.recovery_path
-                else:
+                ).fit(horizon_years=horizon_years)
+                if benchmark.baseline_reference_path is None:
                     raise OperationalRunError(
-                        "Paired pilot did not stop after MM 15y probe epoch"
+                        f"BM^D {horizon_years}y did not freeze a baseline"
                     )
-                monitor.check(f"after-{label}-mm-15y-probe")
-
-            probe_seconds = monitor.snapshot().elapsed_seconds - probe_started
-            observed_primary_updates = 12
-            estimated_training_seconds = probe_seconds * 32.0 / observed_primary_updates
-            _write_json_artifact(
-                staging_directory / "pilot-throughput-probe.json",
-                {
-                    "format_version": 1,
-                    "kind": "paired-convention-pilot-throughput-probe",
-                    "observed_mm_fifteen_year_first_epochs": 2,
-                    "observed_optimizer_updates": observed_primary_updates,
-                    "estimated_primary_training_seconds": estimated_training_seconds,
-                    "maximum_primary_training_seconds": 420.0,
-                    "status": (
-                        "within-budget"
-                        if estimated_training_seconds <= 420.0
-                        else "over-budget"
-                    ),
-                },
-            )
-            if estimated_training_seconds > 420.0:
-                raise BudgetExceeded(
-                    "paired pilot projected training time exceeds 420 seconds",
-                    diagnostics={
-                        "reason": "projected_training_budget_exceeded",
-                        "observed_probe_seconds": probe_seconds,
-                        "estimated_primary_training_seconds": estimated_training_seconds,
-                        "maximum_primary_training_seconds": 420.0,
-                    },
-                )
-
-            for label, convention_configuration in convention_configurations.items():
-                training_results[(label, "MM", 15)] = mm_trainers[label].fit(
-                    horizon_years=15,
-                    control=TrainingControl(resume=True, resume_from=recoveries[label]),
-                )
-                bmd = BMDateTrainer(
-                    convention_configuration,
-                    snapshot=snapshot,
-                    historical=historical,
-                    calibration=calibration,
-                    market_model=market_model,
-                    resource_monitor=monitor,
-                )
-                result = bmd.fit(horizon_years=5)
-                if result.baseline_reference_path is None:
-                    raise OperationalRunError("BM^D 5y did not freeze a baseline")
-                training_results[(label, "BM^D", 5)] = result
                 baseline = FrozenDateBenchmarkReference.load(
-                    result.baseline_reference_path
+                    benchmark.baseline_reference_path
                 )
-                mm = MMTrainer(
-                    convention_configuration,
+                model = MMTrainer(
+                    staged_configuration,
                     snapshot=snapshot,
                     historical=historical,
                     calibration=calibration,
                     baseline_reference=baseline,
                     market_model=market_model,
                     resource_monitor=monitor,
-                )
-                training_results[(label, "MM", 5)] = mm.fit(horizon_years=5)
-                monitor.check(f"after-{label}-paired-pilot-training")
+                ).fit(horizon_years=horizon_years)
+                training_results[("BM^D", horizon_years)] = benchmark
+                training_results[("MM", horizon_years)] = model
+                monitor.check(f"after-corrected-pilot-{horizon_years}y")
 
-            jobs = _paired_pilot_training_jobs(
+            jobs = _corrected_pilot_training_jobs(
                 training_results, artifact_root=staging_directory
             )
             if (
-                len(jobs) != 8
-                or sum(int(job["optimizer_updates"]) for job in jobs) != 32
+                {(job["policy"], job["horizon_years"]) for job in jobs}
+                != {("BM^D", 5), ("BM^D", 15), ("MM", 5), ("MM", 15)}
+                or sum(int(job["optimizer_updates"]) for job in jobs) != 16
+                or not all(job["finite_nonzero_optimization_signal"] for job in jobs)
             ):
                 raise OperationalRunError(
-                    "Paired pilot did not complete its 8-job matrix"
+                    "Corrected pilot did not complete its finite four-member matrix"
                 )
             manifest = _build_manifest(
-                staged_configuration,
-                RunStatus.COMPLETED,
-                AcceptanceStatus.PAIRED_CONVENTION_RESEARCH_PILOT,
+                staged_configuration, RunStatus.COMPLETED, AcceptanceStatus.PENDING
             )
             manifest["requested_configuration"] = configuration.to_dict()
-            manifest["paired_convention_pilot"] = {
-                "label": "paired-convention-research-pilot",
+            manifest["corrected_local_validation_pilot"] = {
                 "status": "completed",
-                "conventions": list(convention_configurations),
                 "shared_identities": {
                     "reference_bank_content_hash": snapshot.content_hash,
                     "market_source_hash": historical.source_hash,
@@ -1522,51 +1426,29 @@ class ReproductionRunner:
                     "seed_registry": configuration.seeds,
                 },
                 "completed_training_jobs": jobs,
-                "completed_primary_optimizer_updates": sum(
-                    int(job["optimizer_updates"]) for job in jobs
-                ),
-                "mm_fifteen_year_truncation": {
-                    label: {
-                        "source_checkpoint": str(
-                            training_results[
-                                (label, "MM", 15)
-                            ].checkpoint_path.relative_to(staging_directory)
-                        ),
-                        "source_horizon_years": 15,
-                        "evaluation_horizon_years": 5,
-                        "optimizer_updates": 0,
-                        "evaluation_stage": "ticket-29",
-                    }
-                    for label in convention_configurations
-                },
-                "throughput_probe": {
-                    "observed_seconds": probe_seconds,
-                    "estimated_primary_training_seconds": estimated_training_seconds,
-                    "maximum_primary_training_seconds": 420.0,
-                },
+                "completed_primary_optimizer_updates": 16,
                 "resource_measurements": monitor.snapshot().to_dict(),
                 "deferred": [
-                    "locked paired evaluation and bootstrap (ticket-29)",
-                    "paired pilot report (ticket-30)",
+                    "locked corrected evaluation",
+                    "corrected pilot report",
                     "paper widths, multi-seed, sensitivity, and economic assessment",
                 ],
             }
             _write_json_artifact(staging_directory / "manifest.json", manifest)
-            monitor.check("after-paired-pilot")
+            monitor.check("after-corrected-pilot")
             os.replace(staging_directory, final_directory)
-            checkpoints = tuple(
-                final_directory / result.checkpoint_path.relative_to(staging_directory)
-                for result in training_results.values()
-            )
             return RunBundle(
                 status=RunStatus.COMPLETED,
-                acceptance_status=AcceptanceStatus.PAIRED_CONVENTION_RESEARCH_PILOT,
+                acceptance_status=AcceptanceStatus.PENDING,
                 artifact_directory=final_directory,
                 artifacts=tuple(sorted(final_directory.iterdir())),
-                checkpoints=checkpoints,
+                checkpoints=tuple(
+                    final_directory / result.checkpoint_path.relative_to(staging_directory)
+                    for result in training_results.values()
+                ),
             )
         except BudgetExceeded as error:
-            return _paired_pilot_failure_bundle(
+            return _corrected_pilot_failure_bundle(
                 configuration,
                 staging_directory=staging_directory,
                 staged_configuration=staged_configuration,
@@ -1574,7 +1456,7 @@ class ReproductionRunner:
                 status=RunStatus.INCOMPLETE,
             )
         except (OperationalRunError, OSError, RuntimeError, ValueError) as error:
-            return _paired_pilot_failure_bundle(
+            return _corrected_pilot_failure_bundle(
                 configuration,
                 staging_directory=staging_directory,
                 staged_configuration=staged_configuration,
@@ -2007,6 +1889,59 @@ def _validate_paired_pilot_configuration(
         raise OperationalRunError("Paired pilot excludes sensitivity retraining")
 
 
+def _validate_corrected_pilot_configuration(
+    configuration: ResolvedRunConfiguration,
+) -> None:
+    """Defend the compact corrected pilot when callers bypass YAML resolution."""
+
+    scale = configuration.run_scale
+    if scale.profile != "corrected_pilot":
+        raise OperationalRunError("Corrected pilot requires corrected_pilot scale")
+    if configuration.acceptance.purpose != "development-validation":
+        raise OperationalRunError(
+            "Corrected pilot requires development-validation purpose"
+        )
+    if configuration.acceptance.required_status != "development-validated":
+        raise OperationalRunError(
+            "Corrected pilot requires development-validated status"
+        )
+    if set(configuration.policy.names) != {"BM^D", "MM"}:
+        raise OperationalRunError("Corrected pilot requires BM^D and MM exactly once")
+    if set(configuration.experiment.horizons_years) != {5, 15}:
+        raise OperationalRunError("Corrected pilot requires 5- and 15-year horizons")
+    if configuration.experiment.include_swaps:
+        raise OperationalRunError("Corrected pilot excludes swaps")
+    if (
+        configuration.optimization.device != "mps"
+        or configuration.optimization.dtype != "float32"
+    ):
+        raise OperationalRunError("Corrected pilot requires MPS float32")
+    if not torch.backends.mps.is_available():
+        raise OperationalRunError("Corrected pilot requires an available MPS runtime")
+    if configuration.architecture.profile != "compact":
+        raise OperationalRunError("Corrected pilot requires compact architecture")
+    if (
+        scale.epochs,
+        scale.training_paths_per_epoch,
+        scale.selection_paths,
+        scale.test_paths,
+        scale.batch_size,
+    ) != (2, 16, 16, 64, 8):
+        raise OperationalRunError(
+            "Corrected pilot scale differs from its locked M5 budget"
+        )
+    if configuration.resources.wall_clock_budget_seconds != 600:
+        raise OperationalRunError("Corrected pilot requires a 600-second total budget")
+    limit = 12 * 1024**3
+    if (
+        configuration.resources.process_rss_limit_bytes != limit
+        or configuration.resources.accelerator_memory_limit_bytes != limit
+    ):
+        raise OperationalRunError("Corrected pilot requires 12 GiB RSS and MPS guards")
+    if configuration.reference_bank.sensitivity is not None:
+        raise OperationalRunError("Corrected pilot excludes sensitivity retraining")
+
+
 def _paired_pilot_convention_configurations(
     configuration: ResolvedRunConfiguration, *, staging_directory: Path
 ) -> dict[str, ResolvedRunConfiguration]:
@@ -2024,24 +1959,24 @@ def _paired_pilot_convention_configurations(
     }
 
 
-def _paired_pilot_training_jobs(
-    results: Mapping[tuple[str, str, int], Any], *, artifact_root: Path
+def _corrected_pilot_training_jobs(
+    results: Mapping[tuple[str, int], Any], *, artifact_root: Path
 ) -> list[dict[str, object]]:
-    """Serialize completed jobs with their convention-local baseline evidence."""
+    """Serialize only the finite, four-update members of the corrected pilot."""
 
     return [
         {
-            "convention": convention,
             "policy": policy,
             "horizon_years": horizon,
             "checkpoint": str(result.checkpoint_path.relative_to(artifact_root)),
             "checkpoint_sha256": _sha256(result.checkpoint_path),
             "optimizer_updates": result.optimizer_updates,
             "selected_epoch": result.selected_epoch,
-            "finite_clipped_gradients": bool(
-                result.clipped_gradient_norms
+            "finite_nonzero_optimization_signal": bool(
+                result.optimizer_updates == 4
+                and len(result.clipped_gradient_norms) == 4
                 and all(
-                    np.isfinite(value) and value <= 0.20001
+                    np.isfinite(value) and 0.0 < value <= 0.20001
                     for value in result.clipped_gradient_norms
                 )
             ),
@@ -2052,7 +1987,7 @@ def _paired_pilot_training_jobs(
             ),
             "baseline_reference_identity": result.baseline_reference_identity,
         }
-        for (convention, policy, horizon), result in sorted(results.items())
+        for (policy, horizon), result in sorted(results.items())
     ]
 
 
@@ -3100,6 +3035,60 @@ def _paired_pilot_failure_bundle(
         )
         if evaluation_source is not None:
             manifest["paired_evaluation_source"] = dict(evaluation_source)
+        _write_json_artifact(staging_directory / "manifest.json", manifest)
+        suffix = staging_directory.name.rsplit("-", 1)[-1]
+        failure_directory = configuration.output.directory / (
+            f"{configuration.output.run_name}.{status.value}-{suffix}"
+        )
+        try:
+            os.replace(staging_directory, failure_directory)
+        except OSError:
+            failure_directory = None
+    return RunBundle(
+        status=status,
+        acceptance_status=AcceptanceStatus.PENDING,
+        artifact_directory=failure_directory,
+        error=str(error),
+        artifacts=(failure_directory / "manifest.json",)
+        if failure_directory is not None
+        else (),
+    )
+
+
+def _corrected_pilot_failure_bundle(
+    configuration: ResolvedRunConfiguration,
+    *,
+    staging_directory: Path | None,
+    staged_configuration: ResolvedRunConfiguration | None,
+    error: Exception,
+    status: RunStatus,
+) -> RunBundle:
+    """Preserve failed corrected-pilot diagnostics without promoting evidence."""
+
+    if staging_directory is None or not staging_directory.is_dir():
+        failure_directory = _write_failure_bundle(configuration, error, status=status)
+    else:
+        effective_configuration = staged_configuration or configuration
+        manifest = _build_manifest(
+            effective_configuration, status, AcceptanceStatus.PENDING
+        )
+        manifest.update(
+            {
+                "requested_configuration": configuration.to_dict(),
+                "error": str(error),
+                "diagnostics": _diagnostics_for(error),
+                "corrected_local_validation_pilot": {
+                    "status": "incomplete"
+                    if status is RunStatus.INCOMPLETE
+                    else "failed",
+                    "generated_artifacts": sorted(
+                        str(path.relative_to(staging_directory))
+                        for path in staging_directory.rglob("*")
+                        if path.is_file()
+                    ),
+                },
+            }
+        )
         _write_json_artifact(staging_directory / "manifest.json", manifest)
         suffix = staging_directory.name.rsplit("-", 1)[-1]
         failure_directory = configuration.output.directory / (

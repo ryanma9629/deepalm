@@ -56,7 +56,6 @@ def build_execution_plan(configuration: ResolvedRunConfiguration) -> ExecutionPl
     scale = configuration.run_scale
     updates_per_epoch = _ceil_division(scale.training_paths_per_epoch, scale.batch_size)
     updates = updates_per_epoch * scale.epochs
-    job_repetitions = 2 if scale.profile == "paired_convention_pilot" else 1
     jobs = tuple(
         PlannedTrainingJob(
             policy=policy,
@@ -73,7 +72,6 @@ def build_execution_plan(configuration: ResolvedRunConfiguration) -> ExecutionPl
             architecture_profile=configuration.architecture.profile,
             architecture_widths=configuration.architecture.widths,
         )
-        for _ in range(job_repetitions)
         for policy in configuration.policy.names
         for horizon in configuration.experiment.horizons_years
     )
@@ -83,7 +81,7 @@ def build_execution_plan(configuration: ResolvedRunConfiguration) -> ExecutionPl
         2
         if has_mm
         and both_horizons
-        and scale.profile != "paired_convention_pilot"
+        and scale.profile != "corrected_pilot"
         else 0
     )
     return ExecutionPlan(
@@ -107,7 +105,6 @@ def build_execution_plan(configuration: ResolvedRunConfiguration) -> ExecutionPl
             "first-training-slice profiling",
             "recovery fixture",
             "representative sensitivity",
-            "paired Paper training",
             "extended research matrix",
         ),
     )

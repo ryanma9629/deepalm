@@ -177,7 +177,7 @@ _RUN_SCALE_PROFILES = {
         "early_stopping_patience": 15,
         "minimum_relative_improvement": 0.001,
     },
-    "paired_convention_pilot": {
+    "corrected_pilot": {
         "epochs": 2,
         "training_paths_per_epoch": 16,
         "selection_paths": 16,
@@ -194,7 +194,7 @@ _ARCHITECTURE_PROFILES = {
     "paper": (512, 512, 256, 128),
 }
 
-_CONFIGURATION_SCHEMA_VERSION = 3
+_CONFIGURATION_SCHEMA_VERSION = 4
 
 
 def load_configuration(path: Path) -> ResolvedRunConfiguration:
@@ -313,7 +313,7 @@ def _resolve_run_scale(raw: object) -> RunScaleConfiguration:
     if values is None:
         raise ConfigurationError(
             "run_scale.profile must be 'local_flow', 'quick', 'paper_scale', "
-            "'paired_convention_pilot', or 'bank_training'"
+            "'corrected_pilot', or 'bank_training'"
         )
     overrides = sorted(set(section) - {"profile"})
     if overrides:
@@ -568,20 +568,18 @@ def _resolve_acceptance(raw: object) -> AcceptanceConfiguration:
     required_status = _string(section["required_status"], "acceptance.required_status")
     if required_status not in {
         "development-validated",
-        "paired-convention-research-pilot",
         "methodologically-reproduced",
     }:
         raise ConfigurationError(
-            "acceptance.required_status must be 'development-validated', "
-            "'paired-convention-research-pilot', or "
+            "acceptance.required_status must be 'development-validated' or "
             "'methodologically-reproduced'"
         )
     return AcceptanceConfiguration(purpose=purpose, required_status=required_status)
 
 
 def _validate_combinations(configuration: ResolvedRunConfiguration) -> None:
-    if configuration.run_scale.profile == "paired_convention_pilot":
-        _validate_paired_convention_pilot(configuration)
+    if configuration.run_scale.profile == "corrected_pilot":
+        _validate_corrected_pilot(configuration)
         return
     if (
         configuration.run_scale.profile == "bank_training"
@@ -606,48 +604,50 @@ def _validate_combinations(configuration: ResolvedRunConfiguration) -> None:
         )
 
 
-def _validate_paired_convention_pilot(
+def _validate_corrected_pilot(
     configuration: ResolvedRunConfiguration,
 ) -> None:
-    """Lock the bounded M5 experiment before the runner derives Paper evidence."""
+    """Lock the bounded M5 corrected local-validation pilot."""
 
-    if configuration.acceptance.purpose != "research":
-        raise ConfigurationError("paired_convention_pilot requires research purpose")
+    if configuration.acceptance.purpose != "development-validation":
+        raise ConfigurationError(
+            "corrected_pilot requires development-validation purpose"
+        )
     if (
         configuration.acceptance.required_status
-        != "paired-convention-research-pilot"
+        != "development-validated"
     ):
         raise ConfigurationError(
-            "paired_convention_pilot requires paired-convention-research-pilot status"
+            "corrected_pilot requires development-validated status"
         )
     if set(configuration.policy.names) != {"BM^D", "MM"}:
-        raise ConfigurationError("paired_convention_pilot requires BM^D and MM")
+        raise ConfigurationError("corrected_pilot requires BM^D and MM")
     if set(configuration.experiment.horizons_years) != {5, 15}:
         raise ConfigurationError(
-            "paired_convention_pilot requires both 5- and 15-year horizons"
+            "corrected_pilot requires both 5- and 15-year horizons"
         )
     if configuration.experiment.include_swaps:
-        raise ConfigurationError("paired_convention_pilot excludes swaps")
+        raise ConfigurationError("corrected_pilot excludes swaps")
     if (
         configuration.optimization.device != "mps"
         or configuration.optimization.dtype != "float32"
     ):
-        raise ConfigurationError("paired_convention_pilot requires MPS float32")
+        raise ConfigurationError("corrected_pilot requires MPS float32")
     if configuration.architecture.profile != "compact":
-        raise ConfigurationError("paired_convention_pilot requires compact architecture")
+        raise ConfigurationError("corrected_pilot requires compact architecture")
     if configuration.reference_bank.sensitivity is not None:
         raise ConfigurationError(
-            "paired_convention_pilot excludes sensitivity retraining"
+            "corrected_pilot excludes sensitivity retraining"
         )
     if configuration.resources.wall_clock_budget_seconds != 600:
-        raise ConfigurationError("paired_convention_pilot requires a 600-second budget")
+        raise ConfigurationError("corrected_pilot requires a 600-second budget")
     limit = 12 * 1024**3
     if (
         configuration.resources.process_rss_limit_bytes != limit
         or configuration.resources.accelerator_memory_limit_bytes != limit
     ):
         raise ConfigurationError(
-            "paired_convention_pilot requires 12 GiB RSS and MPS limits"
+            "corrected_pilot requires 12 GiB RSS and MPS limits"
         )
 
 
