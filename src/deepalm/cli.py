@@ -28,22 +28,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     plan_parser.add_argument(
         "--config", type=Path, required=True, help="YAML run configuration"
     )
-    profile_parser = subparsers.add_parser(
-        "profile", help="show the same bounded work profile as plan"
-    )
-    profile_parser.add_argument(
-        "--config", type=Path, required=True, help="YAML run configuration"
-    )
     preflight_parser = subparsers.add_parser(
         "preflight", help="run bounded HJM calibration and scenario generation only"
     )
     preflight_parser.add_argument(
-        "--config", type=Path, required=True, help="YAML run configuration"
-    )
-    calibrate_parser = subparsers.add_parser(
-        "calibrate", help="run bounded HJM calibration and scenario generation only"
-    )
-    calibrate_parser.add_argument(
         "--config", type=Path, required=True, help="YAML run configuration"
     )
     bank_parser = subparsers.add_parser(
@@ -91,21 +79,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=Path,
         help="completed locked evaluation artifact required by the selected contract",
     )
-    train_parser = subparsers.add_parser(
-        "train", help="run the local workflow or validate a compatible trained workflow"
-    )
-    train_parser.add_argument(
-        "--config", type=Path, required=True, help="YAML local workflow configuration"
-    )
-    train_parser.add_argument(
-        "--source-run",
-        type=Path,
-        help="completed compatible workflow to reuse without retraining the matrix",
-    )
     for command, help_text in (
         ("resume", "validate compatible recovery evidence without rerunning the matrix"),
         ("evaluate", "reuse compatible locked evaluation evidence"),
-        ("accept", "read compatible actual acceptance evidence"),
     ):
         stage_parser = subparsers.add_parser(command, help=help_text)
         stage_parser.add_argument(
@@ -114,73 +90,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         stage_parser.add_argument(
             "--source-run", type=Path, required=True, help="completed compatible workflow"
         )
-    workflow_parser = subparsers.add_parser(
-        "workflow",
-        help="run the complete bounded local 5/15-year no-swap workflow",
-    )
-    workflow_parser.add_argument(
-        "--config", type=Path, required=True, help="YAML local workflow configuration"
-    )
-    corrected_pilot_parser = subparsers.add_parser(
-        "corrected-pilot",
-        help="run the bounded corrected BM^D/MM local validation pilot",
-    )
-    corrected_pilot_parser.add_argument(
-        "--config", type=Path, required=True, help="YAML corrected-pilot configuration"
-    )
-    corrected_evaluation_parser = subparsers.add_parser(
-        "corrected-evaluate",
-        help="evaluate a completed corrected pilot on locked paths",
-    )
-    corrected_evaluation_parser.add_argument(
-        "--config", type=Path, required=True, help="YAML corrected-pilot configuration"
-    )
-    corrected_evaluation_parser.add_argument(
-        "--source-run", type=Path, required=True, help="completed corrected-pilot artifact"
-    )
-    corrected_report_parser = subparsers.add_parser(
-        "corrected-report",
-        help="publish an auditable report from corrected-pilot evaluation evidence",
-    )
-    corrected_report_parser.add_argument(
-        "--config", type=Path, required=True, help="YAML corrected-pilot configuration"
-    )
-    corrected_report_parser.add_argument(
-        "--source-run", type=Path, required=True, help="completed corrected-pilot artifact"
-    )
-    corrected_report_parser.add_argument(
-        "--evaluation-run", type=Path, required=True, help="completed corrected evaluation artifact"
-    )
-    four_policy_pilot_parser = subparsers.add_parser(
-        "four-policy-pilot",
-        help="run the bounded corrected BM^E/BM^C/BM^D/MM local comparison pilot",
-    )
-    four_policy_pilot_parser.add_argument(
-        "--config", type=Path, required=True, help="YAML four-policy pilot configuration"
-    )
-    four_policy_evaluation_parser = subparsers.add_parser(
-        "four-policy-evaluate",
-        help="evaluate a completed four-policy pilot on locked paths",
-    )
-    four_policy_evaluation_parser.add_argument(
-        "--config", type=Path, required=True, help="YAML four-policy pilot configuration"
-    )
-    four_policy_evaluation_parser.add_argument(
-        "--source-run", type=Path, required=True, help="completed four-policy pilot artifact"
-    )
-    four_policy_report_parser = subparsers.add_parser(
-        "four-policy-report",
-        help="publish an auditable comparison report from four-policy evaluation evidence",
-    )
-    four_policy_report_parser.add_argument(
-        "--config", type=Path, required=True, help="YAML four-policy pilot configuration"
-    )
-    four_policy_report_parser.add_argument(
-        "--source-run", type=Path, required=True, help="completed four-policy pilot artifact"
-    )
-    four_policy_report_parser.add_argument(
-        "--evaluation-run", type=Path, required=True, help="completed four-policy evaluation artifact"
-    )
     arguments = parser.parse_args(argv)
 
     try:
@@ -189,12 +98,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"Configuration error: {error}", file=sys.stderr)
         return 2
 
-    if arguments.command in {"plan", "profile"}:
+    if arguments.command == "plan":
         print(json.dumps(build_execution_plan(configuration).to_dict(), indent=2))
         return 0
 
     runner = ReproductionRunner()
-    if arguments.command in {"preflight", "calibrate"}:
+    if arguments.command == "preflight":
         bundle = runner.preflight_market(configuration)
     elif arguments.command == "bank":
         bundle = runner.build_reference_bank(configuration)
@@ -210,47 +119,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             source_run_directories=tuple(arguments.source_run),
             evaluation_directory=arguments.evaluation_run,
         )
-    elif arguments.command == "workflow":
-        bundle = runner.run_local_workflow(configuration)
-    elif arguments.command == "corrected-pilot":
-        bundle = runner.run_corrected_pilot(configuration)
-    elif arguments.command == "corrected-evaluate":
-        bundle = runner.evaluate_corrected_pilot(
-            configuration, source_run_directory=arguments.source_run
-        )
-    elif arguments.command == "corrected-report":
-        bundle = runner.generate_corrected_pilot_report(
-            configuration,
-            pilot_run_directory=arguments.source_run,
-            evaluation_directory=arguments.evaluation_run,
-        )
-    elif arguments.command == "four-policy-pilot":
-        bundle = runner.run_four_policy_pilot(configuration)
-    elif arguments.command == "four-policy-evaluate":
-        bundle = runner.evaluate_four_policy_pilot(
-            configuration, source_run_directory=arguments.source_run
-        )
-    elif arguments.command == "four-policy-report":
-        bundle = runner.generate_four_policy_pilot_report(
-            configuration,
-            pilot_run_directory=arguments.source_run,
-            evaluation_directory=arguments.evaluation_run,
-        )
-    elif arguments.command == "train":
-        bundle = (
-            runner.reuse_completed_workflow_stage(
-                configuration,
-                source_run_directory=arguments.source_run,
-                stage="train",
-            )
-            if arguments.source_run is not None
-            else runner.run_local_workflow(configuration)
-        )
     elif arguments.command == "evaluate":
         bundle = runner.evaluate_configured_workflow(
             configuration, source_run_directory=arguments.source_run
         )
-    elif arguments.command in {"resume", "accept"}:
+    elif arguments.command == "resume":
         bundle = runner.reuse_completed_workflow_stage(
             configuration,
             source_run_directory=arguments.source_run,

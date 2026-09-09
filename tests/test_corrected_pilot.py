@@ -13,7 +13,7 @@ from test_run_skeleton import configuration_data
 from deepalm.cli import main
 from deepalm.config import ConfigurationError, resolve_configuration
 from deepalm.planning import build_execution_plan
-from deepalm.runner import AcceptanceStatus, ReproductionRunner, RunBundle, RunStatus
+from deepalm.runner import AcceptanceStatus, ReproductionRunner, RunStatus
 
 
 def _corrected_pilot_data(tmp_path: Path) -> dict[str, object]:
@@ -69,30 +69,6 @@ def test_configuration_rejects_the_retired_paired_pilot_profile(tmp_path: Path) 
 
     with pytest.raises(ConfigurationError, match="corrected_pilot"):
         resolve_configuration(retired)
-
-
-def test_corrected_pilot_command_dispatches_to_the_public_runner_seam(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr("torch.backends.mps.is_available", lambda: True)
-    data = _corrected_pilot_data(tmp_path)
-    configuration = resolve_configuration(data)
-    config_path = tmp_path / "corrected-pilot.yaml"
-    config_path.write_text(yaml.safe_dump(data), encoding="utf-8")
-    artifact_directory = tmp_path / "pilot"
-
-    def fake_pilot(self: ReproductionRunner, received: object) -> RunBundle:
-        assert received == configuration
-        return RunBundle(
-            status=RunStatus.COMPLETED,
-            acceptance_status=configuration.acceptance.required_status,
-            artifact_directory=artifact_directory,
-        )
-
-    monkeypatch.setattr(ReproductionRunner, "run_corrected_pilot", fake_pilot)
-
-    assert main(["corrected-pilot", "--config", str(config_path)]) == 0
-    assert capsys.readouterr().out.strip() == str(artifact_directory)
 
 
 def test_paired_pilot_is_not_a_public_command(

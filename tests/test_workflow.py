@@ -6,16 +6,14 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
-import yaml
 from test_run_skeleton import configuration_data
 
-from deepalm.cli import main
 from deepalm.config import (
     PolicyConfiguration,
     RunScaleConfiguration,
     resolve_configuration,
 )
-from deepalm.runner import AcceptanceStatus, ReproductionRunner, RunBundle, RunStatus
+from deepalm.runner import AcceptanceStatus, ReproductionRunner, RunStatus
 
 
 def _workflow_configuration(tmp_path: Path):
@@ -148,43 +146,6 @@ def test_local_workflow_runs_every_required_stage_and_publishes_one_bundle(
     )
     assert tampered.status is RunStatus.FAILED
     assert "artifact hash differs" in (tampered.error or "")
-
-
-def test_workflow_command_dispatches_to_the_public_workflow_seam(
-    tmp_path: Path, monkeypatch, capsys
-) -> None:
-    raw = configuration_data(tmp_path)
-    repository = Path(__file__).resolve().parents[1]
-    source_data = raw["source_data"]
-    assert isinstance(source_data, dict)
-    source_data.update(
-        {
-            "snb_csv": str(
-                repository / "data/snb-data-rendopar-en-all_19880401-20250731.csv"
-            ),
-            "paper_pdf": str(repository / "docs/Deep treasury management for banks.pdf"),
-        }
-    )
-    raw["policy"] = {"names": ["BM^E", "BM^C", "BM^D", "MM"]}
-    configuration = resolve_configuration(raw)
-    config_path = tmp_path / "workflow.yaml"
-    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
-    artifact_directory = tmp_path / "completed-workflow"
-
-    def fake_workflow(
-        self: ReproductionRunner, received: object
-    ) -> RunBundle:
-        assert received == configuration
-        return RunBundle(
-            status=RunStatus.COMPLETED,
-            acceptance_status=AcceptanceStatus.PASSED,
-            artifact_directory=artifact_directory,
-        )
-
-    monkeypatch.setattr(ReproductionRunner, "run_local_workflow", fake_workflow)
-
-    assert main(["workflow", "--config", str(config_path)]) == 0
-    assert capsys.readouterr().out.strip() == str(artifact_directory)
 
 
 def test_local_workflow_rejects_non_cpu_float64_validation(tmp_path: Path) -> None:

@@ -15,7 +15,7 @@ from test_run_skeleton import configuration_data
 from deepalm.cli import main
 from deepalm.config import resolve_configuration
 from deepalm.planning import build_execution_plan
-from deepalm.runner import ReproductionRunner, RunBundle, RunStatus
+from deepalm.runner import ReproductionRunner, RunStatus
 from deepalm.semantics import artifact_semantics
 
 
@@ -50,30 +50,6 @@ def test_four_policy_pilot_locks_eight_member_m5_budget(
     assert plan.primary_training_jobs == 8
     assert plan.primary_optimizer_updates == 32
     assert configuration.run_scale.test_paths == 64
-
-
-def test_four_policy_pilot_command_dispatches_to_runner(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr("torch.backends.mps.is_available", lambda: True)
-    data = _four_policy_pilot_data(tmp_path)
-    configuration = resolve_configuration(data)
-    config_path = tmp_path / "four-policy-pilot.yaml"
-    config_path.write_text(yaml.safe_dump(data), encoding="utf-8")
-    artifact_directory = tmp_path / "pilot"
-
-    def fake_pilot(self: ReproductionRunner, received: object) -> RunBundle:
-        assert received == configuration
-        return RunBundle(
-            status=RunStatus.COMPLETED,
-            acceptance_status=configuration.acceptance.required_status,
-            artifact_directory=artifact_directory,
-        )
-
-    monkeypatch.setattr(ReproductionRunner, "run_four_policy_pilot", fake_pilot)
-
-    assert main(["four-policy-pilot", "--config", str(config_path)]) == 0
-    assert capsys.readouterr().out.strip() == str(artifact_directory)
 
 
 def test_four_policy_pilot_publishes_all_members_before_locked_evaluation(

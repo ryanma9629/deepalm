@@ -219,7 +219,8 @@ def test_generic_two_policy_actions_reject_a_source_from_another_contract(
 ) -> None:
     monkeypatch.setattr("torch.backends.mps.is_available", lambda: True)
     configuration = resolve_configuration(_corrected_pilot_data(tmp_path))
-    source = tmp_path / "incompatible-source"
+    # A historic scenario-bearing directory name carries no contract authority.
+    source = tmp_path / "four-policy-corrected-local-validation-pilot"
     manifest = _write_completed_corrected_pilot(source)
     resolved = configuration.to_dict()
     resolved["workflow_contract"] = {"name": "local-four-policy-comparison"}
