@@ -22,6 +22,8 @@ def configuration_data(tmp_path: Path) -> dict[str, object]:
             "paper_pdf": str(tmp_path / "paper.pdf"),
             "nss_beta_unit": "percentage_points",
         },
+        "workflow_contract": {"name": "bounded-local-workflow"},
+        "execution_profile": {"name": "local-cpu-compact"},
         "run_scale": {"profile": "local_flow"},
         "architecture": {"profile": "compact"},
         "reference_bank": {
@@ -94,7 +96,9 @@ def test_profiles_are_independent_and_local_plan_is_bounded(tmp_path: Path) -> N
     assert all(job.optimizer_updates == 8 for job in plan.jobs)
 
 
-def test_bank_training_requires_explicit_scale_and_bank_purpose(tmp_path: Path) -> None:
+def test_bank_training_requires_explicit_scale_and_bank_purpose(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     configuration = configuration_data(tmp_path)
     configuration["run_scale"] = {"profile": "bank_training"}
     with pytest.raises(ConfigurationError, match="bank_training"):
@@ -125,15 +129,39 @@ def test_bank_training_requires_explicit_scale_and_bank_purpose(tmp_path: Path) 
         "purpose": "bank-training",
         "required_status": "development-validated",
     }
+    monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+    configuration.update(
+        {
+            "workflow_contract": {"name": "bank-single-gpu-commissioning"},
+            "execution_profile": {"name": "cuda-single-gpu"},
+            "run_scale": {
+                "profile": "bank_training",
+                "epochs": 1,
+                "training_paths_per_epoch": 2,
+                "selection_paths": 2,
+                "test_paths": 2,
+                "batch_size": 2,
+                "selection_start_epoch": 1,
+                "early_stopping_patience": 1,
+                "minimum_relative_improvement": 0.0,
+            },
+            "optimization": {"device": "cuda", "dtype": "float32"},
+            "resources": {
+                "wall_clock_budget_seconds": 1800,
+                "process_rss_limit_bytes": 4 * 1024**3,
+                "accelerator_memory_limit_bytes": 4 * 1024**3,
+            },
+        }
+    )
     resolved = resolve_configuration(configuration)
     assert resolved.run_scale.profile == "bank_training"
-    assert resolved.run_scale.selection_start_epoch == 3
-    assert resolved.run_scale.early_stopping_patience == 4
-    assert resolved.run_scale.minimum_relative_improvement == 0.002
+    assert resolved.run_scale.selection_start_epoch == 1
+    assert resolved.run_scale.early_stopping_patience == 1
+    assert resolved.run_scale.minimum_relative_improvement == 0.0
     assert resolved.acceptance.purpose == "bank-training"
 
 
-def test_auto_device_is_resolved_once_before_manifest_hash(
+def test_execution_profile_rejects_an_auto_selected_device_that_changes_its_envelope(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     configuration = configuration_data(tmp_path)
@@ -141,10 +169,8 @@ def test_auto_device_is_resolved_once_before_manifest_hash(
     monkeypatch.setattr("torch.cuda.is_available", lambda: True)
     monkeypatch.setattr("torch.backends.mps.is_available", lambda: True)
 
-    resolved = resolve_configuration(configuration)
-
-    assert resolved.optimization.device == "cuda"
-    assert resolved.to_dict()["optimization"]["device"] == "cuda"
+    with pytest.raises(ConfigurationError, match="local-cpu-compact"):
+        resolve_configuration(configuration)
 
 
 def test_resource_monitor_raises_typed_budget_failure() -> None:
@@ -235,12 +261,24 @@ def test_methodological_reproduction_requires_the_fixed_financial_semantics(
     tmp_path: Path,
 ) -> None:
     invalid = configuration_data(tmp_path)
-    invalid["run_scale"] = {"profile": "paper_scale"}
-    invalid["policy"] = {"names": ["BM^E", "BM^C", "BM^D", "MM"]}
-    invalid["acceptance"] = {
-        "purpose": "research",
-        "required_status": "methodologically-reproduced",
-    }
+    invalid.update(
+        {
+            "workflow_contract": {"name": "paper-oriented-research-plan"},
+            "execution_profile": {"name": "paper-research"},
+            "run_scale": {"profile": "paper_scale"},
+            "architecture": {"profile": "paper"},
+            "policy": {"names": ["BM^E", "BM^C", "BM^D", "MM"]},
+            "acceptance": {
+                "purpose": "research",
+                "required_status": "methodologically-reproduced",
+            },
+            "resources": {
+                "wall_clock_budget_seconds": 86_400,
+                "process_rss_limit_bytes": 32 * 1024**3,
+                "accelerator_memory_limit_bytes": 32 * 1024**3,
+            },
+        }
+    )
 
     assert resolve_configuration(invalid).run_scale.profile == "paper_scale"
 

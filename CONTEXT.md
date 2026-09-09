@@ -20,6 +20,14 @@ _Avoid_: Paper convention, 可切换口径
 项目维护的、从论文及其 errata 映射到已修正金融语义的唯一审计说明；它区分已采纳的公式修正、明确保留的建模简化与尚未接通的能力缺口。
 _Avoid_: 可执行的论文口径, 隐式修正
 
+**工作流合同（Workflow Contract）**:
+一次 Deep ALM 实验的可审计语义身份，唯一规定 TreasuryPolicy 成员、期限、无互换范围、验收目的和所需的冻结基准依赖；它回答“要执行什么金融实验”。
+_Avoid_: 命令名中的场景, 资源配置
+
+**执行配置档（Execution Profile）**:
+独立于工作流合同的、完整且固定的运行资源信封，规定设备、数值类型、网络规模、路径/epoch、批大小、时间与内存 guard；它回答“以什么资源执行已声明的实验”。
+_Avoid_: 场景选择器, 仅含设备的标签
+
 **BM^E、BM^C、BM^D 与 MM**:
 论文中的四类无互换 TreasuryPolicy：等期限分配 benchmark、固定期限分配 benchmark、按决策日期分配 benchmark，以及共享参数的多期模型。
 _Avoid_: bme, bmc, bmd, mm

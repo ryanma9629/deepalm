@@ -18,6 +18,8 @@ from deepalm.runner import AcceptanceStatus, ReproductionRunner, RunBundle, RunS
 
 def _corrected_pilot_data(tmp_path: Path) -> dict[str, object]:
     data = configuration_data(tmp_path)
+    data["workflow_contract"] = {"name": "local-two-policy-validation"}
+    data["execution_profile"] = {"name": "m5-compact"}
     data["run_scale"] = {"profile": "corrected_pilot"}
     data["policy"] = {"names": ["BM^D", "MM"]}
     data["optimization"] = {"device": "mps", "dtype": "float32"}

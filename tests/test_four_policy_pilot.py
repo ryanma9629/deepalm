@@ -21,6 +21,8 @@ from deepalm.semantics import artifact_semantics
 
 def _four_policy_pilot_data(tmp_path: Path) -> dict[str, object]:
     data = configuration_data(tmp_path)
+    data["workflow_contract"] = {"name": "local-four-policy-comparison"}
+    data["execution_profile"] = {"name": "m5-compact"}
     data["run_scale"] = {"profile": "four_policy_pilot"}
     data["policy"] = {"names": ["BM^E", "BM^C", "BM^D", "MM"]}
     data["optimization"] = {"device": "mps", "dtype": "float32"}

@@ -6,6 +6,7 @@ import hashlib
 from dataclasses import asdict, dataclass
 
 from deepalm.config import ResolvedRunConfiguration
+from deepalm.semantics import FINANCIAL_SEMANTICS_VERSION
 
 
 @dataclass(frozen=True)
@@ -40,6 +41,10 @@ class ExecutionPlan:
     resource_budget: dict[str, int | float]
     estimated_cost_status: str
     optional_stages: tuple[str, ...]
+    workflow_contract: str
+    execution_profile: str
+    corrected_financial_semantics: str
+    resolved_configuration: dict[str, object]
 
     def to_dict(self) -> dict[str, object]:
         """Return stable JSON-ready plan data for CLI output and manifests."""
@@ -107,6 +112,10 @@ def build_execution_plan(configuration: ResolvedRunConfiguration) -> ExecutionPl
             "representative sensitivity",
             "extended research matrix",
         ),
+        workflow_contract=configuration.workflow_contract.name,
+        execution_profile=configuration.execution_profile.name,
+        corrected_financial_semantics=FINANCIAL_SEMANTICS_VERSION,
+        resolved_configuration=configuration.to_dict(),
     )
 
 

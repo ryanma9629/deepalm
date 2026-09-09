@@ -297,6 +297,8 @@ def test_runner_bank_stage_imports_a_versioned_noncanonical_snapshot(
                 ),
                 "nss_beta_unit": "percentage_points",
             },
+            "workflow_contract": {"name": "bounded-local-workflow"},
+            "execution_profile": {"name": "local-cpu-compact"},
             "run_scale": {"profile": "local_flow"},
             "architecture": {"profile": "compact"},
             "reference_bank": {
@@ -307,7 +309,7 @@ def test_runner_bank_stage_imports_a_versioned_noncanonical_snapshot(
             "policy": {"names": ["BM^E"]},
             "optimization": {"device": "cpu", "dtype": "float64"},
             "resources": {
-                "wall_clock_budget_seconds": 60,
+                "wall_clock_budget_seconds": 1800,
                 "process_rss_limit_bytes": 4 * 1024**3,
                 "accelerator_memory_limit_bytes": 4 * 1024**3,
             },

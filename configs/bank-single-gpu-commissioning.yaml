@@ -5,6 +5,12 @@ source_data:
   paper_pdf: docs/Deep treasury management for banks.pdf
   nss_beta_unit: percentage_points
 
+workflow_contract:
+  name: bank-single-gpu-commissioning
+
+execution_profile:
+  name: cuda-single-gpu
+
 
 run_scale:
   profile: bank_training

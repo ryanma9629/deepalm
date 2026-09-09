@@ -99,6 +99,48 @@ class AcceptanceConfiguration:
 
 
 @dataclass(frozen=True)
+class WorkflowContractConfiguration:
+    """The scenario contract selected once by a complete run configuration."""
+
+    name: str
+
+
+@dataclass(frozen=True)
+class ExecutionProfileConfiguration:
+    """The hardware and bounded-resource envelope selected by configuration."""
+
+    name: str
+
+
+@dataclass(frozen=True)
+class _WorkflowContractDefinition:
+    execution_profile: str
+    run_scale: str
+    purpose: str
+    required_status: str
+    policies: frozenset[str] | None = None
+    horizons: frozenset[int] | None = None
+
+
+@dataclass(frozen=True)
+class _ExecutionProfileDefinition:
+    device: str
+    dtype: str
+    architecture: str
+    epochs: int
+    training_paths_per_epoch: int
+    selection_paths: int
+    test_paths: int
+    batch_size: int
+    selection_start_epoch: int
+    early_stopping_patience: int | None
+    minimum_relative_improvement: float
+    wall_clock_budget_seconds: float
+    process_rss_limit_bytes: int
+    accelerator_memory_limit_bytes: int
+
+
+@dataclass(frozen=True)
 class ResolvedRunConfiguration:
     source_data: SourceDataConfiguration
     run_scale: RunScaleConfiguration
@@ -111,6 +153,8 @@ class ResolvedRunConfiguration:
     seeds: dict[str, int]
     output: OutputConfiguration
     acceptance: AcceptanceConfiguration
+    workflow_contract: WorkflowContractConfiguration
+    execution_profile: ExecutionProfileConfiguration
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-ready representation of the resolved configuration."""
@@ -144,6 +188,8 @@ _REQUIRED_SECTIONS = {
     "seeds",
     "output",
     "acceptance",
+    "workflow_contract",
+    "execution_profile",
 }
 
 _RUN_SCALE_PROFILES = {
@@ -204,7 +250,116 @@ _ARCHITECTURE_PROFILES = {
     "paper": (512, 512, 256, 128),
 }
 
-_CONFIGURATION_SCHEMA_VERSION = 4
+_WORKFLOW_CONTRACTS = {
+    "local-two-policy-validation": _WorkflowContractDefinition(
+        execution_profile="m5-compact",
+        run_scale="corrected_pilot",
+        purpose="development-validation",
+        required_status="development-validated",
+        policies=frozenset({"BM^D", "MM"}),
+        horizons=frozenset({5, 15}),
+    ),
+    "local-four-policy-comparison": _WorkflowContractDefinition(
+        execution_profile="m5-compact",
+        run_scale="four_policy_pilot",
+        purpose="development-validation",
+        required_status="development-validated",
+        policies=frozenset({"BM^E", "BM^C", "BM^D", "MM"}),
+        horizons=frozenset({5, 15}),
+    ),
+    "bounded-local-workflow": _WorkflowContractDefinition(
+        execution_profile="local-cpu-compact",
+        run_scale="local_flow",
+        purpose="development-validation",
+        required_status="development-validated",
+    ),
+    "paper-oriented-research-plan": _WorkflowContractDefinition(
+        execution_profile="paper-research",
+        run_scale="paper_scale",
+        purpose="research",
+        required_status="methodologically-reproduced",
+        policies=frozenset({"BM^E", "BM^C", "BM^D", "MM"}),
+        horizons=frozenset({5, 15}),
+    ),
+    "bank-single-gpu-commissioning": _WorkflowContractDefinition(
+        execution_profile="cuda-single-gpu",
+        run_scale="bank_training",
+        purpose="bank-training",
+        required_status="development-validated",
+        horizons=frozenset({5, 15}),
+    ),
+}
+
+_M5_MEMORY_LIMIT_BYTES = 12 * 1024**3
+
+_EXECUTION_PROFILES = {
+    "m5-compact": _ExecutionProfileDefinition(
+        device="mps",
+        dtype="float32",
+        architecture="compact",
+        epochs=2,
+        training_paths_per_epoch=16,
+        selection_paths=16,
+        test_paths=64,
+        batch_size=8,
+        selection_start_epoch=1,
+        early_stopping_patience=None,
+        minimum_relative_improvement=0.0,
+        wall_clock_budget_seconds=600,
+        process_rss_limit_bytes=_M5_MEMORY_LIMIT_BYTES,
+        accelerator_memory_limit_bytes=_M5_MEMORY_LIMIT_BYTES,
+    ),
+    "local-cpu-compact": _ExecutionProfileDefinition(
+        device="cpu",
+        dtype="float64",
+        architecture="compact",
+        epochs=2,
+        training_paths_per_epoch=32,
+        selection_paths=32,
+        test_paths=32,
+        batch_size=8,
+        selection_start_epoch=1,
+        early_stopping_patience=None,
+        minimum_relative_improvement=0.0,
+        wall_clock_budget_seconds=1800,
+        process_rss_limit_bytes=4 * 1024**3,
+        accelerator_memory_limit_bytes=4 * 1024**3,
+    ),
+    "paper-research": _ExecutionProfileDefinition(
+        device="cpu",
+        dtype="float64",
+        architecture="paper",
+        epochs=100,
+        training_paths_per_epoch=40_000,
+        selection_paths=1_600,
+        test_paths=1_600,
+        batch_size=32,
+        selection_start_epoch=20,
+        early_stopping_patience=15,
+        minimum_relative_improvement=0.001,
+        wall_clock_budget_seconds=86_400,
+        process_rss_limit_bytes=32 * 1024**3,
+        accelerator_memory_limit_bytes=32 * 1024**3,
+    ),
+    "cuda-single-gpu": _ExecutionProfileDefinition(
+        device="cuda",
+        dtype="float32",
+        architecture="compact",
+        epochs=1,
+        training_paths_per_epoch=2,
+        selection_paths=2,
+        test_paths=2,
+        batch_size=2,
+        selection_start_epoch=1,
+        early_stopping_patience=1,
+        minimum_relative_improvement=0.0,
+        wall_clock_budget_seconds=1800,
+        process_rss_limit_bytes=4 * 1024**3,
+        accelerator_memory_limit_bytes=4 * 1024**3,
+    ),
+}
+
+_CONFIGURATION_SCHEMA_VERSION = 5
 
 
 def load_configuration(path: Path) -> ResolvedRunConfiguration:
@@ -245,9 +400,27 @@ def resolve_configuration(raw: object) -> ResolvedRunConfiguration:
         seeds=_resolve_seeds(root["seeds"]),
         output=_resolve_output(root["output"]),
         acceptance=_resolve_acceptance(root["acceptance"]),
+        workflow_contract=_resolve_workflow_contract(root["workflow_contract"]),
+        execution_profile=_resolve_execution_profile(root["execution_profile"]),
     )
     _validate_combinations(resolved)
     return resolved
+
+
+def _resolve_workflow_contract(raw: object) -> WorkflowContractConfiguration:
+    section = _section(raw, "workflow_contract", {"name"})
+    name = _string(section["name"], "workflow_contract.name")
+    if name not in _WORKFLOW_CONTRACTS:
+        raise ConfigurationError("workflow_contract.name is unsupported")
+    return WorkflowContractConfiguration(name=name)
+
+
+def _resolve_execution_profile(raw: object) -> ExecutionProfileConfiguration:
+    section = _section(raw, "execution_profile", {"name"})
+    name = _string(section["name"], "execution_profile.name")
+    if name not in _EXECUTION_PROFILES:
+        raise ConfigurationError("execution_profile.name is unsupported")
+    return ExecutionProfileConfiguration(name=name)
 
 
 def _resolve_source_data(raw: object) -> SourceDataConfiguration:
@@ -590,30 +763,95 @@ def _resolve_acceptance(raw: object) -> AcceptanceConfiguration:
 def _validate_combinations(configuration: ResolvedRunConfiguration) -> None:
     if configuration.run_scale.profile == "corrected_pilot":
         _validate_corrected_pilot(configuration)
-        return
-    if configuration.run_scale.profile == "four_policy_pilot":
+    elif configuration.run_scale.profile == "four_policy_pilot":
         _validate_four_policy_pilot(configuration)
-        return
-    if (
+    elif (
         configuration.run_scale.profile == "bank_training"
         and configuration.acceptance.purpose != "bank-training"
     ):
         raise ConfigurationError("bank_training requires acceptance purpose bank-training")
-    if configuration.acceptance.required_status != "methodologically-reproduced":
-        return
-    if configuration.acceptance.purpose != "research":
-        raise ConfigurationError("methodologically-reproduced requires research purpose")
-    if configuration.run_scale.profile != "paper_scale":
+    if configuration.acceptance.required_status == "methodologically-reproduced":
+        if configuration.acceptance.purpose != "research":
+            raise ConfigurationError("methodologically-reproduced requires research purpose")
+        if configuration.run_scale.profile != "paper_scale":
+            raise ConfigurationError(
+                "methodologically-reproduced requires the paper_scale run profile"
+            )
+        if set(configuration.experiment.horizons_years) != {5, 15}:
+            raise ConfigurationError(
+                "methodologically-reproduced requires both 5-year and 15-year horizons"
+            )
+        if set(configuration.policy.names) != {"BM^E", "BM^C", "BM^D", "MM"}:
+            raise ConfigurationError(
+                "methodologically-reproduced requires BM^E, BM^C, BM^D, and MM"
+            )
+    _validate_declared_workflow_contract(configuration)
+    _validate_declared_execution_profile(configuration)
+
+
+def _validate_declared_workflow_contract(
+    configuration: ResolvedRunConfiguration,
+) -> None:
+    """Keep scenario invariants in the declared Workflow Contract during migration."""
+
+    contract = configuration.workflow_contract
+    requirements = _WORKFLOW_CONTRACTS[contract.name]
+    profile = configuration.execution_profile
+    if profile.name != requirements.execution_profile:
         raise ConfigurationError(
-            "methodologically-reproduced requires the paper_scale run profile"
+            f"{contract.name} requires execution_profile "
+            f"{requirements.execution_profile}"
         )
-    if set(configuration.experiment.horizons_years) != {5, 15}:
+    if configuration.run_scale.profile != requirements.run_scale:
         raise ConfigurationError(
-            "methodologically-reproduced requires both 5-year and 15-year horizons"
+            f"{contract.name} requires run_scale {requirements.run_scale}"
         )
-    if set(configuration.policy.names) != {"BM^E", "BM^C", "BM^D", "MM"}:
+    if configuration.acceptance.purpose != requirements.purpose:
         raise ConfigurationError(
-            "methodologically-reproduced requires BM^E, BM^C, BM^D, and MM"
+            f"{contract.name} requires {requirements.purpose} purpose"
+        )
+    if configuration.acceptance.required_status != requirements.required_status:
+        raise ConfigurationError(
+            f"{contract.name} requires {requirements.required_status} status"
+        )
+    if requirements.policies is not None and set(configuration.policy.names) != requirements.policies:
+        raise ConfigurationError(f"{contract.name} requires its declared TreasuryPolicy matrix")
+    if requirements.horizons is not None and set(configuration.experiment.horizons_years) != requirements.horizons:
+        raise ConfigurationError(f"{contract.name} requires its declared horizons")
+    if configuration.experiment.include_swaps:
+        raise ConfigurationError(f"{contract.name} excludes swaps")
+
+
+def _validate_declared_execution_profile(
+    configuration: ResolvedRunConfiguration,
+) -> None:
+    """Validate resource choices without allowing them to choose a scenario."""
+
+    profile = configuration.execution_profile
+    expected = _EXECUTION_PROFILES[profile.name]
+    actual = {
+        "device": configuration.optimization.device,
+        "dtype": configuration.optimization.dtype,
+        "architecture": configuration.architecture.profile,
+        "epochs": configuration.run_scale.epochs,
+        "training_paths_per_epoch": configuration.run_scale.training_paths_per_epoch,
+        "selection_paths": configuration.run_scale.selection_paths,
+        "test_paths": configuration.run_scale.test_paths,
+        "batch_size": configuration.run_scale.batch_size,
+        "selection_start_epoch": configuration.run_scale.selection_start_epoch,
+        "early_stopping_patience": configuration.run_scale.early_stopping_patience,
+        "minimum_relative_improvement": configuration.run_scale.minimum_relative_improvement,
+        "wall_clock_budget_seconds": configuration.resources.wall_clock_budget_seconds,
+        "process_rss_limit_bytes": configuration.resources.process_rss_limit_bytes,
+        "accelerator_memory_limit_bytes": configuration.resources.accelerator_memory_limit_bytes,
+    }
+    mismatches = [
+        name for name, value in actual.items() if value != getattr(expected, name)
+    ]
+    if mismatches:
+        raise ConfigurationError(
+            f"execution_profile {profile.name} is incompatible with resolved resources: "
+            f"{', '.join(mismatches)}"
         )
 
 

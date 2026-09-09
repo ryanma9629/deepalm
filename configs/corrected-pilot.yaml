@@ -3,6 +3,12 @@ source_data:
   paper_pdf: docs/Deep treasury management for banks.pdf
   nss_beta_unit: percentage_points
 
+workflow_contract:
+  name: local-two-policy-validation
+
+execution_profile:
+  name: m5-compact
+
 run_scale:
   profile: corrected_pilot
 
