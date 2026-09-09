@@ -2617,9 +2617,7 @@ def _local_workflow_acceptance(
         if all(check["status"] == "passed" for check in checks)
         else "failed",
         "checks": checks,
-        "financial_correction_ledger": _financial_correction_ledger(
-            configuration=configuration
-        ),
+        "implementation_errata": _implementation_errata_reference(),
         "non_gating_observations": (
             "loss reduction, economic return, constraint violation rates, strategy "
             "ordering, and plot similarity are reported but do not determine this status"
@@ -2627,78 +2625,18 @@ def _local_workflow_acceptance(
     }
 
 
-def _financial_correction_ledger(
-    *, configuration: ResolvedRunConfiguration
-) -> dict[str, object]:
-    """Publish the repaired-method registry without claiming economic convergence."""
+def _implementation_errata_reference() -> dict[str, object]:
+    """Link acceptance evidence to the sole current implementation authority."""
 
-    cpu_float64 = (
-        configuration.optimization.device == "cpu"
-        and configuration.optimization.dtype == "float64"
-    )
     return {
-        "status": "implemented-and-evidence-linked",
+        "status": "current-implementation-authority",
+        "document": "docs/implementation-errata.md",
         "source_basis": {
             "paper": "Deep treasury management for banks",
             "errata": "docs/errata.pdf (independent review; not author-published)",
-            "independent_oracles": "docs/financial-corrections.md",
         },
         "artifact_semantics": artifact_semantics("evaluation"),
-        "corrections": [
-            {
-                "id": "C-1/C-2",
-                "requirement": "MM uses pre-action economic ratios and centered raw constraints.",
-                "evidence": ["selected checkpoints", "locked-evaluation.json"],
-            },
-            {
-                "id": "C-3",
-                "requirement": "BM^D allocates each current maturing first bucket plus its date adjustment.",
-                "evidence": ["selected checkpoints", "MM frozen baseline references"],
-            },
-            {
-                "id": "C-5/C-6",
-                "requirement": "Deposit reference classes and dated initial rate history are identity-linked.",
-                "evidence": ["reference-bank.json", "workflow replay"],
-            },
-            {
-                "id": "E-03/Equation 8/E-10",
-                "requirement": "Cash cost, loan growth, and tail-risk statistics use the corrected formulas.",
-                "evidence": ["financial rollout diagnostics", "locked-evaluation.json"],
-            },
-            {
-                "id": "C-7/C-8/R-1",
-                "requirement": "Dividend, constraint, and moment statistics are JSON-safe population evidence.",
-                "evidence": ["locked-evaluation.json", "mm-truncation.json"],
-            },
-            {
-                "id": "R-2",
-                "requirement": "Printed-item coverage and incomplete evidence stay explicit and non-promotional.",
-                "evidence": [
-                    "compact-no-swap-report.json",
-                    "paper-coverage-inventory.json",
-                ],
-            },
-        ],
-        "execution_paths": {
-            "training_and_selection": "selected checkpoints and resource profiles",
-            "import": "reference-bank.json and workflow replay",
-            "sensitivity": "reference-bank-sensitivity.json",
-            "truncation": "mm-truncation.json",
-            "recovery": "BM_E_5y.recovery.pt",
-            "report": "compact-no-swap-report.json and paper-coverage-inventory.json",
-        },
-        "cpu_float64": {
-            "status": "covered" if cpu_float64 else "not-run",
-            "dtype": configuration.optimization.dtype,
-            "horizons_years": [5, 15],
-            "tolerance_policy": "existing dtype-aware ledger tolerances",
-        },
-        "accelerator_boundary": {
-            "mps": "runtime-dependent",
-            "cuda": "not validated locally",
-        },
         "not_claimed": [
-            "paired pilot retraining",
             "economic convergence or paper-result replication",
             "bank-model or regulatory approval",
         ],

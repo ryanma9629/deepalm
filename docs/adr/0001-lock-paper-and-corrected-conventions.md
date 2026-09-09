@@ -1,5 +1,8 @@
 # Lock Paper and Corrected conventions
 
-Status: superseded by ADR-0002
+Status: superseded by ADR-0002; historic record only
 
-The reproduction keeps a literal Paper convention and an explicitly labeled Corrected convention because the paper's PCA loading scaling and loan-interest annualization have material alternative interpretations. The profiles are locked to those two differences, and any per-choice override is custom, so methodology comparisons cannot silently mix the literal disclosure with the covariance-consistent alternative.
+This decision is retained for audit history. Its alternative-convention design
+is not executable or supported. See ADR-0002 and the
+[Implementation Errata](../implementation-errata.md) for the sole current
+Corrected Financial Semantics.

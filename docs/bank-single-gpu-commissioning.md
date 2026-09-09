@@ -46,7 +46,7 @@ loading is used for portable checkpoint deserialization before the requested
 device receives the policy tensors. Device and dtype remapping are explicit
 PyTorch state-dict conversions: source and target resolved configurations remain
 in the artifacts, but they are not semantic checkpoint mismatches. Checkpoints
-still reject incompatible data, feature preprocessing, widths, conventions,
+still reject incompatible data, feature preprocessing, widths, financial semantics,
 horizons, Reference Bank identity, or frozen BM^D dependencies, and record the
 Git revision plus checkpoint schema version in the checkpoint itself.
 

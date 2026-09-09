@@ -58,7 +58,8 @@ uv run deepalm workflow --config configs/quick-skeleton.yaml
 
 It calibrates the market model, saves and reloads the canonical Reference Bank,
 performs the 50,000-path one-step market diagnostic, trains all four policies at
-both 5 and 15 years, verifies a short recovery, runs both MM paper-width checks,
+both 5 and 15 years, verifies a short recovery, runs both MM paper-width
+network-scale checks,
 then creates locked evaluation, MM(15y|5y), representative sensitivity, horizon
 analysis, and compact-report artifacts. All work shares the configured resource
 budget and is published by one final atomic rename. The successful bundle is
@@ -70,37 +71,36 @@ validation, multi-GPU readiness, or bank-model approval.
 preparation stages. After a completed workflow, `train --source-run`, `resume
 --source-run`, `evaluate --source-run`, and `accept --source-run` reuse its
 atomic evidence instead of rerunning the policy matrix. Reuse rejects a source
-whose requested configuration differs in data, convention, seeds, or model
+whose requested configuration differs in data, financial semantics, seeds, or model
 semantics. `report` remains available for explicitly combining completed source
 run directories.
 
-## Paired-convention research pilot
+## Corrected local validation pilot
 
-On an Apple Silicon Mac with MPS available, the explicitly opt-in pilot runs
-Paper and Corrected BM^D/MM at both horizons on matching immutable inputs and
-named scenario streams:
-
-```bash
-uv run deepalm paired-pilot --config configs/paired-convention-pilot.yaml
-```
-
-It uses the locked compact MPS/float32 32-update matrix and a 600-second total
-budget. After both 15-year MM first epochs, it stops remaining work when its
-measured projection exceeds 420 seconds. A numerical failure writes the precise
-diagnostic and returns nonzero; a finite but weaker Paper result is evidence,
-not a Corrected failure. This is a `paired-convention-research-pilot`, not a
-convergence result, paper-result replication, or bank-model approval.
-
-Evaluate and report a completed paired pilot without retraining:
+On an Apple Silicon Mac with MPS available, the bounded pilot runs the single
+Corrected Financial Semantics for BM^D and MM at both 5- and 15-year horizons:
 
 ```bash
-uv run deepalm paired-evaluate --config configs/paired-convention-pilot.yaml --source-run artifacts/paired-convention-pilot-financial-corrections
-uv run deepalm paired-report --config configs/paired-convention-pilot.yaml --source-run artifacts/paired-convention-pilot-financial-corrections --evaluation-run artifacts/paired-convention-pilot-financial-corrections-evaluation
+uv run deepalm corrected-pilot --config configs/corrected-pilot.yaml
 ```
 
-The second command publishes a sibling `*-report` bundle. It retains both
-conventions, their identities and resources, paired intervals, numerical
-diagnostics, and a fixed inventory of deferred research work.
+It uses the locked compact MPS/float32 four-task, 16-update matrix and a
+600-second total budget. Each MM task consumes the same-horizon frozen BM^D
+reference from that run. This is a technical-flow validation, not convergence
+evidence, paper-result replication, or bank-model approval.
+
+Evaluate and report a completed corrected pilot without retraining:
+
+```bash
+uv run deepalm corrected-evaluate --config configs/corrected-pilot.yaml --source-run artifacts/corrected-local-validation-pilot
+uv run deepalm corrected-report --config configs/corrected-pilot.yaml --source-run artifacts/corrected-local-validation-pilot --evaluation-run artifacts/corrected-local-validation-pilot-evaluation
+```
+
+The second command publishes a sibling `*-report` bundle from complete,
+current-semantic four-member evidence. It does not compare alternative financial
+conventions or publish paired intervals. See the
+[Implementation Errata](docs/implementation-errata.md) for the adopted rules,
+intentional simplifications, and bank-side capability gaps.
 
 ## Compact no-swap report
 
@@ -117,8 +117,8 @@ uv run deepalm report --config configs/quick-skeleton.yaml \
 ```
 
 Source bundles must be `completed` and have the same market/paper input hashes
-and financial convention as the report configuration. Generated JSON artifacts
-identify policy, horizon, convention, sample size, units, source run,
+and financial semantics as the report configuration. Generated JSON artifacts
+identify policy, horizon, sample size, units, source run,
 architecture, and checkpoint parameter counts where evidence exists. They are a
 local workflow demonstration, not paper-result replication or bank approval.
 

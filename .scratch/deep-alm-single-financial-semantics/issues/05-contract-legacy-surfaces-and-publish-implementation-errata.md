@@ -4,8 +4,12 @@
 
 **Blocked by:** 01 — 建立唯一已修正金融语义契约; 03 — 交付已修正本机验证试跑; 04 — 交付已修正评估与报告链路.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] 仓库中不再有可执行的 Paper convention、paired-convention 配置、测试或公开文档；历史 artifact 与原始资料保持原地、只读且不可执行。
-- [ ] 唯一的 Implementation Errata 按“已采纳修正、明确简化、能力缺口”记录每项依据、影响边界和公开验证；旧的重复修复账本被整合移除。
-- [ ] 文档明确保留论文来源、paper-width 网络规模检查和论文覆盖范围的含义，它们不被误称为可执行的旧金融口径。
+- [x] 仓库中不再有可执行的 Paper convention、paired-convention 配置、测试或公开文档；历史 artifact 与原始资料保持原地、只读且不可执行。
+- [x] 唯一的 Implementation Errata 按“已采纳修正、明确简化、能力缺口”记录每项依据、影响边界和公开验证；旧的重复修复账本被整合移除。
+- [x] 文档明确保留论文来源、paper-width 网络规模检查和论文覆盖范围的含义，它们不被误称为可执行的旧金融口径。
+
+## Answer
+
+2026-09-09：发布 `docs/implementation-errata.md` 作为唯一现行实现映射，删除重复的 `docs/financial-corrections.md` 和 acceptance artifact 中的重复修复账本；README、佣金指南与历史 ADR 均明确 corrected-only 生命周期、术语边界及 superseded 状态。原始论文、`docs/errata.pdf`/`.tex`、历史 artifact 和研究笔记未改动。已通过文档契约、workflow、完整 Pytest 与双轴 code review。

@@ -81,33 +81,11 @@ def test_local_workflow_runs_every_required_stage_and_publishes_one_bundle(
     checks = {check["purpose"]: check for check in acceptance["checks"]}
     assert checks["finite gradients and financial rollout"]["status"] == "passed"
     assert checks["epoch-boundary recovery equivalence"]["status"] == "passed"
-    ledger = acceptance["financial_correction_ledger"]
-    assert ledger["status"] == "implemented-and-evidence-linked"
-    assert ledger["artifact_semantics"] == acceptance["artifact_semantics"]
-    assert {item["id"] for item in ledger["corrections"]} == {
-        "C-1/C-2",
-        "C-3",
-        "C-5/C-6",
-        "E-03/Equation 8/E-10",
-        "C-7/C-8/R-1",
-        "R-2",
-    }
-    assert set(ledger["execution_paths"]) == {
-        "training_and_selection",
-        "import",
-        "sensitivity",
-        "truncation",
-        "recovery",
-        "report",
-    }
-    assert ledger["cpu_float64"] == {
-        "status": "covered",
-        "dtype": "float64",
-        "horizons_years": [5, 15],
-        "tolerance_policy": "existing dtype-aware ledger tolerances",
-    }
-    assert ledger["accelerator_boundary"]["mps"] == "runtime-dependent"
-    assert ledger["accelerator_boundary"]["cuda"] == "not validated locally"
+    errata = acceptance["implementation_errata"]
+    assert errata["status"] == "current-implementation-authority"
+    assert errata["document"] == "docs/implementation-errata.md"
+    assert errata["artifact_semantics"] == acceptance["artifact_semantics"]
+    assert "financial_correction_ledger" not in acceptance
     assert (bundle.artifact_directory / "locked-evaluation.json").is_file()
     assert (bundle.artifact_directory / "reference-bank-sensitivity.json").is_file()
     assert (bundle.artifact_directory / "horizon-scenario-analysis.json").is_file()
