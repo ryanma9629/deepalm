@@ -4,7 +4,7 @@ import json
 from collections.abc import Mapping
 from typing import Literal
 
-FINANCIAL_SEMANTICS_VERSION = "dated-deposit-history-v6"
+FINANCIAL_SEMANTICS_VERSION = "corrected-financial-semantics-v1"
 POLICY_SEMANTICS_VERSION = "maturity-relative-bmd-v3"
 METRIC_SEMANTICS_VERSION = "population-moments-constraints-and-report-coverage-v4"
 SNAPSHOT_SCHEMA_VERSION = 5
@@ -34,7 +34,7 @@ def artifact_semantics(scope: ArtifactScope) -> dict[str, object]:
     identity: dict[str, object] = {
         "contract_version": 1,
         "scope": scope,
-        "financial_version": FINANCIAL_SEMANTICS_VERSION,
+        "financial_semantics_version": FINANCIAL_SEMANTICS_VERSION,
         "snapshot_schema_version": SNAPSHOT_SCHEMA_VERSION,
         "corrections": corrections,
         "repair_status": "complete" if all(corrections.values()) else "pending",

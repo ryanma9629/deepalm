@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
@@ -16,6 +17,7 @@ from deepalm.evaluation import LockedEvaluationError, LockedEvaluator, PolicyChe
 from deepalm.reference_bank import ReferenceBankError, ReferenceBankProvider
 from deepalm.reporting import ReportingError, build_compact_no_swap_report
 from deepalm.runner import ReproductionRunner, RunStatus
+from deepalm.semantics import FINANCIAL_SEMANTICS_VERSION
 from deepalm.term_structures import MarketScenarioModel
 from deepalm.training import (
     BMETrainer,
@@ -26,7 +28,14 @@ from deepalm.training import (
 
 
 @pytest.mark.parametrize(
-    "mutation", ["missing", "unknown", "claimed-correction", "boolean-version"]
+    "mutation",
+    [
+        "missing",
+        "unknown",
+        "claimed-correction",
+        "boolean-version",
+        "older-financial-semantics",
+    ],
 )
 def test_freezing_checkpoint_rejects_unknown_artifact_semantics(
     tmp_path: Path, mutation: str
@@ -40,6 +49,10 @@ def test_freezing_checkpoint_rejects_unknown_artifact_semantics(
         identity["artifact_semantics"] = {"contract_version": 999}
     elif mutation == "claimed-correction":
         identity["artifact_semantics"]["corrections"]["C-1"] = False
+    elif mutation == "older-financial-semantics":
+        identity["artifact_semantics"]["financial_semantics_version"] = (
+            "corrected-financial-semantics-v0"
+        )
     else:
         identity["artifact_semantics"]["contract_version"] = True
     torch.save(checkpoint, reference.checkpoint_path)
@@ -74,8 +87,8 @@ def test_training_records_actual_completed_policy_repairs_without_metric_couplin
     assert "metric_version" not in semantics
     assert "R-1" not in semantics["corrections"]
     trainer.load_selected_checkpoint(result.checkpoint_path)
-    checkpoint["code_identity"]["artifact_semantics"]["policy_version"] = (
-        "economic-mm-observation-v2"
+    checkpoint["code_identity"]["artifact_semantics"]["financial_semantics_version"] = (
+        "corrected-financial-semantics-v0"
     )
     incompatible = tmp_path / "incompatible.pt"
     torch.save(checkpoint, incompatible)
@@ -115,7 +128,20 @@ def test_recovery_rejects_missing_semantics_before_resuming(tmp_path: Path) -> N
         recovery["recovery_identity"]["artifact_semantics"]["repair_status"]
         == "complete"
     )
+    current_identity = deepcopy(recovery["recovery_identity"])
     recovery["recovery_identity"].pop("artifact_semantics")
+    torch.save(recovery, path)
+    with pytest.raises(TrainingError, match="artifact semantics"):
+        trainer.fit(
+            horizon_years=5, control=TrainingControl(resume=True, resume_from=path)
+        )
+    recovery["recovery_identity"] = {
+        **current_identity,
+        "artifact_semantics": {
+            **current_identity["artifact_semantics"],
+            "financial_semantics_version": "corrected-financial-semantics-v0",
+        },
+    }
     torch.save(recovery, path)
     with pytest.raises(TrainingError, match="artifact semantics"):
         trainer.fit(
@@ -154,6 +180,36 @@ def test_frozen_reference_rejects_semantically_wrong_but_hash_valid_sidecar(
     path.write_text(contents)
     with pytest.raises(BaselineReferenceError, match="artifact semantics"):
         FrozenDateBenchmarkReference.load(path)
+
+
+def test_frozen_reference_load_rejects_a_hash_valid_older_financial_semantics(
+    tmp_path: Path,
+) -> None:
+    reference = _frozen_reference(tmp_path)
+    payload = json.loads(reference.reference_path.read_text())
+    payload["artifact_semantics"]["financial_semantics_version"] = (
+        "corrected-financial-semantics-v0"
+    )
+    contents = json.dumps(payload)
+    identity = sha256(contents.encode()).hexdigest()
+    path = tmp_path / f"older.baseline.{identity}.json"
+    path.write_text(contents)
+
+    with pytest.raises(BaselineReferenceError, match="artifact semantics"):
+        FrozenDateBenchmarkReference.load(path)
+
+
+def test_frozen_baseline_records_the_single_corrected_financial_semantics(
+    tmp_path: Path,
+) -> None:
+    reference = _frozen_reference(tmp_path)
+
+    payload = json.loads(reference.reference_path.read_text())
+
+    identity = payload["artifact_semantics"]
+    assert identity["financial_semantics_version"] == FINANCIAL_SEMANTICS_VERSION
+    assert FINANCIAL_SEMANTICS_VERSION == "corrected-financial-semantics-v1"
+    assert "financial_version" not in identity
 
 
 def test_report_rejects_stale_source_semantics_and_preserves_current_status(
@@ -195,7 +251,9 @@ def test_report_rejects_stale_source_semantics_and_preserves_current_status(
             configuration, source_run_directories=(source.artifact_directory,)
         )
     stale_child.unlink()
-    manifest["artifact_semantics"]["metric_version"] = "stale-metric"
+    manifest["artifact_semantics"]["financial_semantics_version"] = (
+        "corrected-financial-semantics-v0"
+    )
     source_path.write_text(json.dumps(manifest))
     rejected = runner.generate_compact_report(
         replace(
