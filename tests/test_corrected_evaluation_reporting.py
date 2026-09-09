@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -67,6 +68,8 @@ def test_corrected_evaluation_and_report_accept_only_one_complete_current_bundle
     import deepalm.reference_bank as reference_bank_module
     import deepalm.term_structures as term_structures_module
 
+    # Load production modules before replacing their shared provider dependency.
+    importlib.import_module("deepalm.evaluation")
     monkeypatch.setattr("torch.backends.mps.is_available", lambda: True)
     configuration = resolve_configuration(_corrected_pilot_data(tmp_path))
     configuration.source_data.snb_csv.write_text("snb", encoding="utf-8")
