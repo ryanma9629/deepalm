@@ -12,13 +12,13 @@ _Avoid_: Exact replication, numerical reproduction
 The internally consistent bank representation used in place of the paper's unavailable proprietary bank data, with assumptions stated explicitly and kept replaceable by real bank data.
 _Avoid_: Mock bank, fake bank
 
-**Paper convention（论文口径）**:
-An implementation choice that follows the paper's stated formula or procedure when the disclosure is sufficiently precise, including choices that differ from common practice.
-_Avoid_: Correct implementation
+**已修正金融语义（Corrected Financial Semantics）**:
+本项目唯一可执行的金融公式与计量定义，基于论文披露、errata 和实现审计共同确定；运行时不提供与之并列的替代口径。
+_Avoid_: Paper convention, 可切换口径
 
-**Corrected convention（修正口径）**:
-An explicitly labeled alternative used when evidence supports a correction or conventional interpretation of an ambiguous paper procedure.
-_Avoid_: Silent fix, improved version
+**实现版勘误（Implementation Errata）**:
+项目维护的、从论文及其 errata 映射到已修正金融语义的唯一审计说明；它区分已采纳的公式修正、明确保留的建模简化与尚未接通的能力缺口。
+_Avoid_: 可执行的论文口径, 隐式修正
 
 **BM^E、BM^C、BM^D 与 MM**:
 论文中的四类无互换 TreasuryPolicy：等期限分配 benchmark、固定期限分配 benchmark、按决策日期分配 benchmark，以及共享参数的多期模型。
@@ -40,9 +40,9 @@ _Avoid_: 文件名引用, 未验证的 checkpoint
 只在完整 epoch 的 selection 完成后保存的训练进度；它包含当前模型、优化器、scheduler、selection 历史和语义身份。重启时会重放未完成 epoch，并仅允许设备、输出位置和增加资源预算的覆盖。
 _Avoid_: batch 级别快照, 不经兼容性检查的续训
 
-**配对口径研究试跑（Paired Convention Research Pilot）**:
-在同一 Reference Bank、市场创新路径和主随机种子下，以受限计算预算配对运行 Paper 与 Corrected 的 BM^D/MM 两期限实验；它量化公式差异和数值失败边界，但不主张收敛、方法论复现或银行模型获批。
-_Avoid_: 论文复现成功, 正式经济验收
+**已修正本机验证试跑（Corrected Local Validation Pilot）**:
+在固定本机资源预算内运行 BM^D 与 MM、各 5 年和 15 年的四任务训练矩阵；它验证训练、冻结 baseline、评估和报告链路，不宣称收敛、论文数值复现或银行模型获批。
+_Avoid_: 配对口径试跑, 正式经济验收
 
 **期限结构（Term Structure）**:
 某一估值日、同一组月度期限上的连续复利即期利率、贴现因子和离散远期利率，它们是同一条利率曲线的三种一致表示。

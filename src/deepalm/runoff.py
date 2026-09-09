@@ -103,7 +103,6 @@ class ALMSimulator:
         device: torch.device | str = "cpu",
         dtype: torch.dtype = torch.float64,
         include_loan_dynamics: bool = False,
-        convention: str = "corrected",
         loan_configuration: LoanConfiguration = DEFAULT_LOAN_CONFIGURATION,
         include_deposit_dynamics: bool = False,
         deposit_configuration: DepositConfiguration = DEFAULT_DEPOSIT_CONFIGURATION,
@@ -357,7 +356,6 @@ class ALMSimulator:
                         if transition + 1 >= 12 and transition + 1 < transitions
                         else None
                     ),
-                    convention=convention,
                     annual_close=(transition + 1) % 12 == 0
                     and transition + 1 < transitions,
                     configuration=loan_configuration,

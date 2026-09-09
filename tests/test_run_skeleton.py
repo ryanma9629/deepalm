@@ -22,7 +22,6 @@ def configuration_data(tmp_path: Path) -> dict[str, object]:
             "paper_pdf": str(tmp_path / "paper.pdf"),
             "nss_beta_unit": "percentage_points",
         },
-        "convention": {"profile": "corrected"},
         "run_scale": {"profile": "local_flow"},
         "architecture": {"profile": "compact"},
         "reference_bank": {
@@ -60,28 +59,22 @@ def write_source_inputs(configuration: dict[str, object]) -> None:
     Path(str(source_data["paper_pdf"])).write_bytes(b"paper-data")
 
 
-def test_corrected_profile_resolves_and_override_is_custom(tmp_path: Path) -> None:
+def test_configuration_resolves_without_a_selectable_financial_convention(
+    tmp_path: Path,
+) -> None:
     resolved = resolve_configuration(configuration_data(tmp_path))
 
-    assert resolved.convention.pca_loading_scale == "sqrt_eigenvalue"
-    assert resolved.convention.loan_interest_annualization == "monthly"
-    assert resolved.convention.is_custom is False
+    assert "convention" not in resolved.to_dict()
     assert resolved.run_scale.epochs == 2
     assert resolved.run_scale.training_paths_per_epoch == 32
     assert resolved.architecture.widths == (64, 64, 32, 32)
     assert resolved.resources.wall_clock_budget_seconds == 1800
 
-    overridden = configuration_data(tmp_path)
-    overridden["convention"] = {
-        "profile": "corrected",
-        "pca_loading_scale": "eigenvalue",
-    }
+    legacy = configuration_data(tmp_path)
+    legacy["convention"] = {"profile": "paper"}
 
-    custom = resolve_configuration(overridden)
-
-    assert custom.convention.is_custom is True
-    assert custom.convention.pca_loading_scale == "eigenvalue"
-    assert custom.convention.loan_interest_annualization == "monthly"
+    with pytest.raises(ConfigurationError, match="Unknown configuration sections: convention"):
+        resolve_configuration(legacy)
 
 
 def test_profiles_are_independent_and_local_plan_is_bounded(tmp_path: Path) -> None:
@@ -91,7 +84,6 @@ def test_profiles_are_independent_and_local_plan_is_bounded(tmp_path: Path) -> N
 
     plan = build_execution_plan(resolved)
 
-    assert resolved.convention.is_custom is False
     assert resolved.architecture.profile == "compact"
     assert plan.primary_training_jobs == 8
     assert plan.primary_optimizer_updates == 64
@@ -239,18 +231,10 @@ def test_configuration_rejects_incompatible_run_combinations(
         resolve_configuration(invalid)
 
 
-@pytest.mark.parametrize(
-    "convention",
-    [
-        {"profile": "paper"},
-        {"profile": "corrected", "pca_loading_scale": "sqrt_eigenvalue"},
-    ],
-)
-def test_methodological_reproduction_requires_the_locked_corrected_convention(
-    tmp_path: Path, convention: dict[str, str]
+def test_methodological_reproduction_requires_the_fixed_financial_semantics(
+    tmp_path: Path,
 ) -> None:
     invalid = configuration_data(tmp_path)
-    invalid["convention"] = convention
     invalid["run_scale"] = {"profile": "paper_scale"}
     invalid["policy"] = {"names": ["BM^E", "BM^C", "BM^D", "MM"]}
     invalid["acceptance"] = {
@@ -258,8 +242,7 @@ def test_methodological_reproduction_requires_the_locked_corrected_convention(
         "required_status": "methodologically-reproduced",
     }
 
-    with pytest.raises(ConfigurationError, match="Corrected convention"):
-        resolve_configuration(invalid)
+    assert resolve_configuration(invalid).run_scale.profile == "paper_scale"
 
 
 def test_runner_writes_an_atomic_auditable_bundle(tmp_path: Path) -> None:
@@ -278,7 +261,7 @@ def test_runner_writes_an_atomic_auditable_bundle(tmp_path: Path) -> None:
     manifest = json.loads((bundle.artifact_directory / "manifest.json").read_text())
     assert manifest["status"] == "completed"
     assert manifest["acceptance_status"] == "pending"
-    assert manifest["resolved_configuration"]["convention"]["profile"] == "corrected"
+    assert "convention" not in manifest["resolved_configuration"]
     assert manifest["seed_registry"] == {
         "bootstrap": 15,
         "data_loader_order": 14,

@@ -18,12 +18,9 @@ from deepalm.config import (
     RunScaleConfiguration,
     resolve_configuration,
 )
-from deepalm.objective import sample_training_objective_parameters
-from deepalm.policies import BMDatePolicy
 from deepalm.reference_bank import ReferenceBankProvider
 from deepalm.resources import BudgetExceeded, ResourceSnapshot
 from deepalm.runner import ReproductionRunner, RunStatus
-from deepalm.runoff import ALMSimulator
 from deepalm.term_structures import MarketScenarioModel
 from deepalm.training import (
     BMConstantTrainer,
@@ -50,7 +47,6 @@ def _configuration(tmp_path: Path):
                 "paper_pdf": str(tmp_path / "paper.pdf"),
                 "nss_beta_unit": "percentage_points",
             },
-            "convention": {"profile": "corrected"},
             "run_scale": {"profile": "local_flow"},
             "architecture": {"profile": "compact"},
             "reference_bank": {
@@ -147,12 +143,6 @@ def test_bme_trainer_updates_policy_selects_checkpoint_and_records_resources(
 @pytest.mark.parametrize(
     ("mutate", "message"),
     (
-        (
-            lambda checkpoint: checkpoint["configuration"]["convention"].update(
-                {"profile": "paper"}
-            ),
-            "convention",
-        ),
         (
             lambda checkpoint: checkpoint["configuration"]["architecture"].update(
                 {"widths": [1, 1, 1, 1]}
@@ -430,54 +420,6 @@ def test_date_benchmark_freezes_each_selected_horizon_with_verified_identity(
     first.checkpoint_path.write_bytes(first.checkpoint_path.read_bytes() + b"changed")
     with pytest.raises(BaselineReferenceError, match="identity"):
         reference.load_policy(device="cpu", dtype=torch.float64)
-
-
-def test_paper_bmd_first_pilot_batch_characterizes_the_flat_loss(tmp_path: Path) -> None:
-    """Ticket 09's captured Paper 15y batch has no target or constraint signal."""
-
-    del tmp_path
-    model = MarketScenarioModel()
-    historical = model.load_historical_term_structures(SOURCE)
-    calibration = model.calibrate_hjm_pca(historical)
-    snapshot = ReferenceBankProvider().build_canonical(historical)
-    market = model.generate_hjm_scenarios(
-        historical,
-        calibration,
-        convention="paper",
-        horizon_years=15,
-        paths=8,
-        seed=6_666_748_830_252_160_100,
-        split="training",
-        epoch=1,
-        global_path_indices=tuple(range(8)),
-    )
-    parameters = sample_training_objective_parameters(
-        8,
-        generator=torch.Generator(device="cpu").manual_seed(14_160_211_929_178_921_541),
-        dtype=torch.float64,
-    )
-    policy = BMDatePolicy(transitions=180, dtype=torch.float64)
-    outcome = ALMSimulator().rollout(
-        snapshot,
-        market,
-        policy=policy,
-        include_loan_dynamics=True,
-        convention="paper",
-        include_deposit_dynamics=True,
-        objective_parameters=parameters,
-    )
-
-    assert outcome.objective is not None
-    loss = outcome.objective.total.mean()
-    loss.backward()
-
-    assert loss.item() == pytest.approx(0.0, abs=1e-10)
-    assert torch.count_nonzero(outcome.objective.target) == 0
-    assert torch.count_nonzero(outcome.objective.penalty) == 0
-    assert all(
-        parameter.grad is not None and torch.count_nonzero(parameter.grad) == 0
-        for parameter in policy.parameters()
-    )
 
 
 def test_epoch_boundary_recovery_matches_an_uninterrupted_cpu_training_run(

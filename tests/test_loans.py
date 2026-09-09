@@ -33,17 +33,12 @@ def _cohort(principal: float, *, monthly_coupon_rate: float = 0.0) -> LoanCohort
     )
 
 
-def test_paper_and_corrected_interest_differ_only_by_annualization() -> None:
+def test_monthly_loan_interest_rate_has_one_monthly_interpretation() -> None:
     yield_rate = torch.tensor([0.03], dtype=torch.float64)
 
-    paper = monthly_loan_interest_rate(yield_rate, spread=0.015, convention="paper")
-    corrected = monthly_loan_interest_rate(
-        yield_rate, spread=0.015, convention="corrected"
-    )
+    monthly_rate = monthly_loan_interest_rate(yield_rate, spread=0.015)
 
-    assert paper.item() == pytest.approx(np.exp(0.045) - 1.0)
-    assert corrected.item() == pytest.approx(np.exp(0.045 / 12.0) - 1.0)
-    assert paper.item() > corrected.item() > 0
+    assert monthly_rate.item() == pytest.approx(np.exp(0.045 / 12.0) - 1.0)
 
 
 def test_fixed_rate_cohort_keeps_its_coupon_when_market_rate_changes() -> None:
@@ -58,7 +53,6 @@ def test_fixed_rate_cohort_keeps_its_coupon_when_market_rate_changes() -> None:
         LoanCohortState.empty(paths=1, dtype=torch.float64),
         six_month_yield=torch.tensor([0.50], dtype=torch.float64),
         six_month_yield_one_year_ago=None,
-        convention="corrected",
         annual_close=False,
         configuration=LoanConfiguration(annual_growth=0.0),
     )
@@ -79,13 +73,11 @@ def test_simulator_keeps_legacy_coupons_fixed_and_locks_new_cohorts() -> None:
         snapshot,
         SimpleNamespace(discount_factors=discounts, spot_rates=base_spots, initial_curve_identity=snapshot.initial_curve_identity, as_of_date=snapshot.as_of_date),
         include_loan_dynamics=True,
-        convention="corrected",
     )
     stressed = ALMSimulator().rollout(
         snapshot,
         SimpleNamespace(discount_factors=discounts, spot_rates=stressed_spots, initial_curve_identity=snapshot.initial_curve_identity, as_of_date=snapshot.as_of_date),
         include_loan_dynamics=True,
-        convention="corrected",
     )
     assert base.loan_interest_cash_flows is not None
     assert stressed.loan_interest_cash_flows is not None
@@ -109,7 +101,6 @@ def test_loan_transition_replaces_maturities_adds_growth_and_impairs_enterprise(
         enterprise,
         six_month_yield=torch.tensor([0.06], dtype=torch.float64),
         six_month_yield_one_year_ago=torch.tensor([0.01], dtype=torch.float64),
-        convention="corrected",
         annual_close=True,
     )
 
@@ -138,7 +129,6 @@ def test_invalid_loan_distribution_fails_with_domain_error() -> None:
             cohorts,
             six_month_yield=torch.zeros(1, dtype=torch.float64),
             six_month_yield_one_year_ago=None,
-            convention="corrected",
             annual_close=False,
             configuration=invalid,
         )
@@ -164,7 +154,6 @@ def test_simulator_reconciles_loan_events_and_applies_annual_impairment() -> Non
             as_of_date=snapshot.as_of_date,
         ),
         include_loan_dynamics=True,
-        convention="corrected",
     )
 
     assert result.loan_originations is not None

@@ -141,7 +141,6 @@ def test_runner_generates_an_auditable_no_swap_report_and_coverage_inventory(
         {
             "policy",
             "horizon_years",
-            "convention",
             "sample_size",
             "units",
             "source_runs",

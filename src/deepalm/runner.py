@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 import numpy as np
 import torch
 
-from deepalm.config import ConventionConfiguration, ResolvedRunConfiguration
+from deepalm.config import ResolvedRunConfiguration
 from deepalm.planning import build_execution_plan
 from deepalm.resources import BudgetExceeded, ResourceMonitor
 from deepalm.semantics import artifact_semantics, artifact_semantics_error
@@ -254,7 +254,6 @@ class ReproductionRunner:
                     batch = market_model.generate_hjm_scenarios(
                         historical,
                         calibration,
-                        convention=configuration.convention.profile,
                         horizon_years=horizon_years,
                         paths=paths,
                         seed=configuration.seeds["market_scenarios"],
@@ -789,7 +788,6 @@ class ReproductionRunner:
             )
             diagnostics = market_model.validate_hjm_one_step(
                 calibration,
-                convention=staged_configuration.convention.profile,
                 paths=50_000,
                 seed=staged_configuration.seeds["market_scenarios"],
             )
@@ -960,7 +958,6 @@ class ReproductionRunner:
             fifteen_market = market_model.generate_hjm_scenarios(
                 historical,
                 calibration,
-                convention=staged_configuration.convention.profile,
                 horizon_years=15,
                 paths=staged_configuration.run_scale.test_paths,
                 seed=staged_configuration.seeds["market_scenarios"],
@@ -983,7 +980,6 @@ class ReproductionRunner:
                     "artifact_semantics": artifact_semantics("evaluation"),
                     "source_horizon_years": 15,
                     "evaluation_horizon_years": 5,
-                    "convention": staged_configuration.convention.profile,
                     "data_identities": {
                         "market_source_hash": historical.source_hash,
                         "hjm_calibration_identity": calibration.calibration_identity,
@@ -1006,7 +1002,6 @@ class ReproductionRunner:
                 device=staged_configuration.optimization.device,
                 dtype=dtype,
                 include_loan_dynamics=True,
-                convention=staged_configuration.convention.profile,
                 include_deposit_dynamics=True,
                 objective_parameters=evaluation_objective_parameters(
                     len(five_market.spot_rates),
@@ -1022,7 +1017,6 @@ class ReproductionRunner:
                 device=staged_configuration.optimization.device,
                 dtype=dtype,
                 include_loan_dynamics=True,
-                convention=staged_configuration.convention.profile,
                 include_deposit_dynamics=True,
                 objective_parameters=evaluation_objective_parameters(
                     len(fifteen_market.spot_rates),
@@ -1520,10 +1514,7 @@ class ReproductionRunner:
             manifest["paired_convention_pilot"] = {
                 "label": "paired-convention-research-pilot",
                 "status": "completed",
-                "conventions": {
-                    label: convention_configuration.convention.profile
-                    for label, convention_configuration in convention_configurations.items()
-                },
+                "conventions": list(convention_configurations),
                 "shared_identities": {
                     "reference_bank_content_hash": snapshot.content_hash,
                     "market_source_hash": historical.source_hash,
@@ -1979,11 +1970,6 @@ def _validate_paired_pilot_configuration(
         != AcceptanceStatus.PAIRED_CONVENTION_RESEARCH_PILOT.value
     ):
         raise OperationalRunError("Paired pilot requires its research-pilot label")
-    if (
-        configuration.convention.profile != "corrected"
-        or configuration.convention.is_custom
-    ):
-        raise OperationalRunError("Paired pilot requires locked Corrected input")
     if set(configuration.policy.names) != {"BM^D", "MM"}:
         raise OperationalRunError("Paired pilot requires BM^D and MM exactly once")
     if set(configuration.experiment.horizons_years) != {5, 15}:
@@ -2024,33 +2010,17 @@ def _validate_paired_pilot_configuration(
 def _paired_pilot_convention_configurations(
     configuration: ResolvedRunConfiguration, *, staging_directory: Path
 ) -> dict[str, ResolvedRunConfiguration]:
-    """Derive isolated locked Paper and Corrected training configurations."""
-
-    conventions = {
-        "corrected": ConventionConfiguration(
-            profile="corrected",
-            pca_loading_scale="sqrt_eigenvalue",
-            loan_interest_annualization="monthly",
-            is_custom=False,
-        ),
-        "paper": ConventionConfiguration(
-            profile="paper",
-            pca_loading_scale="eigenvalue",
-            loan_interest_annualization="unannualized",
-            is_custom=False,
-        ),
-    }
+    """Derive isolated historical labels without selecting a formula."""
     return {
         label: replace(
             configuration,
-            convention=convention,
             output=replace(
                 configuration.output,
                 directory=staging_directory,
                 run_name=label,
             ),
         )
-        for label, convention in conventions.items()
+        for label in ("corrected", "paper")
     }
 
 
@@ -2316,7 +2286,6 @@ def _validate_reusable_stage_evidence(
         expected_data = _manifest_data_identities(manifest)
         if (
             evaluation.get("kind") != "locked-final-test-evaluation"
-            or evaluation.get("convention") != configuration.convention.profile
             or evaluation.get("data_identities") != expected_data
         ):
             raise OperationalRunError(
@@ -2329,7 +2298,6 @@ def _validate_reusable_stage_evidence(
             truncation.get("kind") != "mm-fifteen-year-truncation"
             or truncation.get("source_horizon_years") != 15
             or truncation.get("evaluation_horizon_years") != 5
-            or truncation.get("convention") != configuration.convention.profile
             or truncation.get("data_identities") != expected_data
         ):
             raise OperationalRunError(
@@ -2457,7 +2425,6 @@ def _workflow_replay_evidence(
     markets: dict[str, dict[str, object]] = {}
     for horizon in configuration.experiment.horizons_years:
         arguments = {
-            "convention": configuration.convention.profile,
             "horizon_years": horizon,
             "paths": 2,
             "seed": configuration.seeds["market_scenarios"],
@@ -2959,7 +2926,6 @@ def _horizon_analysis_evidence(
             "format_version": 1,
             "kind": "horizon-scenario-analysis",
             "artifact_semantics": artifact_semantics("evaluation"),
-            "convention": configuration.convention.profile,
             "data_identities": {
                 "market_source_hash": historical.source_hash,
                 "hjm_calibration_identity": calibration.calibration_identity,
@@ -2975,7 +2941,6 @@ def _horizon_analysis_evidence(
         "format_version": 1,
         "kind": "horizon-scenario-analysis",
         "artifact_semantics": artifact_semantics("evaluation"),
-        "convention": configuration.convention.profile,
         "data_identities": {
             "market_source_hash": historical.source_hash,
             "hjm_calibration_identity": calibration.calibration_identity,

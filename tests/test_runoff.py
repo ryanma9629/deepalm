@@ -79,7 +79,6 @@ def test_passive_runoff_accepts_complete_generated_market_paths(
     market = model.generate_hjm_scenarios(
         historical,
         calibration,
-        convention="corrected",
         horizon_years=horizon_years,
         paths=1,
         seed=42,

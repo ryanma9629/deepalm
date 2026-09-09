@@ -107,7 +107,6 @@ def test_fifteen_year_mm_trains_and_truncates_without_retraining(
     market = model.generate_hjm_scenarios(
         historical,
         calibration,
-        convention=configuration.convention.profile,
         horizon_years=15,
         paths=2,
         seed=91,
@@ -187,7 +186,6 @@ def test_fifteen_year_market_prefix_reproduces_five_year_paths() -> None:
     five = model.generate_hjm_scenarios(
         historical,
         calibration,
-        convention="corrected",
         horizon_years=5,
         paths=2,
         seed=77,
@@ -195,7 +193,6 @@ def test_fifteen_year_market_prefix_reproduces_five_year_paths() -> None:
     fifteen = model.generate_hjm_scenarios(
         historical,
         calibration,
-        convention="corrected",
         horizon_years=15,
         paths=2,
         seed=77,

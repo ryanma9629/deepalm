@@ -3,8 +3,6 @@ source_data:
   paper_pdf: docs/Deep treasury management for banks.pdf
   nss_beta_unit: percentage_points
 
-convention:
-  profile: corrected
 
 run_scale:
   profile: local_flow

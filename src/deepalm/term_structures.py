@@ -94,12 +94,12 @@ class HjmPcaCalibration:
     eigenvalues: np.ndarray
     eigenvectors: np.ndarray
     explained_variance: np.ndarray
-    scaled_loadings: dict[str, np.ndarray]
-    cubic_coefficients: dict[str, np.ndarray]
-    fitted_loadings: dict[str, np.ndarray]
-    implied_covariances: dict[str, np.ndarray]
+    scaled_loadings: np.ndarray
+    cubic_coefficients: np.ndarray
+    fitted_loadings: np.ndarray
+    implied_covariances: np.ndarray
     pca_truncation_error: float
-    polynomial_fit_errors: dict[str, np.ndarray]
+    polynomial_fit_errors: np.ndarray
     calibration_identity: str
 
 
@@ -111,7 +111,6 @@ class MarketScenarioBatch:
     discount_factors: np.ndarray
     monthly_forwards: np.ndarray
     innovations: np.ndarray
-    convention: str
     horizon_years: int
     seed: int
     calibration_identity: str
@@ -147,7 +146,6 @@ class MarketScenarioBatch:
             discount_factors=discount_factors,
             monthly_forwards=monthly_forwards,
             innovations=innovations,
-            convention=self.convention,
             horizon_years=horizon_years,
             seed=self.seed,
             calibration_identity=self.calibration_identity,
@@ -165,7 +163,7 @@ class MarketScenarioBatch:
 
 @dataclass(frozen=True)
 class HjmOneStepDiagnostics:
-    """Fixed-seed statistical evidence for a convention's one-step shock."""
+    """Fixed-seed statistical evidence for the HJM one-step shock."""
 
     factor_means: np.ndarray
     shock_covariance: np.ndarray
@@ -189,7 +187,6 @@ class TerminalCurveDiversity:
     """Metadata and dispersion summaries for terminal-curve comparison."""
 
     horizon_years: int
-    convention: str
     seed: int
     sample_size: int
     units: str
@@ -369,25 +366,13 @@ class MarketScenarioModel:
         retained_vectors = eigenvectors[:, :3]
         explained_variance = retained_values / eigenvalues.sum()
         design = np.vander(historical.tenors_years / 15.0, N=4, increasing=True)
-        loadings = {
-            "paper": retained_vectors * retained_values,
-            "corrected": retained_vectors
-            * np.sqrt(np.clip(retained_values, 0.0, None)),
-        }
-        cubic_coefficients: dict[str, np.ndarray] = {}
-        fitted_loadings: dict[str, np.ndarray] = {}
-        polynomial_fit_errors: dict[str, np.ndarray] = {}
-        implied_covariances: dict[str, np.ndarray] = {}
-        for convention, loading in loadings.items():
-            coefficients, _, _, _ = np.linalg.lstsq(design, loading, rcond=None)
-            fitted = design @ coefficients
-            cubic_coefficients[convention] = _readonly(coefficients)
-            fitted_loadings[convention] = _readonly(fitted)
-            polynomial_fit_errors[convention] = _readonly(
-                np.linalg.norm(fitted - loading, axis=0)
-                / np.linalg.norm(loading, axis=0)
-            )
-            implied_covariances[convention] = _readonly(fitted @ fitted.T)
+        loadings = retained_vectors * np.sqrt(np.clip(retained_values, 0.0, None))
+        cubic_coefficients, _, _, _ = np.linalg.lstsq(design, loadings, rcond=None)
+        fitted_loadings = design @ cubic_coefficients
+        polynomial_fit_errors = np.linalg.norm(
+            fitted_loadings - loadings, axis=0
+        ) / np.linalg.norm(loadings, axis=0)
+        implied_covariances = fitted_loadings @ fitted_loadings.T
         retained_covariance = (
             retained_vectors @ np.diag(retained_values) @ retained_vectors.T
         )
@@ -408,15 +393,12 @@ class MarketScenarioModel:
             eigenvalues=_readonly(eigenvalues),
             eigenvectors=_readonly(eigenvectors),
             explained_variance=_readonly(explained_variance),
-            scaled_loadings={
-                convention: _readonly(loading)
-                for convention, loading in loadings.items()
-            },
-            cubic_coefficients=cubic_coefficients,
-            fitted_loadings=fitted_loadings,
-            implied_covariances=implied_covariances,
+            scaled_loadings=_readonly(loadings),
+            cubic_coefficients=_readonly(cubic_coefficients),
+            fitted_loadings=_readonly(fitted_loadings),
+            implied_covariances=_readonly(implied_covariances),
             pca_truncation_error=pca_truncation_error,
-            polynomial_fit_errors=polynomial_fit_errors,
+            polynomial_fit_errors=_readonly(polynomial_fit_errors),
             calibration_identity=identity,
         )
 
@@ -425,7 +407,6 @@ class MarketScenarioModel:
         historical: HistoricalTermStructures,
         calibration: HjmPcaCalibration,
         *,
-        convention: str,
         horizon_years: int,
         paths: int,
         seed: int,
@@ -435,8 +416,6 @@ class MarketScenarioModel:
     ) -> MarketScenarioBatch:
         """Generate bitwise-reproducible, unclipped monthly HJM scenarios."""
 
-        if convention not in {"paper", "corrected"}:
-            raise TermStructureError("HJM convention must be paper or corrected")
         if horizon_years not in {5, 15}:
             raise TermStructureError("HJM horizon must be 5 or 15 years")
         if paths <= 0:
@@ -459,7 +438,7 @@ class MarketScenarioModel:
         initial_forwards = _nss_monthly_forwards(
             historical.initial_nss_parameters, extended_tenors
         )
-        coefficients = calibration.cubic_coefficients[convention]
+        coefficients = calibration.cubic_coefficients
         volatility = _evaluate_cubics(coefficients, extended_tenors / 15.0)
         drift = _hjm_drift(
             volatility, _evaluate_cubics(coefficients, np.array([0.0]))[0]
@@ -503,7 +482,6 @@ class MarketScenarioModel:
             discount_factors=_readonly(discount_factors),
             monthly_forwards=_readonly(forwards),
             innovations=_readonly(innovations),
-            convention=convention,
             horizon_years=horizon_years,
             seed=seed,
             calibration_identity=calibration.calibration_identity,
@@ -522,17 +500,14 @@ class MarketScenarioModel:
         self,
         calibration: HjmPcaCalibration,
         *,
-        convention: str,
         paths: int = 50_000,
         seed: int,
     ) -> HjmOneStepDiagnostics:
         """Measure one monthly HJM shock against its exact fitted-covariance target."""
 
-        if convention not in {"paper", "corrected"}:
-            raise TermStructureError("HJM convention must be paper or corrected")
         if paths <= 1:
             raise TermStructureError("At least two one-step paths are required")
-        volatility = calibration.fitted_loadings[convention]
+        volatility = calibration.fitted_loadings
         factors = np.random.default_rng(seed).standard_normal((paths, 3))
         shocks = factors @ volatility.T * np.sqrt(1.0 / 12.0)
         shock_covariance = np.cov(shocks, rowvar=False, ddof=1)
@@ -612,7 +587,6 @@ class MarketScenarioModel:
             discount_factors=_readonly(discount_factors),
             monthly_forwards=_readonly(monthly_forwards),
             innovations=_readonly(innovation),
-            convention="project-hull-white",
             horizon_years=horizon_years,
             seed=seed,
             calibration_identity=_hull_white_identity(configuration),
@@ -639,7 +613,6 @@ class MarketScenarioModel:
             )
         return TerminalCurveDiversity(
             horizon_years=hjm.horizon_years,
-            convention=hjm.convention,
             seed=hjm.seed,
             sample_size=len(hjm.spot_rates),
             units="decimal annual rates",
@@ -687,7 +660,6 @@ class MarketScenarioModel:
                 {
                     "models": ["hjm-pca", "project-hull-white"],
                     "horizon_years": diversity.horizon_years,
-                    "convention": diversity.convention,
                     "units": diversity.units,
                     "seed": diversity.seed,
                     "sample_size": diversity.sample_size,

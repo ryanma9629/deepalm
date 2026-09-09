@@ -81,12 +81,6 @@ def test_paired_convention_pilot_resolves_the_locked_m5_budget(
             r"BM\^D and MM",
         ),
         (
-            lambda data: data["convention"].update(
-                {"pca_loading_scale": "eigenvalue"}
-            ),
-            "locked Corrected",
-        ),
-        (
             lambda data: data["optimization"].update({"device": "cpu", "dtype": "float64"}),
             "MPS float32",
         ),
@@ -254,7 +248,7 @@ def test_paired_pilot_runs_or_bounds_the_isolated_training_matrix(
         return SimpleNamespace(
             checkpoint_path=checkpoint,
             baseline_reference_path=baseline if policy == "BM_D" else None,
-            baseline_reference_identity=f"{configuration.convention.profile}-{horizon_years}",
+            baseline_reference_identity=f"corrected-financial-semantics-{horizon_years}",
             optimizer_updates=4,
             selected_epoch=2,
             clipped_gradient_norms=(0.2,),
@@ -274,7 +268,7 @@ def test_paired_pilot_runs_or_bounds_the_isolated_training_matrix(
             self.configuration = configuration
             self.baseline_reference = baseline_reference
             mm_baselines.append(
-                (configuration.convention.profile, baseline_reference["path"])
+                ("corrected", baseline_reference["path"])
             )
 
         def fit(self, *, horizon_years: int, control: object | None = None) -> object:

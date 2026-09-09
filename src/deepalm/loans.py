@@ -185,22 +185,14 @@ def initial_loan_cohort_state(
 
 
 def monthly_loan_interest_rate(
-    six_month_yield: torch.Tensor, *, spread: float, convention: str
+    six_month_yield: torch.Tensor, *, spread: float
 ) -> torch.Tensor:
-    """Return the locked Paper or Corrected loan-interest expression.
+    """Return the unique monthly loan-interest rate in decimal units."""
 
-    The Paper expression is literally annual-effective and therefore is not
-    divided by twelve.  Corrected divides the continuous rate before applying
-    the exponential.  This is the sole loan-interest convention difference.
-    """
-
-    _validate_convention(convention)
     _validate_finite("six_month_yield", six_month_yield)
     if not torch.isfinite(torch.tensor(spread)):
         raise LoanDynamicsError("Loan spread must be finite")
-    exponent = six_month_yield + spread
-    if convention == "corrected":
-        exponent = exponent / 12.0
+    exponent = (six_month_yield + spread) / 12.0
     result = torch.clamp_min(torch.exp(exponent) - 1.0, 0.0)
     _validate_finite("loan_interest_rate", result)
     return result
@@ -212,7 +204,6 @@ def apply_loan_transition(
     *,
     six_month_yield: torch.Tensor,
     six_month_yield_one_year_ago: torch.Tensor | None,
-    convention: str,
     annual_close: bool,
     configuration: LoanConfiguration = DEFAULT_LOAN_CONFIGURATION,
 ) -> LoanTransition:
@@ -237,7 +228,7 @@ def apply_loan_transition(
         + growth * configuration.enterprise_growth_share
     )
     coupon = monthly_loan_interest_rate(
-        six_month_yield, spread=configuration.spread, convention=convention
+        six_month_yield, spread=configuration.spread
     )
     new_mortgages = mortgages.roll_forward().originate(
         mortgage_originations,
@@ -313,8 +304,3 @@ def _validate_configuration(configuration: LoanConfiguration) -> None:
 def _validate_finite(name: str, values: torch.Tensor) -> None:
     if not torch.isfinite(values).all():
         raise LoanDynamicsError(f"{name} must be finite")
-
-
-def _validate_convention(convention: str) -> None:
-    if convention not in {"paper", "corrected"}:
-        raise LoanDynamicsError("Loan convention must be paper or corrected")

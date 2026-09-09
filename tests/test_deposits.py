@@ -89,10 +89,7 @@ def _fixed_growth_snapshot(
     return provider.load(path)
 
 
-@pytest.mark.parametrize("convention", ["paper", "corrected"])
-def test_deposit_rollover_preserves_equity_except_operating_costs(
-    convention: str,
-) -> None:
+def test_deposit_rollover_preserves_equity_except_operating_costs() -> None:
     source = (
         Path(__file__).resolve().parents[1]
         / "data/snb-data-rendopar-en-all_19880401-20250731.csv"
@@ -109,7 +106,6 @@ def test_deposit_rollover_preserves_equity_except_operating_costs(
     result = ALMSimulator().rollout(
         snapshot,
         market,
-        convention=convention,
         include_deposit_dynamics=True,
         deposit_configuration=DepositConfiguration(
             non_maturity_growth=0, term_growth=0
@@ -392,10 +388,7 @@ def test_reference_term_classes_conserve_each_original_class_across_long_rolls(
     assert result.cash_reconciliation_error.abs().max().item() < 1e-8
 
 
-@pytest.mark.parametrize("convention", ["paper", "corrected"])
-def test_excess_cash_charge_reduces_simulated_cash_and_keeps_trade_gradients(
-    convention: str,
-) -> None:
+def test_excess_cash_charge_reduces_simulated_cash_and_keeps_trade_gradients() -> None:
     source = (
         Path(__file__).resolve().parents[1]
         / "data/snb-data-rendopar-en-all_19880401-20250731.csv"
@@ -419,7 +412,6 @@ def test_excess_cash_charge_reduces_simulated_cash_and_keeps_trade_gradients(
             snapshot,
             market,
             actions=funding * mask,
-            convention=convention,
             include_deposit_dynamics=True,
             deposit_configuration=DepositConfiguration(
                 non_maturity_growth=0, term_growth=0

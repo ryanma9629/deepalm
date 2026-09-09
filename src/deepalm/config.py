@@ -18,14 +18,6 @@ class ConfigurationError(ValueError):
 
 
 @dataclass(frozen=True)
-class ConventionConfiguration:
-    profile: str
-    pca_loading_scale: str
-    loan_interest_annualization: str
-    is_custom: bool
-
-
-@dataclass(frozen=True)
 class RunScaleConfiguration:
     profile: str
     epochs: int
@@ -109,7 +101,6 @@ class AcceptanceConfiguration:
 @dataclass(frozen=True)
 class ResolvedRunConfiguration:
     source_data: SourceDataConfiguration
-    convention: ConventionConfiguration
     run_scale: RunScaleConfiguration
     architecture: ArchitectureConfiguration
     reference_bank: ReferenceBankConfiguration
@@ -143,7 +134,6 @@ class ResolvedRunConfiguration:
 
 _REQUIRED_SECTIONS = {
     "source_data",
-    "convention",
     "run_scale",
     "architecture",
     "reference_bank",
@@ -154,17 +144,6 @@ _REQUIRED_SECTIONS = {
     "seeds",
     "output",
     "acceptance",
-}
-
-_CONVENTION_PROFILES = {
-    "paper": {
-        "pca_loading_scale": "eigenvalue",
-        "loan_interest_annualization": "unannualized",
-    },
-    "corrected": {
-        "pca_loading_scale": "sqrt_eigenvalue",
-        "loan_interest_annualization": "monthly",
-    },
 }
 
 _RUN_SCALE_PROFILES = {
@@ -215,7 +194,7 @@ _ARCHITECTURE_PROFILES = {
     "paper": (512, 512, 256, 128),
 }
 
-_CONFIGURATION_SCHEMA_VERSION = 2
+_CONFIGURATION_SCHEMA_VERSION = 3
 
 
 def load_configuration(path: Path) -> ResolvedRunConfiguration:
@@ -246,7 +225,6 @@ def resolve_configuration(raw: object) -> ResolvedRunConfiguration:
 
     resolved = ResolvedRunConfiguration(
         source_data=_resolve_source_data(root["source_data"]),
-        convention=_resolve_convention(root["convention"]),
         run_scale=_resolve_run_scale(root["run_scale"]),
         architecture=_resolve_architecture(root["architecture"]),
         reference_bank=_resolve_reference_bank(root["reference_bank"]),
@@ -273,43 +251,6 @@ def _resolve_source_data(raw: object) -> SourceDataConfiguration:
         snb_csv=Path(_string(section["snb_csv"], "source_data.snb_csv")),
         paper_pdf=Path(_string(section["paper_pdf"], "source_data.paper_pdf")),
         nss_beta_unit=nss_beta_unit,
-    )
-
-
-def _resolve_convention(raw: object) -> ConventionConfiguration:
-    section = _section(
-        raw,
-        "convention",
-        {"profile", "pca_loading_scale", "loan_interest_annualization"},
-        required_keys={"profile"},
-    )
-    profile = _string(section["profile"], "convention.profile")
-    if profile not in _CONVENTION_PROFILES:
-        raise ConfigurationError("convention.profile must be 'paper' or 'corrected'")
-
-    resolved = _CONVENTION_PROFILES[profile].copy()
-    overrides = {
-        key: value
-        for key, value in section.items()
-        if key in {"pca_loading_scale", "loan_interest_annualization"}
-    }
-    for key, value in overrides.items():
-        resolved[key] = _string(value, f"convention.{key}")
-
-    if resolved["pca_loading_scale"] not in {"eigenvalue", "sqrt_eigenvalue"}:
-        raise ConfigurationError(
-            "convention.pca_loading_scale must be 'eigenvalue' or 'sqrt_eigenvalue'"
-        )
-    if resolved["loan_interest_annualization"] not in {"unannualized", "monthly"}:
-        raise ConfigurationError(
-            "convention.loan_interest_annualization must be 'unannualized' or 'monthly'"
-        )
-
-    return ConventionConfiguration(
-        profile=profile,
-        pca_loading_scale=resolved["pca_loading_scale"],
-        loan_interest_annualization=resolved["loan_interest_annualization"],
-        is_custom=bool(overrides),
     )
 
 
@@ -651,13 +592,6 @@ def _validate_combinations(configuration: ResolvedRunConfiguration) -> None:
         return
     if configuration.acceptance.purpose != "research":
         raise ConfigurationError("methodologically-reproduced requires research purpose")
-    if (
-        configuration.convention.profile != "corrected"
-        or configuration.convention.is_custom
-    ):
-        raise ConfigurationError(
-            "methodologically-reproduced requires the locked Corrected convention"
-        )
     if configuration.run_scale.profile != "paper_scale":
         raise ConfigurationError(
             "methodologically-reproduced requires the paper_scale run profile"
@@ -685,13 +619,6 @@ def _validate_paired_convention_pilot(
     ):
         raise ConfigurationError(
             "paired_convention_pilot requires paired-convention-research-pilot status"
-        )
-    if (
-        configuration.convention.profile != "corrected"
-        or configuration.convention.is_custom
-    ):
-        raise ConfigurationError(
-            "paired_convention_pilot requires the locked Corrected convention"
         )
     if set(configuration.policy.names) != {"BM^D", "MM"}:
         raise ConfigurationError("paired_convention_pilot requires BM^D and MM")

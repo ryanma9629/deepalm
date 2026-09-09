@@ -270,14 +270,13 @@ def test_market_scenario_model_rejects_nonblank_invalid_parameter_values(
         MarketScenarioModel().load_historical_term_structures(source)
 
 
-def test_market_scenario_model_calibrates_and_generates_paired_hjm_paths() -> None:
+def test_market_scenario_model_calibrates_and_generates_single_semantic_hjm_paths() -> None:
     model = MarketScenarioModel()
     historical = model.load_historical_term_structures(SNB_SOURCE)
     calibration = model.calibrate_hjm_pca(historical)
     five_year = model.generate_hjm_scenarios(
         historical,
         calibration,
-        convention="corrected",
         horizon_years=5,
         paths=2,
         seed=73,
@@ -285,7 +284,6 @@ def test_market_scenario_model_calibrates_and_generates_paired_hjm_paths() -> No
     fifteen_year = model.generate_hjm_scenarios(
         historical,
         calibration,
-        convention="corrected",
         horizon_years=15,
         paths=2,
         seed=73,
@@ -298,10 +296,11 @@ def test_market_scenario_model_calibrates_and_generates_paired_hjm_paths() -> No
     )
     assert calibration.explained_variance.sum() >= 0.9
     assert np.allclose(
-        calibration.scaled_loadings["paper"],
-        calibration.eigenvectors[:, :3] * calibration.eigenvalues[:3],
+        calibration.scaled_loadings,
+        calibration.eigenvectors[:, :3]
+        * np.sqrt(np.clip(calibration.eigenvalues[:3], 0.0, None)),
     )
-    assert calibration.fitted_loadings["paper"].shape == (180, 3)
+    assert calibration.fitted_loadings.shape == (180, 3)
     assert five_year.spot_rates.shape == (2, 61, 180)
     assert fifteen_year.spot_rates.shape == (2, 181, 180)
     assert five_year.round_trip_error <= 1e-10
@@ -317,31 +316,23 @@ def test_market_scenario_model_calibrates_and_generates_paired_hjm_paths() -> No
         model.generate_hjm_scenarios(
             historical,
             calibration,
-            convention="corrected",
             horizon_years=5,
             paths=2,
             seed=73,
         ).spot_rates,
     )
-    for convention in ("paper", "corrected"):
-        diagnostics = model.validate_hjm_one_step(
-            calibration, convention=convention, paths=50_000, seed=91
-        )
-        assert np.all(np.abs(diagnostics.factor_means) <= 3.0 / np.sqrt(50_000))
-        assert diagnostics.relative_covariance_error <= 0.05
+    diagnostics = model.validate_hjm_one_step(calibration, paths=50_000, seed=91)
+    assert np.all(np.abs(diagnostics.factor_means) <= 3.0 / np.sqrt(50_000))
+    assert diagnostics.relative_covariance_error <= 0.05
 
     invalid_calibration = replace(
         calibration,
-        cubic_coefficients={
-            **calibration.cubic_coefficients,
-            "corrected": np.full((4, 3), np.inf),
-        },
+        cubic_coefficients=np.full((4, 3), np.inf),
     )
     with pytest.raises(TermStructureError, match="non-finite"):
         model.generate_hjm_scenarios(
             historical,
             invalid_calibration,
-            convention="corrected",
             horizon_years=5,
             paths=1,
             seed=73,
@@ -355,7 +346,6 @@ def test_hjm_paths_are_identical_across_batch_partitions() -> None:
     combined = model.generate_hjm_scenarios(
         historical,
         calibration,
-        convention="corrected",
         horizon_years=5,
         paths=4,
         seed=125,
@@ -366,7 +356,6 @@ def test_hjm_paths_are_identical_across_batch_partitions() -> None:
     first = model.generate_hjm_scenarios(
         historical,
         calibration,
-        convention="corrected",
         horizon_years=5,
         paths=2,
         seed=125,
@@ -377,7 +366,6 @@ def test_hjm_paths_are_identical_across_batch_partitions() -> None:
     second = model.generate_hjm_scenarios(
         historical,
         calibration,
-        convention="corrected",
         horizon_years=5,
         paths=2,
         seed=125,
@@ -401,7 +389,6 @@ def test_market_scenario_model_compares_hull_white_terminal_diversity(
     hjm = model.generate_hjm_scenarios(
         historical,
         calibration,
-        convention="corrected",
         horizon_years=5,
         paths=3,
         seed=103,
@@ -427,7 +414,6 @@ def test_market_scenario_model_compares_hull_white_terminal_diversity(
     assert diversity.units == "decimal annual rates"
     assert plot_path.is_file()
     assert json.loads(metadata_path.read_text()) == {
-        "convention": "corrected",
         "horizon_years": 5,
         "hull_white_calibration_identity": hull_white.calibration_identity,
         "models": ["hjm-pca", "project-hull-white"],

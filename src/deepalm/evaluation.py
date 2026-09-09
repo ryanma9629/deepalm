@@ -259,7 +259,6 @@ class LockedEvaluator:
                     device=self._device,
                     dtype=self._dtype,
                     include_loan_dynamics=True,
-                    convention=self._configuration.convention.profile,
                     include_deposit_dynamics=True,
                     objective_parameters=evaluation_objective_parameters(
                         len(markets[horizon].spot_rates),
@@ -304,7 +303,6 @@ class LockedEvaluator:
         return self._market_model.generate_hjm_scenarios(
             self._historical,
             self._calibration,
-            convention=self._configuration.convention.profile,
             horizon_years=horizon_years,
             paths=self._configuration.run_scale.test_paths,
             seed=self._configuration.seeds["market_scenarios"],
@@ -330,7 +328,6 @@ class LockedEvaluator:
                 if self._frozen_policy_snapshot.content_hash != self._snapshot.content_hash
                 else "locked-final-test-evaluation"
             ),
-            "convention": self._configuration.convention.profile,
             "reference_bank_content_hash": self._snapshot.content_hash,
             "data_identities": {
                 "market_source_hash": self._historical.source_hash,
@@ -383,10 +380,6 @@ class FrozenPolicySensitivityEvaluator:
         simulator: ALMSimulator | None = None,
         market_model: MarketScenarioModel | None = None,
     ) -> None:
-        if configuration.convention.profile != "corrected":
-            raise LockedEvaluationError(
-                "Representative Reference Bank sensitivity requires the Corrected convention"
-            )
         if canonical_snapshot.profile != "canonical":
             raise LockedEvaluationError(
                 "Frozen-policy sensitivity requires a canonical policy source snapshot"
@@ -794,14 +787,6 @@ def _validate_checkpoint_compatibility(
     if checkpoint.get("data_identities") != expected:
         raise LockedEvaluationError(
             "Checkpoint data identities are incompatible with locked evaluation"
-        )
-    try:
-        convention = checkpoint["configuration"]["convention"]["profile"]
-    except (KeyError, TypeError):
-        raise LockedEvaluationError("Checkpoint lacks a convention manifest") from None
-    if convention != configuration.convention.profile:
-        raise LockedEvaluationError(
-            "Checkpoint convention is incompatible with locked evaluation"
         )
     recorded_configuration = checkpoint.get("configuration")
     if not isinstance(recorded_configuration, dict):

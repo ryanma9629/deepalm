@@ -539,14 +539,10 @@ def build_compact_no_swap_report(
         "snb_csv": _sha256(configuration.source_data.snb_csv),
         "paper_pdf": _sha256(configuration.source_data.paper_pdf),
     }
-    expected_configuration = configuration.to_dict()
-    expected_convention = expected_configuration["convention"]
-    assert isinstance(expected_convention, dict)
     sources = tuple(
         _load_completed_source(
             path,
             expected_input_hashes=expected_input_hashes,
-            expected_convention=expected_convention,
         )
         for path in source_run_directories
     )
@@ -703,7 +699,7 @@ def _is_locked_evaluation(
         and contents.get("format_version") == 1
         and contents.get("kind") == "locked-final-test-evaluation"
         and isinstance(contents.get("reports"), dict)
-        and _matches_source_market_and_convention(source, contents)
+        and _matches_source_market(source, contents)
     )
 
 
@@ -723,7 +719,7 @@ def _is_sensitivity_evaluation(
         and isinstance(evaluation, dict)
         and isinstance(evaluation.get("reports"), dict)
         and isinstance(evaluation_manifest, dict)
-        and _matches_source_market_and_convention(source, evaluation_manifest)
+        and _matches_source_market(source, evaluation_manifest)
     )
 
 
@@ -778,7 +774,7 @@ def _is_mm_truncation(source: _CompletedSource, artifact: _EvidenceArtifact) -> 
         and contents.get("kind") == "mm-fifteen-year-truncation"
         and contents.get("source_horizon_years") == 15
         and contents.get("evaluation_horizon_years") == 5
-        and _matches_source_market_and_convention(source, contents)
+        and _matches_source_market(source, contents)
     )
 
 
@@ -795,23 +791,20 @@ def _is_horizon_scenario_analysis(
         and isinstance(contents.get("metrics_by_policy"), dict)
         and isinstance(contents.get("paired_intervals"), list)
         and isinstance(contents.get("category_outputs"), list)
-        and _matches_source_market_and_convention(source, contents)
+        and _matches_source_market(source, contents)
     )
 
 
-def _matches_source_market_and_convention(
+def _matches_source_market(
     source: _CompletedSource, contents: dict[str, object]
 ) -> bool:
     configuration = source.manifest.get("resolved_configuration")
     identities = contents.get("data_identities")
     if not isinstance(configuration, dict) or not isinstance(identities, dict):
         return False
-    convention = configuration.get("convention")
     input_hashes = source.manifest.get("input_hashes")
     return (
-        isinstance(convention, dict)
-        and contents.get("convention") == convention.get("profile")
-        and isinstance(input_hashes, dict)
+        isinstance(input_hashes, dict)
         and identities.get("market_source_hash") == input_hashes.get("snb_csv")
     )
 
@@ -855,7 +848,7 @@ def _is_long_end_extrapolation(
         and isinstance(contents, dict)
         and contents.get("format_version") == 1
         and contents.get("kind") == "long-end-extrapolation-diagnostics"
-        and _matches_source_market_and_convention(source, contents)
+        and _matches_source_market(source, contents)
     )
 
 
@@ -894,7 +887,6 @@ def _load_completed_source(
     directory: Path,
     *,
     expected_input_hashes: dict[str, str],
-    expected_convention: dict[str, object],
 ) -> _CompletedSource:
     if not directory.is_dir():
         raise ReportingError(f"Report source directory does not exist: {directory}")
@@ -917,11 +909,8 @@ def _load_completed_source(
             f"Report source input identities do not match: {directory}"
         )
     source_configuration = manifest.get("resolved_configuration")
-    if (
-        not isinstance(source_configuration, dict)
-        or source_configuration.get("convention") != expected_convention
-    ):
-        raise ReportingError(f"Report source convention does not match: {directory}")
+    if not isinstance(source_configuration, dict):
+        raise ReportingError(f"Report source configuration is invalid: {directory}")
     return _CompletedSource(
         directory=directory,
         manifest=manifest,
@@ -968,10 +957,9 @@ def _load_evidence_artifact(path: Path) -> _EvidenceArtifact:
 def _calibration_evidence(
     configuration: ResolvedRunConfiguration, historical: Any, calibration: Any
 ) -> dict[str, object]:
-    convention = configuration.convention.profile
-    component_errors = calibration.polynomial_fit_errors[convention]
-    loading = calibration.scaled_loadings[convention]
-    fitted = calibration.fitted_loadings[convention]
+    component_errors = calibration.polynomial_fit_errors
+    loading = calibration.scaled_loadings
+    fitted = calibration.fitted_loadings
     aggregate_error = float(np.linalg.norm(fitted - loading) / np.linalg.norm(loading))
     return {
         "format_version": 1,
@@ -1038,7 +1026,6 @@ def _hjm_hull_white_comparison(
     hjm = market_model.generate_hjm_scenarios(
         historical,
         calibration,
-        convention=configuration.convention.profile,
         horizon_years=horizon_years,
         paths=paths,
         seed=configuration.seeds["market_scenarios"],
@@ -1250,7 +1237,6 @@ def _presentation_metadata(sources: tuple[_CompletedSource, ...]) -> dict[str, o
     ]
     policies: set[str] = set()
     horizons: set[int] = set()
-    conventions: set[str] = set()
     units: set[str] = set()
     sample_sizes: list[dict[str, object]] = []
     architectures: list[dict[str, object]] = []
@@ -1260,7 +1246,6 @@ def _presentation_metadata(sources: tuple[_CompletedSource, ...]) -> dict[str, o
             continue
         policy = configuration.get("policy", {})
         experiment = configuration.get("experiment", {})
-        convention = configuration.get("convention", {})
         reference_bank = configuration.get("reference_bank", {})
         run_scale = configuration.get("run_scale", {})
         architecture = configuration.get("architecture", {})
@@ -1270,8 +1255,6 @@ def _presentation_metadata(sources: tuple[_CompletedSource, ...]) -> dict[str, o
             horizons.update(
                 int(value) for value in experiment.get("horizons_years", [])
             )
-        if isinstance(convention, dict) and convention.get("profile") is not None:
-            conventions.add(str(convention["profile"]))
         if isinstance(reference_bank, dict):
             initial_assets = reference_bank.get("initial_assets", {})
             if (
@@ -1304,7 +1287,6 @@ def _presentation_metadata(sources: tuple[_CompletedSource, ...]) -> dict[str, o
     return {
         "policy": sorted(policies),
         "horizon_years": sorted(horizons),
-        "convention": sorted(conventions),
         "sample_size": sample_sizes,
         "units": {"rates": "decimal annual rates", "monetary": sorted(units)},
         "source_runs": [str(source.directory) for source in sources],

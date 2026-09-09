@@ -589,7 +589,6 @@ class BenchmarkTrainer:
                     device=self._device,
                     dtype=self._dtype,
                     include_loan_dynamics=True,
-                    convention=self._configuration.convention.profile,
                     include_deposit_dynamics=True,
                     objective_parameters=parameters,
                 )
@@ -869,7 +868,6 @@ class BenchmarkTrainer:
         market = self._market_model.generate_hjm_scenarios(
             self._historical,
             self._calibration,
-            convention=self._configuration.convention.profile,
             horizon_years=horizon_years,
             paths=paths,
             seed=_job_seed(
@@ -912,7 +910,6 @@ class BenchmarkTrainer:
                 market = self._market_model.generate_hjm_scenarios(
                     self._historical,
                     self._calibration,
-                    convention=self._configuration.convention.profile,
                     horizon_years=horizon_years,
                     paths=paths,
                     seed=_job_seed(
@@ -933,7 +930,6 @@ class BenchmarkTrainer:
                     device=self._device,
                     dtype=self._dtype,
                     include_loan_dynamics=True,
-                    convention=self._configuration.convention.profile,
                     include_deposit_dynamics=True,
                     objective_parameters=evaluation_objective_parameters(
                         paths,
@@ -1390,7 +1386,6 @@ class MMTrainer(BenchmarkTrainer):
             device=self._device,
             dtype=self._dtype,
             include_loan_dynamics=True,
-            convention=self._configuration.convention.profile,
             include_deposit_dynamics=True,
             objective_parameters=evaluation_objective_parameters(
                 len(prefix.spot_rates),
@@ -1485,7 +1480,6 @@ class MMTrainer(BenchmarkTrainer):
             device=self._device,
             dtype=self._dtype,
             include_loan_dynamics=True,
-            convention=self._configuration.convention.profile,
             include_deposit_dynamics=True,
             objective_parameters=parameters,
         )
@@ -1613,7 +1607,6 @@ class MMTrainer(BenchmarkTrainer):
             market = self._market_model.generate_hjm_scenarios(
                 self._historical,
                 self._calibration,
-                convention=self._configuration.convention.profile,
                 horizon_years=horizon_years,
                 paths=paths,
                 seed=_job_seed(
@@ -2094,7 +2087,7 @@ def _validate_selected_checkpoint_contract(
     Output location, resource limits, execution device, and tensor dtype are
     deliberately absent from this contract: a selected CPU checkpoint is
     expected to be remapped onto a different single device, potentially with
-    PyTorch's audited state-dict dtype conversion. Financial convention,
+    PyTorch's audited state-dict dtype conversion. Financial semantics,
     declared model architecture, actual horizon, source-unit preprocessing,
     and the three immutable input identities must instead agree exactly.
     """
@@ -2107,8 +2100,6 @@ def _validate_selected_checkpoint_contract(
     if not isinstance(recorded, dict):
         raise TrainingError(f"{policy_label} checkpoint lacks a configuration manifest")
     expected = configuration.to_dict()
-    if recorded.get("convention") != expected["convention"]:
-        raise TrainingError(f"{policy_label} checkpoint convention is incompatible")
     if recorded.get("architecture") != expected["architecture"]:
         raise TrainingError(f"{policy_label} checkpoint architecture is incompatible")
 

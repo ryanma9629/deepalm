@@ -110,7 +110,6 @@ class _ScenarioPathCategory:
 class _MarketPrefixIdentity:
     """Immutable identity for the first 60 monthly shocks and 61 curve dates."""
 
-    convention: str
     seed: int
     calibration_identity: str
     initial_curve_identity: str
@@ -292,7 +291,6 @@ def _market_prefix_identity(market: MarketScenarioBatch) -> _MarketPrefixIdentit
     paths = len(market.spot_rates)
     global_indices = market.global_path_indices or tuple(range(paths))
     return _MarketPrefixIdentity(
-        convention=market.convention,
         seed=market.seed,
         calibration_identity=market.calibration_identity,
         initial_curve_identity=market.initial_curve_identity,
@@ -336,7 +334,6 @@ def _five_year_market_snapshot(market: MarketScenarioBatch) -> MarketScenarioBat
         discount_factors=discount_factors,
         monthly_forwards=monthly_forwards,
         innovations=innovations,
-        convention=market.convention,
         horizon_years=5,
         seed=market.seed,
         calibration_identity=market.calibration_identity,
