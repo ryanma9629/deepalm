@@ -6,11 +6,6 @@ Deep ALM 是对论文 *Deep treasury management for banks* 的 PyTorch
 实现与方法论复现项目。项目以瑞士国家银行的公开收益率曲线数据和一个透明的
 Reference Bank，替代论文不可获得的私有银行输入。
 
-项目只有一套可执行的金融口径：
-`corrected-financial-semantics-v1`。它包含已确认的论文勘误和实现修正，详见
-[实现版勘误与差异说明](docs/implementation-errata.md)。项目不再保留一个可运行的
-“paper convention”分支。
-
 ## 先选择目标路径
 
 | 目标 | 起点 | 跑通后能证明什么 | 不能证明什么 |
@@ -68,6 +63,14 @@ uv run deepalm report \
 ```
 
 `run` 默认输出每个成员的开始/结束信息，以及每个已完成 epoch 的策略、期限、训练损失、优化更新次数；发生 selection 时还会显示其 total loss 和 penalty loss。如脚本需要让 stdout 只保留最终 artifact 目录，可增加 `--no-verbose`。
+
+`evaluate` 默认也会输出进度：来源产物校验、市场校准、锁定 checkpoint 与测试路径数量，以及每个已完成 checkpoint 的一行状态。如脚本只需最终 evaluation 目录，可使用 `evaluate --no-verbose`。
+
+默认情况下，`run` 不会替换已有的 artifact 目录。若确认要在新运行成功完成后丢弃并替换当前配置所指定的同名目录，可显式增加 `--overwrite`：
+
+```bash
+uv run deepalm run --config configs/local-four-policy-m5.yaml --overwrite
+```
 
 本机两轮试跑按预算跑完，关闭 early stopping。每个 epoch 后，模型在固定、独立的
 selection 集上测量；锁定 test 集绝不参与选模。最终 `.pt` 使用 selection total loss
@@ -172,11 +175,12 @@ uv run deepalm device-check --config configs/bank-single-gpu-commissioning.yaml 
 
 5. **将银行运行物放在仓库之外。** 私有源数据、凭据与结果应放在银行控制的存储中。银行自己的交付流程还应包括：数据映射签字、账务与经济价值核对、GPU/驱动/PyTorch 版本记录、模型风险审查与验收标准。
 
-当前仓库已经能通过 `deepalm bank` 校验导入快照，并能完成单张 CUDA 卡的 commissioning；但“导入快照接入完整策略训练”、多 GPU/DDP、混合精度调优、集群调度及银行/监管验收，仍是明确列出的后续交付项。更详细的目标端步骤见[单 GPU commissioning 指南](docs/bank-single-gpu-commissioning.md)。
+当前仓库已经能通过 `deepalm bank` 校验导入快照，并能完成单张 CUDA 卡的 commissioning；但“导入快照接入完整策略训练”、多 GPU/DDP、混合精度调优、集群调度及银行/监管验收，仍是明确列出的后续交付项。面向未来集群实现的并行边界、可复现性规则和银行侧 rollout，见[分布式训练设计（规划中）](docs/distributed-training-design.md)；当前目标端的步骤见[单 GPU commissioning 指南](docs/bank-single-gpu-commissioning.md)。
 
 ## 延伸阅读
 
 - [实现版勘误与实现边界](docs/implementation-errata.md)
 - [Reference Bank 输入合同](docs/reference-bank-inputs.md)
 - [银行单 GPU commissioning 指南](docs/bank-single-gpu-commissioning.md)
+- [分布式训练设计（规划中）](docs/distributed-training-design.md)
 - [论文 PDF](docs/Deep%20treasury%20management%20for%20banks.pdf)

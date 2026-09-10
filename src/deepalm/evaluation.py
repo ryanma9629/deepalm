@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -50,6 +51,18 @@ class PolicyCheckpoint:
 
     label: str
     checkpoint_path: Path
+
+
+@dataclass(frozen=True)
+class EvaluationProgress:
+    """One completed frozen-checkpoint evaluation on the locked test set."""
+
+    label: str
+    policy_name: str
+    horizon_years: int
+    completed_checkpoints: int
+    total_checkpoints: int
+    locked_test_paths: int
 
 
 @dataclass(frozen=True)
@@ -203,6 +216,7 @@ class LockedEvaluator:
         *,
         bootstrap_resamples: int = 100,
         include_paired_bootstrap: bool = True,
+        progress_callback: Callable[[EvaluationProgress], None] | None = None,
     ) -> LockedEvaluationResult:
         """Run every checkpoint once, grouped on common locked paths by horizon."""
 
@@ -249,7 +263,7 @@ class LockedEvaluator:
         }
         reports: dict[str, dict[str, object]] = {}
         path_metrics: dict[str, dict[str, torch.Tensor]] = {}
-        for item in checkpoints:
+        for completed_checkpoints, item in enumerate(checkpoints, start=1):
             checkpoint = metadata[item.label]
             horizon = int(checkpoint["horizon_years"])
             with torch.no_grad():
@@ -271,6 +285,17 @@ class LockedEvaluator:
             reports[item.label], path_metrics[item.label] = _report_outcome(
                 outcome, horizon
             )
+            if progress_callback is not None:
+                progress_callback(
+                    EvaluationProgress(
+                        label=item.label,
+                        policy_name=str(checkpoint["policy"]),
+                        horizon_years=horizon,
+                        completed_checkpoints=completed_checkpoints,
+                        total_checkpoints=len(checkpoints),
+                        locked_test_paths=len(markets[horizon].spot_rates),
+                    )
+                )
         intervals = (
             _paired_intervals(
                 path_metrics,

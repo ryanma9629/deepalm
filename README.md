@@ -7,12 +7,6 @@ for *Deep treasury management for banks*. It uses public Swiss National Bank
 term-structure data and a transparent Reference Bank in place of the paper's
 private bank inputs.
 
-The project has one executable financial convention:
-`corrected-financial-semantics-v1`. It incorporates the accepted paper errata
-and the implementation fixes recorded in the
-[implementation errata](docs/implementation-errata.md). It intentionally does
-not preserve an alternative “paper convention” runtime.
-
 ## Choose the right path
 
 | Goal | Starting point | What a successful run proves | What it does **not** prove |
@@ -84,6 +78,19 @@ uv run deepalm report \
 default, including the policy, horizon, training loss, optimizer updates and,
 when selection runs, its total and penalty losses. Use `--no-verbose` when a
 script needs stdout to contain only the final artifact directory.
+
+`evaluate` also reports progress by default: source validation, market
+calibration, the number of locked checkpoints and test paths, then one line for
+each completed checkpoint. Use `evaluate --no-verbose` when a script needs only
+the final evaluation directory.
+
+A run never replaces an existing artifact directory by default. To discard and
+replace only the directory named by the selected configuration after the new
+run completes successfully, add `--overwrite`:
+
+```bash
+uv run deepalm run --config configs/local-four-policy-m5.yaml --overwrite
+```
 
 The two-epoch local pilots run their full budget with early stopping disabled.
 After each epoch, the policy is measured on a fixed, independent selection set;
@@ -248,12 +255,16 @@ The current repository validates imported snapshots through `deepalm bank` and
 commissions one CUDA device. Connecting an imported snapshot to the full policy
 training runner, multi-GPU/DDP execution, mixed-precision tuning, cluster
 scheduling, and bank/regulatory acceptance are explicitly future delivery
-items. See the [single-GPU commissioning guide](docs/bank-single-gpu-commissioning.md)
-for the detailed handoff sequence.
+items. The intended distributed-training boundary, reproducibility rules and
+bank-side rollout are documented in the
+[distributed training design](docs/distributed-training-design.md). See the
+[single-GPU commissioning guide](docs/bank-single-gpu-commissioning.md) for the
+current handoff sequence.
 
 ## Further reading
 
 - [Implementation errata and implementation boundaries](docs/implementation-errata.md)
 - [Reference Bank input contract](docs/reference-bank-inputs.md)
 - [Bank single-GPU commissioning guide](docs/bank-single-gpu-commissioning.md)
+- [Distributed training design (planned)](docs/distributed-training-design.md)
 - [Paper PDF](docs/Deep%20treasury%20management%20for%20banks.pdf)

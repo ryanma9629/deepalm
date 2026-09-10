@@ -92,4 +92,7 @@ architecture, or resource limits and train afresh on real data.
 
 Multi-GPU/DDP, scheduling, mixed-precision tuning, cluster throughput
 optimization, and a production or regulatory approval are intentionally outside
-this handoff. They require separate bank-side scope and acceptance.
+this handoff. They require separate bank-side scope and acceptance. The future
+DDP execution boundary and rollout order are described in the
+[distributed training design](distributed-training-design.md); that document is
+a plan, not an available command-line capability.

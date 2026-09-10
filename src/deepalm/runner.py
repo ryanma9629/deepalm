@@ -27,7 +27,7 @@ from deepalm.resources import BudgetExceeded, ResourceMonitor
 from deepalm.semantics import artifact_semantics, artifact_semantics_error
 
 if TYPE_CHECKING:
-    from deepalm.evaluation import PolicyCheckpoint
+    from deepalm.evaluation import EvaluationProgress, PolicyCheckpoint
     from deepalm.reference_bank import ReferenceBankSensitivity, ReferenceBankSnapshot
     from deepalm.term_structures import HistoricalTermStructures, HjmPcaCalibration
     from deepalm.training import DeviceValidationRecord, TrainingProgress
@@ -148,13 +148,16 @@ class ReproductionRunner:
         configuration: ResolvedRunConfiguration,
         *,
         acceptance_status: AcceptanceStatus = AcceptanceStatus.PENDING,
+        overwrite: bool = False,
     ) -> RunBundle:
         """Write the minimum audit bundle, returning a failure bundle on I/O errors."""
 
         try:
             status = _status_for(acceptance_status)
             manifest = _build_manifest(configuration, status, acceptance_status)
-            artifact_directory = _write_bundle_atomically(configuration, manifest)
+            artifact_directory = _write_bundle_atomically(
+                configuration, manifest, overwrite=overwrite
+            )
         except (OperationalRunError, OSError, ValueError) as error:
             failure_directory = _write_failure_bundle(configuration, error)
             return RunBundle(
@@ -175,21 +178,26 @@ class ReproductionRunner:
         )
 
     def run_configured_workflow(
-        self, configuration: ResolvedRunConfiguration, *, verbose: bool = True
+        self,
+        configuration: ResolvedRunConfiguration,
+        *,
+        verbose: bool = True,
+        overwrite: bool = False,
     ) -> RunBundle:
         """Run the workflow selected by the configuration's Workflow Contract."""
 
         if pilot := _LOCAL_VALIDATION_PILOTS.get(configuration.workflow_contract.name):
             return self._run_local_validation_pilot(
-                configuration, pilot=pilot, verbose=verbose
+                configuration, pilot=pilot, verbose=verbose, overwrite=overwrite
             )
-        return self.run(configuration)
+        return self.run(configuration, overwrite=overwrite)
 
     def evaluate_configured_workflow(
         self,
         configuration: ResolvedRunConfiguration,
         *,
         source_run_directory: Path,
+        verbose: bool = True,
     ) -> RunBundle:
         """Evaluate a completed workflow only through its declared contract."""
 
@@ -206,6 +214,7 @@ class ReproductionRunner:
                 configuration,
                 source_run_directory=source_run_directory,
                 pilot=pilot,
+                verbose=verbose,
             )
         return self.reuse_completed_workflow_stage(
             configuration, source_run_directory=source_run_directory, stage="evaluate"
@@ -819,7 +828,9 @@ class ReproductionRunner:
             policy_name=policy_name,
         )
 
-    def run_local_workflow(self, configuration: ResolvedRunConfiguration) -> RunBundle:
+    def run_local_workflow(
+        self, configuration: ResolvedRunConfiguration, *, overwrite: bool = False
+    ) -> RunBundle:
         """Execute the complete bounded no-swap workflow in one atomic bundle.
 
         The implementation deliberately reuses the existing stage contracts.  All
@@ -835,10 +846,7 @@ class ReproductionRunner:
             output_root = configuration.output.directory
             output_root.mkdir(parents=True, exist_ok=True)
             final_directory = output_root / configuration.output.run_name
-            if final_directory.exists():
-                raise OperationalRunError(
-                    f"Run artifact directory already exists: {final_directory}"
-                )
+            _validate_run_artifact_destination(final_directory, overwrite=overwrite)
             staging_directory = Path(
                 tempfile.mkdtemp(
                     prefix=f".{configuration.output.run_name}-", dir=output_root
@@ -1403,7 +1411,9 @@ class ReproductionRunner:
             }
             _write_json_artifact(staging_directory / "manifest.json", source_manifest)
             monitor.check("after-local-report")
-            os.replace(staging_directory, final_directory)
+            _publish_staged_run_artifact(
+                staging_directory, final_directory, overwrite=overwrite
+            )
             artifact_names = tuple(
                 sorted(path for path in final_directory.iterdir() if path.is_file())
             )
@@ -1446,18 +1456,22 @@ class ReproductionRunner:
             )
 
     def run_corrected_pilot(
-        self, configuration: ResolvedRunConfiguration
+        self, configuration: ResolvedRunConfiguration, *, overwrite: bool = False
     ) -> RunBundle:
         """Run the compact BM^D/MM corrected local-validation pilot."""
 
-        return self._run_local_validation_pilot(configuration, pilot=_CORRECTED_PILOT)
+        return self._run_local_validation_pilot(
+            configuration, pilot=_CORRECTED_PILOT, overwrite=overwrite
+        )
 
     def run_four_policy_pilot(
-        self, configuration: ResolvedRunConfiguration
+        self, configuration: ResolvedRunConfiguration, *, overwrite: bool = False
     ) -> RunBundle:
         """Run the compact eight-member corrected local comparison pilot."""
 
-        return self._run_local_validation_pilot(configuration, pilot=_FOUR_POLICY_PILOT)
+        return self._run_local_validation_pilot(
+            configuration, pilot=_FOUR_POLICY_PILOT, overwrite=overwrite
+        )
 
     def _run_local_validation_pilot(
         self,
@@ -1465,6 +1479,7 @@ class ReproductionRunner:
         *,
         pilot: LocalValidationPilotDefinition,
         verbose: bool = True,
+        overwrite: bool = False,
     ) -> RunBundle:
         """Run one fixed compact pilot matrix and publish it atomically."""
 
@@ -1475,10 +1490,7 @@ class ReproductionRunner:
             output_root = configuration.output.directory
             output_root.mkdir(parents=True, exist_ok=True)
             final_directory = output_root / configuration.output.run_name
-            if final_directory.exists():
-                raise OperationalRunError(
-                    f"Run artifact directory already exists: {final_directory}"
-                )
+            _validate_run_artifact_destination(final_directory, overwrite=overwrite)
             staging_directory = Path(
                 tempfile.mkdtemp(
                     prefix=f".{configuration.output.run_name}-", dir=output_root
@@ -1639,7 +1651,9 @@ class ReproductionRunner:
             }
             _write_json_artifact(staging_directory / "manifest.json", manifest)
             monitor.check(f"after-{pilot.profile}")
-            os.replace(staging_directory, final_directory)
+            _publish_staged_run_artifact(
+                staging_directory, final_directory, overwrite=overwrite
+            )
             return RunBundle(
                 status=RunStatus.COMPLETED,
                 acceptance_status=AcceptanceStatus.PENDING,
@@ -1703,6 +1717,7 @@ class ReproductionRunner:
         *,
         source_run_directory: Path,
         pilot: LocalValidationPilotDefinition,
+        verbose: bool = True,
     ) -> RunBundle:
         """Evaluate one complete fixed pilot on its locked final-test paths."""
 
@@ -1710,6 +1725,8 @@ class ReproductionRunner:
         source: Path | None = None
         try:
             _validate_local_validation_pilot_configuration(configuration, pilot=pilot)
+            if verbose:
+                print(f"[evaluate] {pilot.label}: validating source artifacts")
             source = source_run_directory.resolve()
             manifest = _read_json_artifact(source / "manifest.json")
             jobs = _completed_local_validation_pilot_jobs(source, manifest, pilot=pilot)
@@ -1732,6 +1749,8 @@ class ReproductionRunner:
                 device=configuration.optimization.device,
             )
             monitor.check(f"before-{pilot.profile}-evaluation")
+            if verbose:
+                print(f"[evaluate] {pilot.label}: calibrating market model")
             market_model = MarketScenarioModel()
             historical = market_model.load_historical_term_structures(
                 configuration.source_data.snb_csv,
@@ -1746,6 +1765,12 @@ class ReproductionRunner:
                 )
                 for job in jobs
             )
+            if verbose:
+                print(
+                    f"[evaluate] {pilot.label}: evaluating {len(checkpoints)} "
+                    "frozen checkpoints on "
+                    f"{configuration.run_scale.test_paths} locked test paths"
+                )
             evaluation = LockedEvaluator(
                 configuration,
                 snapshot=snapshot,
@@ -1756,7 +1781,13 @@ class ReproductionRunner:
                 checkpoints,
                 bootstrap_resamples=100,
                 include_paired_bootstrap=False,
+                progress_callback=_print_evaluation_progress if verbose else None,
             )
+            if verbose:
+                print(
+                    f"[evaluate] {pilot.label}: completed {len(checkpoints)}/"
+                    f"{len(checkpoints)} frozen checkpoints"
+                )
             _validate_local_validation_locked_evaluation(
                 evaluation.manifest,
                 jobs=jobs,
@@ -2237,6 +2268,16 @@ def _print_training_progress(progress: TrainingProgress) -> None:
             f" | penalty_loss={progress.selection.penalty_loss:.6f}"
         )
     print(line)
+
+
+def _print_evaluation_progress(progress: EvaluationProgress) -> None:
+    """Print one completed frozen-checkpoint evaluation event."""
+
+    print(
+        f"[evaluate] {progress.policy_name} {progress.horizon_years}y | "
+        f"checkpoint {progress.completed_checkpoints}/{progress.total_checkpoints} | "
+        f"locked_test_paths={progress.locked_test_paths} | completed"
+    )
 
 
 def _corrected_pilot_training_jobs(
@@ -3306,6 +3347,7 @@ def _write_bundle_atomically(
     manifest: dict[str, object],
     *,
     extra_artifacts: Mapping[str, Mapping[str, object]] | None = None,
+    overwrite: bool = False,
 ) -> Path:
     output_root = configuration.output.directory
     if output_root.exists() and not output_root.is_dir():
@@ -3313,8 +3355,7 @@ def _write_bundle_atomically(
     output_root.mkdir(parents=True, exist_ok=True)
 
     final_directory = output_root / configuration.output.run_name
-    if final_directory.exists():
-        raise ValueError(f"Run artifact directory already exists: {final_directory}")
+    _validate_run_artifact_destination(final_directory, overwrite=overwrite)
 
     staging_directory = Path(
         tempfile.mkdtemp(prefix=f".{configuration.output.run_name}-", dir=output_root)
@@ -3332,11 +3373,55 @@ def _write_bundle_atomically(
                 json.dumps(contents, indent=2, sort_keys=True, allow_nan=False) + "\n",
                 encoding="utf-8",
             )
-        os.replace(staging_directory, final_directory)
+        _publish_staged_run_artifact(
+            staging_directory, final_directory, overwrite=overwrite
+        )
     except (OSError, ValueError):
         shutil.rmtree(staging_directory, ignore_errors=True)
         raise
     return final_directory
+
+
+def _validate_run_artifact_destination(
+    final_directory: Path, *, overwrite: bool
+) -> None:
+    """Reject unsafe output targets before work begins or artifacts publish."""
+
+    if not (final_directory.exists() or final_directory.is_symlink()):
+        return
+    if not overwrite:
+        raise ValueError(f"Run artifact directory already exists: {final_directory}")
+    if final_directory.is_symlink() or not final_directory.is_dir():
+        raise ValueError(
+            "Run artifact overwrite target must be a directory, not a file or symlink: "
+            f"{final_directory}"
+        )
+
+
+def _publish_staged_run_artifact(
+    staging_directory: Path, final_directory: Path, *, overwrite: bool
+) -> None:
+    """Atomically publish a staged run, retaining old evidence until replacement."""
+
+    _validate_run_artifact_destination(final_directory, overwrite=overwrite)
+    if not final_directory.exists():
+        os.replace(staging_directory, final_directory)
+        return
+
+    backup_directory = Path(
+        tempfile.mkdtemp(
+            prefix=f".{final_directory.name}.previous-", dir=final_directory.parent
+        )
+    )
+    backup_directory.rmdir()
+    os.replace(final_directory, backup_directory)
+    try:
+        os.replace(staging_directory, final_directory)
+    except OSError:
+        if not final_directory.exists():
+            os.replace(backup_directory, final_directory)
+        raise
+    shutil.rmtree(backup_directory, ignore_errors=True)
 
 
 def _write_failure_bundle(

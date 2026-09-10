@@ -28,6 +28,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=True,
         help="show per-epoch training progress (default: enabled)",
     )
+    run_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="replace the existing artifact directory for this run name",
+    )
     plan_parser = subparsers.add_parser(
         "plan", help="show bounded work before any market or training stage runs"
     )
@@ -96,6 +101,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         stage_parser.add_argument(
             "--source-run", type=Path, required=True, help="completed compatible workflow"
         )
+        if command == "evaluate":
+            stage_parser.add_argument(
+                "--verbose",
+                action=argparse.BooleanOptionalAction,
+                default=True,
+                help="show evaluation-stage progress (default: enabled)",
+            )
     arguments = parser.parse_args(argv)
 
     try:
@@ -127,7 +139,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     elif arguments.command == "evaluate":
         bundle = runner.evaluate_configured_workflow(
-            configuration, source_run_directory=arguments.source_run
+            configuration,
+            source_run_directory=arguments.source_run,
+            verbose=arguments.verbose,
         )
     elif arguments.command == "resume":
         bundle = runner.reuse_completed_workflow_stage(
@@ -137,7 +151,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     else:
         bundle = runner.run_configured_workflow(
-            configuration, verbose=arguments.verbose
+            configuration, verbose=arguments.verbose, overwrite=arguments.overwrite
         )
     if bundle.status is RunStatus.COMPLETED:
         assert bundle.artifact_directory is not None

@@ -206,3 +206,16 @@ def test_corrected_pilot_publishes_four_updated_members_and_matching_baselines(
         assert jobs[("MM", horizon_years)]["baseline_reference"] == jobs[
             ("BM^D", horizon_years)
         ]["baseline_reference"]
+
+    sentinel = bundle.artifact_directory / "old-run-sentinel.txt"
+    sentinel.write_text("preserve until explicit overwrite", encoding="utf-8")
+    rejected = ReproductionRunner().run_configured_workflow(configuration)
+    assert rejected.status is RunStatus.FAILED
+    assert sentinel.exists()
+
+    replaced = ReproductionRunner().run_configured_workflow(
+        configuration, overwrite=True
+    )
+    assert replaced.status is RunStatus.COMPLETED
+    assert replaced.artifact_directory == bundle.artifact_directory
+    assert not sentinel.exists()

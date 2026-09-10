@@ -11,6 +11,7 @@ import torch
 from test_mm_training import SOURCE, _configuration, _frozen_baseline
 
 from deepalm.evaluation import (
+    EvaluationProgress,
     LockedEvaluationError,
     LockedEvaluator,
     PolicyCheckpoint,
@@ -203,11 +204,13 @@ def test_locked_evaluation_uses_disjoint_common_test_paths_and_writes_manifest(
         configuration, snapshot=snapshot, historical=historical, calibration=calibration
     )
 
+    progress: list[EvaluationProgress] = []
     result = evaluator.evaluate(
         (
             PolicyCheckpoint("BM^D", reference.checkpoint_path),
             PolicyCheckpoint("BM^E", bme_path),
-        )
+        ),
+        progress_callback=progress.append,
     )
     manifest_path = tmp_path / "locked-evaluation.json"
     evaluator.write_manifest(result, manifest_path)
@@ -233,6 +236,24 @@ def test_locked_evaluation_uses_disjoint_common_test_paths_and_writes_manifest(
         "R-2": True,
     }
     assert result.manifest["bootstrap_resamples"] == 100
+    assert progress == [
+        EvaluationProgress(
+            label="BM^D",
+            policy_name="BM^D",
+            horizon_years=5,
+            completed_checkpoints=1,
+            total_checkpoints=2,
+            locked_test_paths=2,
+        ),
+        EvaluationProgress(
+            label="BM^E",
+            policy_name="BM^E",
+            horizon_years=5,
+            completed_checkpoints=2,
+            total_checkpoints=2,
+            locked_test_paths=2,
+        ),
+    ]
     assert result.paired_intervals
     assert all(
         interval.resamples == 100 and interval.paths == 2

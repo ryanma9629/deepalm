@@ -336,8 +336,23 @@ def test_four_policy_report_requires_all_eight_identity_linked_members(
         def __init__(self, *_: object, **__: object) -> None:
             pass
 
-        def evaluate(self, received: tuple[object, ...], **_: object) -> object:
+        def evaluate(
+            self, received: tuple[object, ...], **options: object
+        ) -> object:
             assert {checkpoint.label for checkpoint in received} == set(checkpoints)
+            callback = options["progress_callback"]
+            assert callable(callback)
+            for completed, checkpoint in enumerate(received, start=1):
+                record = checkpoints[checkpoint.label]
+                callback(
+                    SimpleNamespace(
+                        policy_name=record["policy"],
+                        horizon_years=record["horizon_years"],
+                        completed_checkpoints=completed,
+                        total_checkpoints=len(received),
+                        locked_test_paths=64,
+                    )
+                )
             return SimpleNamespace(
                 reports=reports,
                 manifest={
@@ -360,7 +375,20 @@ def test_four_policy_report_requires_all_eight_identity_linked_members(
     assert main(
         ["evaluate", "--config", str(config_path), "--source-run", str(source)]
     ) == 0
-    evaluation_directory = Path(capsys.readouterr().out.strip())
+    evaluation_output = capsys.readouterr().out.splitlines()
+    evaluation_directory = Path(evaluation_output[-1])
+    assert "[evaluate] Four-policy corrected pilot: validating source artifacts" in evaluation_output
+    assert "[evaluate] Four-policy corrected pilot: calibrating market model" in evaluation_output
+    assert (
+        "[evaluate] Four-policy corrected pilot: evaluating 8 frozen checkpoints "
+        "on 64 locked test paths"
+        in evaluation_output
+    )
+    assert (
+        "[evaluate] BM^E 5y | checkpoint 1/8 | locked_test_paths=64 | completed"
+        in evaluation_output
+    )
+    assert "[evaluate] Four-policy corrected pilot: completed 8/8 frozen checkpoints" in evaluation_output
     evidence = json.loads(
         (evaluation_directory / "corrected-evaluation.json").read_text()
     )
