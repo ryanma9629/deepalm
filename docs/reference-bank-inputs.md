@@ -4,8 +4,8 @@
 `ReferenceBankProvider.save()` emits the same contract. The in-code schema is
 available through `ReferenceBankProvider.schema()`; the current
 `schema_version` is `5`. Each snapshot also carries a required
-`artifact_semantics` identity. It identifies the financial behavior actually
-implemented and the repair items still pending; callers cannot upgrade an old
+`artifact_semantics` identity. It identifies the financial behavior and
+correction status actually implemented; callers cannot upgrade an old or
 aggregate-deposit snapshot merely by changing metadata.
 
 ## Required mapping

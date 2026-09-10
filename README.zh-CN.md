@@ -74,6 +74,10 @@ uv run deepalm report \
 uv run deepalm run --config configs/local-four-policy-m5.yaml --overwrite
 ```
 
+旧金融语义生成的产物会被当前运行时主动判定为不兼容。升级到
+`corrected-financial-semantics-v2` 后，应依次重新执行 `run`、`evaluate` 和
+`report`；只有确实希望替换配置指定的同名运行目录时，才使用 `--overwrite`。
+
 本机两轮试跑按预算跑完，关闭 early stopping。每个 epoch 后，模型在固定、独立的
 selection 集上测量；锁定 test 集绝不参与选模。最终 `.pt` 使用 selection total loss
 最低的 epoch；total loss 完全相同时选择 penalty loss 更低的一轮；两者都相同时保留较早
@@ -134,7 +138,11 @@ uv run deepalm plan --config configs/paper-oriented-research-plan.yaml
 
 这里有一个必须明确的当前边界：`paper-oriented-research-plan` 是可规划的合同，不是已交付的正式训练能力。今天执行通用 `run` 最多只能写出最低限度的审计 bundle；它不会训练论文尺度的策略矩阵，更不会生成“方法论已复现”的证据。要完成真正的论文导向训练，需要先交付 research training 能力，并在选定的计算环境上从头训练。
 
-即使 research runner 完成，公开输入也无法逐数复现论文：论文使用私有银行数据；本项目不含 swaps/`MM^S`；新发贷款目前以统一的六个月收益率定价，而不是按期限使用完整的发放收益率曲线。因此可作的研究主张应是“在明确替代假设下的方法论比较”，而不是与论文图表逐值一致。
+即使 research runner 完成，公开输入也无法逐数复现论文：论文使用私有银行数据，
+本项目也不含 swaps/`MM^S`。在已经实现的无互换范围内，每笔新贷款现在会按照
+发放时的同期限曲线收益率加 spread，锁定非负月度票息；终点日若恰逢年度企业贷款
+减值检查，也会执行减值。因此可作的研究主张仍应是“在明确替代假设下的方法论比较”，
+而不是与论文图表逐值一致。
 
 ## 3. 银行路径：真实数据与 GPU 配置
 

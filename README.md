@@ -99,6 +99,12 @@ run completes successfully, add `--overwrite`:
 uv run deepalm run --config configs/local-four-policy-m5.yaml --overwrite
 ```
 
+Artifacts created with an older financial-semantics identity are deliberately
+incompatible with the current runtime. After upgrading to
+`corrected-financial-semantics-v2`, rerun `run`, `evaluate`, and `report` in
+order; use `--overwrite` only when you intend to replace the configured run
+directory.
+
 The two-epoch local pilots run their full budget with early stopping disabled.
 After each epoch, the policy is measured on a fixed, independent selection set;
 the locked test set never participates in selection. The final `.pt` holds the
@@ -185,11 +191,13 @@ run requires a research training capability and fresh training on the selected
 compute environment.
 
 Even after that runner exists, the public inputs cannot reproduce the paper's
-numeric results exactly: the paper uses private bank data, this project omits
-swaps/`MM^S`, and new-loan pricing currently uses a common six-month yield
-rather than a full maturity-specific origination curve. The useful research
-claim is therefore *methodological comparison under disclosed substitutions*,
-not identity with the paper's reported figures.
+numeric results exactly: the paper uses private bank data, and this project
+omits swaps/`MM^S`. Within the implemented no-swap scope, every new loan now
+locks a non-negative monthly coupon from its issuance-date, same-maturity curve
+yield plus spread, and an applicable annual enterprise-loan impairment is also
+applied at the terminal date. The useful research claim is therefore
+*methodological comparison under disclosed substitutions*, not identity with
+the paper's reported figures.
 
 ## 3. Bank path: real data and GPU configuration
 
