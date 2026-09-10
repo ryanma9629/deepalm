@@ -85,6 +85,27 @@ default, including the policy, horizon, training loss, optimizer updates and,
 when selection runs, its total and penalty losses. Use `--no-verbose` when a
 script needs stdout to contain only the final artifact directory.
 
+The two-epoch local pilots run their full budget with early stopping disabled.
+After each epoch, the policy is measured on a fixed, independent selection set;
+the locked test set never participates in selection. The final `.pt` holds the
+epoch with the lowest selection total loss. An exact total-loss tie selects the
+lower penalty loss; an exact tie on both retains the earlier epoch. `.recovery.pt`
+instead retains the last completed epoch, its optimizer/scheduler state, and the
+best-policy state, so that training can resume safely.
+
+Longer training uses `run_scale.selection_start_epoch`,
+`run_scale.early_stopping_patience`, and
+`run_scale.minimum_relative_improvement` (the project's relative `min_delta`).
+Patience counts validation checks without a sufficiently large relative decrease
+in selection total loss. A small decrease may still replace the saved best model,
+but it does not reset patience. When patience is exhausted, the saved best policy,
+rather than the final epoch's policy, is delivered. `training_summary` records
+the selected and last completed epochs, loss values, configured controls, and the
+`max_epochs` or `patience_exhausted` stop reason. Fixed profiles cannot override
+these values; use `run_scale.profile: bank_training` and explicitly declare all
+three fields for a configurable bank run. These rules are project choices, not
+details disclosed by the paper; see the [implementation differences](docs/implementation-errata.md).
+
 Inspect the `manifest.json` files and the generated report JSON. A valid local result is a complete,
 identity-linked four-member evidence chain with finite updates and evaluation
 artifacts. It is deliberately not an economic acceptance result. A measured

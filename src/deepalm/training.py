@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -60,6 +61,7 @@ from deepalm.term_structures import (
 _BASE_LEARNING_RATE = 5e-4
 _MAX_LEARNING_RATE = 5e-3
 _GRADIENT_CLIP_NORM = 0.2
+_SELECTION_PROTOCOL_VERSION = 2
 _POLICY_TYPES: dict[str, type[TreasuryPolicy]] = {
     "BM^E": BMEqualPolicy,
     "BM^C": BMConstantPolicy,
@@ -156,11 +158,19 @@ class SelectionSchedule:
 
 @dataclass
 class SelectionTracker:
-    """Persistable paper-scale early-stopping state with penalty-loss tie breaks."""
+    """Select the best checkpoint independently of significant loss improvement.
+
+    A smaller validation total (or a lower penalty on an exact total tie) saves
+    a checkpoint. Patience resets only when total loss beats its separate
+    reference by more than the configured relative delta. Patience counts
+    validation checks, not the distance between their epoch numbers.
+    """
 
     schedule: SelectionSchedule
     best_selection: tuple[float, float] | None = None
     last_improvement_epoch: int | None = None
+    stopping_reference_total: float | None = None
+    checks_without_improvement: int = 0
 
     def should_select(self, epoch: int) -> bool:
         return epoch >= self.schedule.first_selection_epoch
@@ -168,29 +178,30 @@ class SelectionTracker:
     def record(self, epoch: int, candidate: tuple[float, float]) -> bool:
         if not self.should_select(epoch):
             return False
-        if self.best_selection is None:
+        if not all(math.isfinite(value) for value in candidate):
+            raise TrainingError("Selection total and penalty loss must be finite")
+        save_best = self.best_selection is None or candidate < self.best_selection
+        if save_best:
             self.best_selection = candidate
-            self.last_improvement_epoch = epoch
-            return True
-        total_before, penalty_before = self.best_selection
-        total_after, penalty_after = candidate
-        relative_improvement = (total_before - total_after) / max(
-            abs(total_before), 1e-12
-        )
-        improved = (
-            relative_improvement + 1e-12 >= self.schedule.minimum_relative_improvement
-            or (total_after == total_before and penalty_after < penalty_before)
+
+        reference = self.stopping_reference_total
+        improved = reference is None or candidate[0] < reference - (
+            self.schedule.minimum_relative_improvement * max(abs(reference), 1e-12)
         )
         if improved:
-            self.best_selection = candidate
+            self.stopping_reference_total = candidate[0]
             self.last_improvement_epoch = epoch
-        return improved
+            self.checks_without_improvement = 0
+        else:
+            self.checks_without_improvement += 1
+        return save_best
 
     def should_stop(self, epoch: int) -> bool:
         return (
             self.schedule.patience is not None
             and self.last_improvement_epoch is not None
-            and epoch - self.last_improvement_epoch >= self.schedule.patience
+            and self.should_select(epoch)
+            and self.checks_without_improvement >= self.schedule.patience
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -199,6 +210,8 @@ class SelectionTracker:
             if self.best_selection is not None
             else None,
             "last_improvement_epoch": self.last_improvement_epoch,
+            "stopping_reference_total": self.stopping_reference_total,
+            "checks_without_improvement": self.checks_without_improvement,
         }
 
 
@@ -563,6 +576,20 @@ class BenchmarkTrainer:
                 recovery_path=recovery_path,
             )
             start_epoch = int(recovered["completed_epoch"]) + 1
+            if (
+                selection_tracker.should_stop(start_epoch - 1)
+                or start_epoch > scale.epochs
+            ):
+                # No later epoch will save the parent/override audit for this resume.
+                _save_recovery(
+                    recovery_path,
+                    {
+                        **recovered,
+                        "execution_context": _execution_context(self._configuration),
+                        "resume_lineage": resume_lineage,
+                        "resource_snapshot": self._monitor.snapshot().to_dict(),
+                    },
+                )
 
         if control.stop_after_completed_epoch == 0:
             self._raise_controlled_interruption(
@@ -571,7 +598,11 @@ class BenchmarkTrainer:
                 completed_epoch=0,
             )
 
+        completed_epoch = start_epoch - 1
         for epoch in range(start_epoch, scale.epochs + 1):
+            # A recovery saved on the stopping epoch must not perform an extra update.
+            if selection_tracker.should_stop(completed_epoch):
+                break
             epoch_losses: list[float] = []
             for start in range(0, scale.training_paths_per_epoch, scale.batch_size):
                 paths = min(scale.batch_size, scale.training_paths_per_epoch - start)
@@ -692,6 +723,7 @@ class BenchmarkTrainer:
                         name: value.detach().cpu().clone()
                         for name, value in policy.state_dict().items()
                     }
+            completed_epoch = epoch
             _save_recovery(
                 recovery_path,
                 _recovery_contents(
@@ -776,6 +808,24 @@ class BenchmarkTrainer:
                 snapshot=self._snapshot,
                 resource_profile_path=self._resource_profile_path(horizon_years),
                 policy_dependencies=policy_dependencies,
+                training_summary={
+                    "selection_protocol_version": _SELECTION_PROTOCOL_VERSION,
+                    "monitor": "selection_total_loss",
+                    "mode": "min",
+                    "completed_epoch": completed_epoch,
+                    "configured_max_epochs": scale.epochs,
+                    "selected_epoch": best_epoch,
+                    "best_validation_loss": best[0],
+                    "last_validation_loss": history[-1].total_loss,
+                    "stop_reason": (
+                        "patience_exhausted"
+                        if selection_tracker.should_stop(completed_epoch)
+                        else "max_epochs"
+                    ),
+                    "checks_without_improvement": selection_tracker.checks_without_improvement,
+                    "early_stopping": asdict(selection_tracker.schedule),
+                    "last_training_state_path": str(recovery_path),
+                },
             ),
         )
         timing.artifact_seconds += time.perf_counter() - artifact_started
@@ -1754,6 +1804,7 @@ def _checkpoint_contents(
     snapshot: ReferenceBankSnapshot,
     resource_profile_path: Path,
     policy_dependencies: dict[str, object],
+    training_summary: dict[str, object],
 ) -> dict[str, object]:
     configuration_data = configuration.to_dict()
     return {
@@ -1762,6 +1813,7 @@ def _checkpoint_contents(
         "horizon_years": horizon_years,
         "selected_epoch": selected_epoch,
         "selection_history": [asdict(record) for record in selection_history],
+        "training_summary": training_summary,
         "optimizer_updates": optimizer_updates,
         "learning_rates": learning_rates,
         "clipped_gradient_norms": clipped_gradient_norms,
@@ -2194,6 +2246,7 @@ def _recovery_identity(
     return {
         "policy": policy_name,
         "horizon_years": horizon_years,
+        "selection_protocol_version": _SELECTION_PROTOCOL_VERSION,
         "artifact_semantics": artifact_semantics("training"),
         "financial_semantics_version": FINANCIAL_SEMANTICS_VERSION,
         "semantic_configuration_identity": _json_identity(semantic_configuration),
@@ -2284,6 +2337,14 @@ def _recovered_execution_context(recovered: dict[str, object]) -> dict[str, obje
 def _validate_recovery_compatibility(
     recovered: dict[str, object], *, expected: dict[str, object]
 ) -> None:
+    identity = recovered.get("recovery_identity")
+    if (
+        not isinstance(identity, dict)
+        or identity.get("selection_protocol_version") != _SELECTION_PROTOCOL_VERSION
+    ):
+        raise TrainingError(
+            "Recovery selection protocol is incompatible; start a new training run"
+        )
     if recovered.get("recovery_identity") != expected:
         raise TrainingError("Recovery artifact is incompatible with this training job")
 
@@ -2330,6 +2391,18 @@ def _selection_tracker_from_dict(
     raw_best = value.get("best_selection")
     if raw_best is not None and (not isinstance(raw_best, list) or len(raw_best) != 2):
         raise TrainingError("Recovery artifact has an invalid selection tracker")
+    reference = value.get("stopping_reference_total")
+    wait_count = value.get("checks_without_improvement")
+    if (
+        "stopping_reference_total" not in value
+        or type(wait_count) is not int
+        or wait_count < 0
+        or (reference is not None and (
+            type(reference) not in (int, float) or not math.isfinite(reference)
+        ))
+        or (raw_best is not None and reference is None)
+    ):
+        raise TrainingError("Recovery artifact has an invalid early-stopping state")
     return SelectionTracker(
         schedule=schedule,
         best_selection=(float(raw_best[0]), float(raw_best[1]))
@@ -2340,6 +2413,8 @@ def _selection_tracker_from_dict(
             if value.get("last_improvement_epoch") is not None
             else None
         ),
+        stopping_reference_total=reference,
+        checks_without_improvement=wait_count,
     )
 
 

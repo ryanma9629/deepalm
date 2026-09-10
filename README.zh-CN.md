@@ -69,6 +69,23 @@ uv run deepalm report \
 
 `run` 默认输出每个成员的开始/结束信息，以及每个已完成 epoch 的策略、期限、训练损失、优化更新次数；发生 selection 时还会显示其 total loss 和 penalty loss。如脚本需要让 stdout 只保留最终 artifact 目录，可增加 `--no-verbose`。
 
+本机两轮试跑按预算跑完，关闭 early stopping。每个 epoch 后，模型在固定、独立的
+selection 集上测量；锁定 test 集绝不参与选模。最终 `.pt` 使用 selection total loss
+最低的 epoch；total loss 完全相同时选择 penalty loss 更低的一轮；两者都相同时保留较早
+的一轮。`.recovery.pt` 则保留最后完成 epoch、对应的优化器/scheduler 状态，以及最佳策略
+权重副本，供后续安全续训。
+
+长训练通过 `run_scale.selection_start_epoch`、
+`run_scale.early_stopping_patience` 和
+`run_scale.minimum_relative_improvement`（本项目的相对 `min_delta`）配置。patience
+统计 selection total loss 没有足够相对下降的验证次数。轻微下降仍可替换最佳模型，
+但不会重置 patience；patience 耗尽时交付保存的最佳策略，而非最后完成 epoch 的策略。
+checkpoint 的 `training_summary` 记录选中 epoch、最后完成 epoch、loss、配置值以及
+`max_epochs` 或 `patience_exhausted` 停止原因。固定 profile 不接受这些字段的覆盖；
+银行环境如需自行配置，应使用 `run_scale.profile: bank_training` 并显式填写三个字段。
+具体选模、阈值与 patience 是项目补充规则，论文未公开这些细节，见
+[实现版勘误中的训练说明](docs/implementation-errata.md#训练与选模规则项目补充)。
+
 检查各 run bundle 的 `manifest.json` 和生成的报告 JSON。本机验收的标准是：四个成员的证据链完整、身份关联正确、优化更新和评估结果均为有限值；它不是经济验收。目标 M5 MacBook 上的一次实测中，pilot 用时 151.30 秒，随后锁定评估用时 21.04 秒；这只是容量规划观察值，不是性能承诺。
 
 如需运行覆盖更多策略的 CPU/float64 开发流程，仍使用通用动作和

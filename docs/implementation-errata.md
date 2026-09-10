@@ -65,6 +65,43 @@
 | Data availability | The canonical Reference Bank is a transparent substitute for the paper's private bank inputs. | Starting balance sheet and calibration handoff. | `docs/reference-bank-inputs.md`; `tests/test_reference_bank.py`. |
 | Product scope | Swaps and MM^S are out of scope. | Policies, state transitions, constraints, and reporting. | Configuration rejects swaps; no-swap workflow tests. |
 
+### 训练与选模规则（项目补充）
+
+论文第 21 页 §3.2.3.3 提到开发时使用 early stopping，并对正式结果模型
+重新生成每轮训练情景，但未公开监控指标、patience、最小改善幅度或停止后
+恢复哪一轮权重。以下是项目的可复现工程规则，不是论文公式修正。
+
+- 每轮 selection 使用固定的独立情景和固定的 `mu`、`lambda`，监控平均
+  total loss；锁定 test 集不参与选模或早停。
+- 最佳 checkpoint：total loss 严格下降就保存；total 完全相同时，保留
+  penalty 更低的一轮；两者均相同则保留较早一轮。
+- 早停：单独维护上次显著改善的 total loss `reference`。只有
+  `current < reference - minimum_relative_improvement * max(abs(reference), 1e-12)`
+  才清零等待计数；否则增加一次。细微改善可以更新最佳 checkpoint，却不重置
+  早停计数。patience 按实际验证次数计数，当前每个 eligible epoch 验证一次。
+- `selection_start_epoch` 是首个参与验证选模和早停的 epoch；此前只训练。
+  到达 patience 或配置的最大 epoch 就结束。非有限验证 loss 是操作失败，
+  不视作正常早停；沿用现有诊断和恢复机制。
+- 本机两轮 pilot 的 patience 为 `null`，按完整预算运行。可选 `paper_scale`
+  的第 20 轮开始验证、patience 15、相对阈值 0.001（0.1%）均为项目默认值，
+  不是作者披露的参数。`bank_training` 在现有配置中显式给出这三个值。
+- 最终 `POLICY_Hy.pt` 保存最佳权重；`POLICY_Hy.recovery.pt` 保存最后完成轮、
+  与该轮匹配的优化器/scheduler、最佳权重副本及完整早停状态。续训使用后者。
+  新 checkpoint 的 `training_summary` 标记最佳轮、完成轮、loss、阈值、等待次数
+  和 `max_epochs` / `patience_exhausted` 停止原因。
+
+这遵循 [Lightning EarlyStopping](https://lightning.ai/docs/pytorch/stable/api/lightning.pytorch.callbacks.EarlyStopping.html)
+与 [ModelCheckpoint](https://lightning.ai/docs/pytorch/stable/_modules/lightning/pytorch/callbacks/model_checkpoint.html)
+分开处理停止与保存的思路。Lightning 的 `min_delta` 使用绝对差值；本项目沿用
+已有的相对阈值配置，以适应不同期限和参考银行规模的 loss 数量级。
+
+选模协议版本 2 修正了旧逻辑中“相同 loss 在零阈值下被计为改善”及
+“微小的最佳 loss 改善被早停阈值挡住”的行为。旧恢复文件缺少新的早停状态，
+拒绝在新协议下续训，需建立新 run；已有冻结 checkpoint 和报告仍可读取，
+不重新标记为新协议结果。金融语义版本与本机资源预算不变。
+回归证据包括恒定 loss、阈值边界、非有限值、间隔验证、真实小样本训练
+及早停触发前/触发当轮中断恢复的一致性（`tests/test_training.py`）。
+
 ## 四、原文未错、但尚未做到：能力缺口
 
 ### 能力缺口

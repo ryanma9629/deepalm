@@ -116,6 +116,9 @@ def test_bme_trainer_updates_policy_selects_checkpoint_and_records_resources(
 
     assert result.optimizer_updates == 1
     assert result.selected_epoch == 1
+    assert checkpoint["training_summary"]["stop_reason"] == "max_epochs"
+    assert checkpoint["training_summary"]["completed_epoch"] == 1
+    assert checkpoint["training_summary"]["early_stopping"]["patience"] is None
     assert len(result.selection_history) == 1
     assert result.checkpoint_path.is_file()
     assert [item.resource_profile.horizon_years for item in results] == [5, 15]
@@ -473,6 +476,76 @@ def test_date_benchmark_freezes_each_selected_horizon_with_verified_identity(
         reference.load_policy(device="cpu", dtype=torch.float64)
 
 
+@pytest.mark.parametrize("interruption_epoch", [3, 4])
+def test_early_stopped_training_resumes_without_resetting_or_extending_patience(
+    tmp_path: Path, interruption_epoch: int,
+) -> None:
+    configuration = _configuration(tmp_path)
+    configuration = replace(
+        configuration,
+        run_scale=replace(
+            configuration.run_scale,
+            profile="bank_training",
+            epochs=6,
+            selection_start_epoch=2,
+            early_stopping_patience=2,
+            # Non-negative target-plus-penalty loss cannot improve by >100%.
+            minimum_relative_improvement=1.0,
+        ),
+    )
+    model = MarketScenarioModel()
+    historical = model.load_historical_term_structures(SOURCE)
+    calibration = model.calibrate_hjm_pca(historical)
+    snapshot = ReferenceBankProvider().build_canonical(historical)
+    uninterrupted = BMETrainer(
+        configuration, snapshot=snapshot, historical=historical, calibration=calibration,
+    ).fit(horizon_years=5)
+    interrupted_configuration = replace(
+        configuration, output=replace(configuration.output, run_name="early-stop-resume")
+    )
+    trainer = BMETrainer(
+        interrupted_configuration,
+        snapshot=snapshot, historical=historical, calibration=calibration,
+    )
+    with pytest.raises(TrainingInterrupted, match="cancelled") as interrupted:
+        trainer.fit(
+            horizon_years=5,
+            control=TrainingControl(stop_after_completed_epoch=interruption_epoch),
+        )
+    resumed = BMETrainer(
+        replace(
+            configuration, output=replace(configuration.output, run_name="early-stop-resumed")
+        ),
+        snapshot=snapshot, historical=historical, calibration=calibration,
+    ).fit(
+        horizon_years=5,
+        control=TrainingControl(resume=True, resume_from=interrupted.value.recovery_path),
+    )
+    expected = torch.load(uninterrupted.checkpoint_path, weights_only=True)
+    actual = torch.load(resumed.checkpoint_path, weights_only=True)
+
+    assert uninterrupted.optimizer_updates == resumed.optimizer_updates == 4
+    assert [record.epoch for record in resumed.selection_history] == [2, 3, 4]
+    assert actual["selection_history"] == expected["selection_history"]
+    assert actual["selected_epoch"] == expected["selected_epoch"]
+    assert actual["training_summary"]["stop_reason"] == "patience_exhausted"
+    assert actual["training_summary"]["completed_epoch"] == 4
+    assert actual["training_summary"]["checks_without_improvement"] == 2
+    for name, value in expected["policy_state"].items():
+        torch.testing.assert_close(actual["policy_state"][name], value, rtol=0, atol=0)
+    last = torch.load(
+        interrupted.value.recovery_path, weights_only=True
+    )
+    assert last["completed_epoch"] == 4
+    assert last["selection_tracker"]["checks_without_improvement"] == 2
+    assert last["execution_context"]["run_name"] == "early-stop-resumed"
+    assert len(last["resume_lineage"]) == 1
+    assert last["resume_lineage"][0]["source_completed_epoch"] == interruption_epoch
+    assert last["resume_lineage"][0]["previous_execution"]["run_name"] == "early-stop-resume"
+    for name, value in last["best_state"].items():
+        torch.testing.assert_close(actual["policy_state"][name], value, rtol=0, atol=0)
+
+
 def test_epoch_boundary_recovery_matches_an_uninterrupted_cpu_training_run(
     tmp_path: Path,
 ) -> None:
@@ -616,6 +689,13 @@ def test_recovery_replays_initial_state_and_rejects_semantic_mismatches(
             calibration=calibration,
         ).fit(horizon_years=5, control=TrainingControl(resume=True))
 
+    recovery_path = captured.value.recovery_path
+    saved = torch.load(recovery_path, weights_only=True)
+    saved["recovery_identity"].pop("selection_protocol_version")
+    torch.save(saved, recovery_path)
+    with pytest.raises(TrainingError, match="Recovery selection protocol is incompatible"):
+        trainer.fit(horizon_years=5, control=TrainingControl(resume=True))
+
 
 class _ExhaustedMonitor:
     def check(self, stage: str) -> ResourceSnapshot:
@@ -672,17 +752,68 @@ def test_training_errors_are_recorded_as_operational_failures(tmp_path: Path) ->
     assert interruption["diagnostics"]["error_type"] == "TrainingError"
 
 
+@pytest.mark.parametrize("bad_loss", [float("nan"), float("inf"), -float("inf")])
+def test_early_stopping_rejects_nonfinite_validation_metrics(bad_loss: float) -> None:
+    tracker = SelectionTracker(SelectionSchedule(1, 2, 0.0))
+    assert tracker.record(1, (100.0, 10.0))
+
+    with pytest.raises(TrainingError, match="finite"):
+        tracker.record(2, (bad_loss, 10.0))
+    with pytest.raises(TrainingError, match="finite"):
+        tracker.record(2, (100.0, bad_loss))
+    assert tracker.best_selection == (100.0, 10.0)
+    assert not tracker.should_stop(2)
+
+
+def test_early_stopping_counts_validation_checks_and_resets_on_significant_gain() -> None:
+    tracker = SelectionTracker(SelectionSchedule(5, 2, 0.01))
+
+    assert not tracker.record(4, (1.0, 0.0))
+    assert tracker.record(5, (100.0, 10.0))
+    # Exactly 1% is not MORE than min_delta: this saves best, but consumes patience.
+    assert tracker.record(10, (99.0, 9.0))
+    assert not tracker.should_stop(10)
+    assert tracker.record(15, (98.0, 8.0))
+    assert not tracker.should_stop(15)
+    # A penalty-only tie break saves best but does not reset total-loss patience.
+    assert tracker.record(20, (98.0, 7.0))
+    assert not tracker.should_stop(20)
+    assert not tracker.record(25, (98.0, 7.0))
+    assert tracker.should_stop(25)
+
+
+def test_early_stopping_counts_unchanged_loss_as_no_improvement() -> None:
+    tracker = SelectionTracker(SelectionSchedule(1, 2, 0.0))
+
+    assert tracker.record(1, (100.0, 10.0))
+    assert not tracker.record(2, (100.0, 10.0))
+    assert not tracker.should_stop(2)
+    assert not tracker.record(3, (100.0, 10.0))
+    assert tracker.should_stop(3)
+
+
+def test_small_validation_improvements_save_best_without_resetting_patience() -> None:
+    tracker = SelectionTracker(SelectionSchedule(1, 2, 0.01))
+
+    assert tracker.record(1, (100.0, 10.0))
+    assert tracker.record(2, (99.5, 9.0))
+    assert not tracker.should_stop(2)
+    assert tracker.record(3, (99.2, 8.0))
+    assert tracker.best_selection == (99.2, 8.0)
+    assert tracker.should_stop(3)
+
+
 def test_paper_scale_selection_starts_at_epoch_twenty_and_honors_ties_and_patience() -> None:
     tracker = SelectionTracker(SelectionSchedule.for_profile("paper_scale"))
 
     assert not tracker.should_select(19)
     assert tracker.record(20, (100.0, 10.0))
-    assert not tracker.record(21, (99.95, 1.0))
-    assert tracker.best_selection == (100.0, 10.0)
-    assert tracker.record(22, (99.9, 10.0))
-    assert tracker.record(23, (99.9, 9.0))
-    for epoch in range(24, 38):
-        assert not tracker.record(epoch, (99.9, 9.0))
+    assert tracker.record(21, (99.95, 1.0))
+    assert tracker.best_selection == (99.95, 1.0)
+    assert tracker.record(22, (99.8, 10.0))
+    assert tracker.record(23, (99.8, 9.0))
+    for epoch in range(24, 37):
+        assert not tracker.record(epoch, (99.8, 9.0))
         assert not tracker.should_stop(epoch)
-    assert not tracker.record(38, (99.9, 9.0))
-    assert tracker.should_stop(38)
+    assert not tracker.record(37, (99.8, 9.0))
+    assert tracker.should_stop(37)
