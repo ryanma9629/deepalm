@@ -14,6 +14,7 @@ from test_run_skeleton import configuration_data
 
 from deepalm.cli import main
 from deepalm.config import resolve_configuration
+from deepalm.local_validation import is_valid_local_validation_selection_epoch
 from deepalm.planning import build_execution_plan
 from deepalm.runner import ReproductionRunner, RunStatus
 from deepalm.semantics import artifact_semantics
@@ -36,6 +37,20 @@ def _four_policy_pilot_data(tmp_path: Path) -> dict[str, object]:
         "required_status": "development-validated",
     }
     return data
+
+
+@pytest.mark.parametrize("selected_epoch", (1, 2))
+def test_local_validation_selection_epoch_accepts_the_two_training_epochs(
+    selected_epoch: object,
+) -> None:
+    assert is_valid_local_validation_selection_epoch(selected_epoch)
+
+
+@pytest.mark.parametrize("selected_epoch", (0, 3, 1.5, "1", True))
+def test_local_validation_selection_epoch_requires_a_json_integer_in_range(
+    selected_epoch: object,
+) -> None:
+    assert not is_valid_local_validation_selection_epoch(selected_epoch)
 
 
 def test_four_policy_pilot_locks_eight_member_m5_budget(
@@ -257,7 +272,7 @@ def test_four_policy_report_requires_all_eight_identity_linked_members(
                 "checkpoint": checkpoint.name,
                 "checkpoint_sha256": digest,
                 "optimizer_updates": 4,
-                "selected_epoch": 2,
+                "selected_epoch": 1 if (policy, horizon) == ("BM^E", 15) else 2,
                 "finite_nonzero_optimization_signal": True,
                 "baseline_reference": f"BM_D-{horizon}y.json"
                 if policy in {"BM^D", "MM"}

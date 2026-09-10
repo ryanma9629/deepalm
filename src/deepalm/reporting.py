@@ -13,6 +13,7 @@ import numpy as np
 import torch
 
 from deepalm.config import ResolvedRunConfiguration
+from deepalm.local_validation import is_valid_local_validation_selection_epoch
 from deepalm.reference_bank import ReferenceBankProvider
 from deepalm.semantics import artifact_semantics, artifact_semantics_error
 from deepalm.term_structures import (
@@ -140,7 +141,9 @@ def build_local_validation_pilot_report(
         or set(reports) != expected_labels
         or any(
             job.get("optimizer_updates") != 4
-            or job.get("selected_epoch") != 2
+            or not is_valid_local_validation_selection_epoch(
+                job.get("selected_epoch")
+            )
             or job.get("finite_nonzero_optimization_signal") is not True
             for job in jobs_by_member.values()
         )

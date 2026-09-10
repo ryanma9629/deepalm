@@ -21,6 +21,7 @@ import numpy as np
 import torch
 
 from deepalm.config import ResolvedRunConfiguration
+from deepalm.local_validation import is_valid_local_validation_selection_epoch
 from deepalm.planning import build_execution_plan
 from deepalm.resources import BudgetExceeded, ResourceMonitor
 from deepalm.semantics import artifact_semantics, artifact_semantics_error
@@ -2321,7 +2322,9 @@ def _completed_local_validation_pilot_jobs(
         if (
             (policy, horizon) not in set(pilot.members)
             or int(job.get("optimizer_updates", -1)) != 4
-            or job.get("selected_epoch") != 2
+            or not is_valid_local_validation_selection_epoch(
+                job.get("selected_epoch")
+            )
             or job.get("finite_nonzero_optimization_signal") is not True
             or not checkpoint.is_file()
             or _sha256(checkpoint) != expected_hash
