@@ -88,3 +88,23 @@ def test_bank_action_help_is_configuration_neutral(
     help_text = capsys.readouterr().out
     assert "configured Reference Bank" in help_text
     assert "canonical Reference Bank" not in help_text
+
+
+def test_cli_adr_and_bank_guide_match_the_current_public_surface() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    adr = (repository / "docs/adr/0003-configured-workflow-contract-cli.md").read_text(
+        encoding="utf-8"
+    )
+    guide = (repository / "docs/bank-single-gpu-commissioning.md").read_text(
+        encoding="utf-8"
+    )
+
+    for document in (adr, guide):
+        assert "bounded-local-workflow" not in document
+        assert "bounded-local-cpu-development.yaml" not in document
+    assert "reference-bank" in adr
+    assert "verify-recovery" in adr
+    assert "stdout" in adr
+    assert "stderr" in adr
+    assert "uv run deepalm reference-bank" in guide
+    assert "`run`, `evaluate`, and `report` are unavailable" in guide

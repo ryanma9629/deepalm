@@ -28,14 +28,19 @@ with the bank-controlled validated snapshot before running. Run:
 
 ```bash
 uv run deepalm plan --config configs/bank-single-gpu-commissioning.yaml
+uv run deepalm reference-bank --config configs/bank-single-gpu-commissioning.yaml
 uv run deepalm device-check --config configs/bank-single-gpu-commissioning.yaml --horizon 5
 uv run deepalm device-check --config configs/bank-single-gpu-commissioning.yaml --horizon 15
 uv run deepalm device-check --config configs/bank-single-gpu-commissioning.yaml --policy MM --horizon 5
 uv run deepalm device-check --config configs/bank-single-gpu-commissioning.yaml --policy MM --horizon 15
 ```
 
-Each command performs a small real update on CPU and each available single-device
-backend. The MM commands first establish their frozen BM^D dependency. Inspect
+The `reference-bank` action validates the configured imported snapshot and emits
+reviewable balance-sheet evidence. Each `device-check` command then performs a
+small real update on CPU and the configured single-device backend. Its `--policy`
+and `--horizon` values may only select members already declared in the YAML; they
+cannot add to or override that matrix. The MM commands first establish their
+frozen BM^D dependency. Inspect
 `single-device-validation.json` in the printed run directory. Each completed
 device must report finite loss, an updated policy, clipped gradients, CPU-recovery
 resume, and an explicit checkpoint reload. A backend lacking a PyTorch runtime is explicitly
@@ -50,6 +55,10 @@ in the artifacts, but they are not semantic checkpoint mismatches. Checkpoints
 still reject incompatible data, feature preprocessing, widths, financial semantics,
 horizons, Reference Bank identity, or frozen BM^D dependencies, and record the
 Git revision plus checkpoint schema version in the checkpoint itself.
+
+For this commissioning Workflow Contract, `run`, `evaluate`, and `report` are unavailable:
+the repository does not yet connect an imported bank snapshot to full policy-matrix
+training. The `plan` capability table reports that boundary before any GPU work.
 
 ## 3. Exercise checkpoint recovery
 
