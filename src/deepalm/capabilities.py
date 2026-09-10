@@ -47,6 +47,105 @@ class WorkflowActionCapability:
         }
 
 
+@dataclass(frozen=True)
+class PublicActionHelp:
+    """Configuration-neutral help for one visible CLI action."""
+
+    summary: str
+    description: str
+    example: str
+
+
+_DIAGNOSTIC_DISCLAIMER = (
+    "It does not train a full policy matrix or establish economic validity, "
+    "production readiness, regulatory approval, or multi-GPU support."
+)
+
+_PUBLIC_ACTION_HELP = {
+    "run": PublicActionHelp(
+        summary="execute a configured workflow when its Workflow Contract supports training",
+        description=(
+            "Execute the complete policy/horizon matrix declared by an executable "
+            "Workflow Contract. Progress goes to stderr and the completed artifact "
+            "directory is the only stdout result."
+        ),
+        example="deepalm run --config configs/local-two-policy-m5.yaml",
+    ),
+    "plan": PublicActionHelp(
+        summary="show capability, bounded work, and resources before execution",
+        description=(
+            "Resolve the experiment without allocating scenarios or models. Text is "
+            "human-readable; JSON includes the complete plan and action capabilities."
+        ),
+        example="deepalm plan --config configs/local-two-policy-m5.yaml",
+    ),
+    "preflight": PublicActionHelp(
+        summary="run bounded HJM calibration and scenario generation only",
+        description=f"Create bounded market-calibration and scenario evidence. {_DIAGNOSTIC_DISCLAIMER}",
+        example="deepalm preflight --config configs/local-two-policy-m5.yaml",
+    ),
+    "reference-bank": PublicActionHelp(
+        summary="build or validate the configured Reference Bank and reviewable Table 1",
+        description=f"Create bounded Reference Bank evidence. {_DIAGNOSTIC_DISCLAIMER}",
+        example="deepalm reference-bank --config configs/local-two-policy-m5.yaml",
+    ),
+    "device-check": PublicActionHelp(
+        summary="create bounded CPU/MPS/CUDA commissioning evidence",
+        description=(
+            "Select one update from the configuration's declared policy/horizon matrix. "
+            f"{_DIAGNOSTIC_DISCLAIMER}"
+        ),
+        example=(
+            "deepalm device-check --config configs/bank-single-gpu-commissioning.yaml "
+            "--policy MM --horizon 5"
+        ),
+    ),
+    "evaluate": PublicActionHelp(
+        summary="evaluate a compatible completed workflow on locked paths",
+        description=(
+            "Evaluate a compatible completed workflow on locked paths. Progress goes "
+            "to stderr and the completed evaluation directory is the stdout result."
+        ),
+        example=(
+            "deepalm evaluate --config configs/local-two-policy-m5.yaml "
+            "--source-run artifacts/corrected-local-validation-pilot"
+        ),
+    ),
+    "report": PublicActionHelp(
+        summary="generate a report from completed run and locked-evaluation evidence",
+        description=(
+            "Generate a report from compatible completed evidence. Local validation "
+            "contracts require exactly one source run and its locked evaluation run."
+        ),
+        example=(
+            "deepalm report --config configs/local-two-policy-m5.yaml "
+            "--source-run artifacts/corrected-local-validation-pilot "
+            "--evaluation-run artifacts/corrected-local-validation-pilot-evaluation"
+        ),
+    ),
+    "verify-recovery": PublicActionHelp(
+        summary="validate compatible recovery evidence; does not continue training",
+        description=(
+            "Validate compatible recovery evidence without continuing training or "
+            "publishing a replacement policy matrix."
+        ),
+        example=(
+            "deepalm verify-recovery --config configs/local-two-policy-m5.yaml "
+            "--source-run artifacts/corrected-local-validation-pilot"
+        ),
+    ),
+}
+
+
+def public_action_help(action: str) -> PublicActionHelp:
+    """Return the single source of configuration-neutral action help."""
+
+    try:
+        return _PUBLIC_ACTION_HELP[action]
+    except KeyError as error:
+        raise ValueError(f"Unknown Deep ALM action: {action}") from error
+
+
 _COMMON_DIAGNOSTICS = {
     "preflight": WorkflowActionCapability(
         action="preflight",

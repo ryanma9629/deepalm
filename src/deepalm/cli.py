@@ -11,6 +11,7 @@ from pathlib import Path
 from deepalm.capabilities import (
     ActionCapabilityStatus,
     WorkflowActionCapability,
+    public_action_help,
     render_execution_plan,
     workflow_action_capabilities,
     workflow_action_capability,
@@ -52,14 +53,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    run_help = public_action_help("run")
     run_parser = subparsers.add_parser(
         "run",
-        help="execute a configured workflow when its Workflow Contract supports training",
-        description=(
-            "Execute the complete policy/horizon matrix declared by an executable "
-            "Workflow Contract. Progress goes to stderr and the completed artifact "
-            "directory is the only stdout result."
-        ),
+        help=run_help.summary,
+        description=run_help.description,
+        epilog=f"Example:\n  {run_help.example}",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     run_parser.add_argument(
         "--config",
@@ -78,13 +78,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="atomically replace an existing artifact only after a successful run",
     )
+    plan_help = public_action_help("plan")
     plan_parser = subparsers.add_parser(
         "plan",
-        help="show capability, bounded work, and resources before execution",
-        description=(
-            "Resolve the experiment without allocating scenarios or models. Text is "
-            "human-readable; JSON includes the complete plan and action capabilities."
-        ),
+        help=plan_help.summary,
+        description=plan_help.description,
+        epilog=f"Example:\n  {plan_help.example}",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     plan_parser.add_argument(
         "--config",
@@ -98,35 +98,35 @@ def main(argv: Sequence[str] | None = None) -> int:
         default="text",
         help="plan output format (default: text; json retains the complete resolved plan)",
     )
+    preflight_help = public_action_help("preflight")
     preflight_parser = subparsers.add_parser(
         "preflight",
-        help="run bounded HJM calibration and scenario generation only",
-        description=(
-            "Create bounded market-calibration and scenario evidence only. This does "
-            "not train a policy matrix or establish economic acceptance."
-        ),
+        help=preflight_help.summary,
+        description=preflight_help.description,
+        epilog=f"Example:\n  {preflight_help.example}",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     preflight_parser.add_argument(
         "--config", type=Path, required=True, help="YAML run configuration"
     )
+    bank_help = public_action_help("reference-bank")
     bank_parser = subparsers.add_parser(
         "reference-bank",
-        help="build or validate the configured Reference Bank and reviewable Table 1",
-        description=(
-            "Build or validate the Reference Bank selected by configuration and write "
-            "reviewable balance-sheet evidence. This does not train policies."
-        ),
+        help=bank_help.summary,
+        description=bank_help.description,
+        epilog=f"Example:\n  {bank_help.example}",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     bank_parser.add_argument(
         "--config", type=Path, required=True, help="YAML experiment configuration"
     )
+    device_help = public_action_help("device-check")
     device_check_parser = subparsers.add_parser(
         "device-check",
-        help="create bounded CPU/MPS/CUDA commissioning evidence; does not train a policy matrix",
-        description=(
-            "Run one bounded update selected from the configuration's declared policy "
-            "and horizon matrix. This is device evidence, not production acceptance."
-        ),
+        help=device_help.summary,
+        description=device_help.description,
+        epilog=f"Example:\n  {device_help.example}",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     device_check_parser.add_argument(
         "--config", type=Path, required=True, help="YAML run configuration"
@@ -144,13 +144,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=5,
         help="full 5- or 15-year rollout used by the commissioning update",
     )
+    report_help = public_action_help("report")
     report_parser = subparsers.add_parser(
         "report",
-        help="generate a report from compatible completed run and locked-evaluation evidence",
-        description=(
-            "Generate a report from compatible completed evidence. Local validation "
-            "contracts require exactly one source run and its locked evaluation run."
-        ),
+        help=report_help.summary,
+        description=report_help.description,
+        epilog=f"Example:\n  {report_help.example}",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     report_parser.add_argument(
         "--config", type=Path, required=True, help="YAML experiment configuration"
@@ -159,7 +159,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--source-run",
         type=Path,
         action="append",
-        required=True,
         help="compatible completed source run; repeat only where the Workflow Contract permits it",
     )
     report_parser.add_argument(
@@ -167,32 +166,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=Path,
         help="compatible locked evaluation artifact; required by local validation contracts",
     )
-    for command, help_text, description in (
-        (
-            "verify-recovery",
-            "validate compatible recovery evidence; does not continue training",
-            (
-                "Validate compatible recovery evidence without continuing training or "
-                "publishing a replacement policy matrix."
-            ),
-        ),
-        (
-            "evaluate",
-            "evaluate a compatible completed workflow on locked paths",
-            (
-                "Evaluate a compatible completed workflow on locked paths. Progress goes "
-                "to stderr and the completed evaluation directory is the stdout result."
-            ),
-        ),
-    ):
+    for command in ("verify-recovery", "evaluate"):
+        action_help = public_action_help(command)
         stage_parser = subparsers.add_parser(
-            command, help=help_text, description=description
+            command,
+            help=action_help.summary,
+            description=action_help.description,
+            epilog=f"Example:\n  {action_help.example}",
+            formatter_class=argparse.RawDescriptionHelpFormatter,
         )
         stage_parser.add_argument(
             "--config", type=Path, required=True, help="YAML experiment configuration"
         )
         stage_parser.add_argument(
-            "--source-run", type=Path, required=True, help="compatible completed workflow artifact"
+            "--source-run", type=Path, help="compatible completed workflow artifact"
         )
         if command == "evaluate":
             stage_parser.add_argument(
@@ -247,18 +234,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             policy_name=arguments.policy,
         )
     elif arguments.command == "report":
+        assert arguments.source_run is not None
         bundle = runner.report_configured_workflow(
             configuration,
             source_run_directories=tuple(arguments.source_run),
             evaluation_directory=arguments.evaluation_run,
         )
     elif arguments.command == "evaluate":
+        assert arguments.source_run is not None
         bundle = runner.evaluate_configured_workflow(
             configuration,
             source_run_directory=arguments.source_run,
             verbose=arguments.verbose,
         )
     elif arguments.command == "verify-recovery":
+        assert arguments.source_run is not None
         bundle = runner.reuse_completed_workflow_stage(
             configuration,
             source_run_directory=arguments.source_run,
@@ -310,13 +300,24 @@ def _stage_input_error(
 ) -> str | None:
     """Reject missing local-validation evidence before a runner can publish failure data."""
 
+    if (
+        arguments.command in {"evaluate", "verify-recovery"}
+        and arguments.source_run is None
+    ):
+        return f"{arguments.command} requires --source-run"
+    if arguments.command == "verify-recovery":
+        return None
     if arguments.command == "evaluate":
         if not arguments.source_run.is_dir():
             return f"source run directory does not exist: {arguments.source_run}"
         source_run_directory = arguments.source_run
         evaluation_directory = None
     elif arguments.command == "report" and capability.requires_locked_evaluation:
-        if len(arguments.source_run) != 1 or arguments.evaluation_run is None:
+        if (
+            arguments.source_run is None
+            or len(arguments.source_run) != 1
+            or arguments.evaluation_run is None
+        ):
             return "local validation report requires exactly one --source-run and --evaluation-run"
         if not arguments.source_run[0].is_dir():
             return f"source run directory does not exist: {arguments.source_run[0]}"

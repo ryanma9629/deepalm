@@ -8,6 +8,7 @@ import pytest
 import yaml
 
 from deepalm.cli import main
+from deepalm.runner import OperationalRunError, ReproductionRunner
 
 _RETIRED_COMMANDS = (
     "profile",
@@ -77,9 +78,9 @@ def test_legacy_bank_alias_is_hidden_but_always_warns(
     (
         ("run", "only stdout result"),
         ("plan", "without allocating scenarios or models"),
-        ("preflight", "does not train a policy matrix"),
-        ("reference-bank", "does not train policies"),
-        ("device-check", "not production acceptance"),
+        ("preflight", "regulatory approval"),
+        ("reference-bank", "regulatory approval"),
+        ("device-check", "regulatory approval"),
         ("evaluate", "locked paths"),
         ("report", "locked evaluation run"),
         ("verify-recovery", "without continuing training"),
@@ -94,7 +95,9 @@ def test_action_help_explains_its_evidence_boundary(
         main([command, "--help"])
 
     assert stopped.value.code == 0
-    assert expected_detail in " ".join(capsys.readouterr().out.split())
+    help_text = " ".join(capsys.readouterr().out.split())
+    assert expected_detail in help_text
+    assert f"Example: deepalm {command}" in help_text
 
 
 @pytest.mark.parametrize(
@@ -203,6 +206,32 @@ def test_run_rejects_non_executable_workflow_contract_before_publishing_an_artif
     assert not (tmp_path / "artifacts" / "blocked").exists()
 
 
+@pytest.mark.parametrize("command", ("evaluate", "report"))
+def test_unavailable_stage_explains_capability_before_requiring_evidence_paths(
+    command: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repository = Path(__file__).resolve().parents[1]
+    monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+    data = yaml.safe_load(
+        (repository / "configs" / "bank-single-gpu-commissioning.yaml").read_text(
+            "utf-8"
+        )
+    )
+    data["output"] = {"directory": str(tmp_path / "artifacts"), "run_name": "blocked"}
+    config_path = tmp_path / "bank.yaml"
+    config_path.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    exit_code = main([command, "--config", str(config_path)])
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "Action unavailable" in captured.err
+    assert "Available actions:" in captured.err
+
+
 @pytest.mark.parametrize(
     ("command", "extra_arguments", "expected_error"),
     (
@@ -266,4 +295,52 @@ def test_evaluate_rejects_an_existing_but_incomplete_source_as_input_error(
     assert exit_code == 2
     assert "Input error:" in captured.err
     assert "training artifact semantics" in captured.err
+    assert not (tmp_path / "artifacts").exists()
+
+
+def test_report_maps_incompatible_existing_evidence_to_an_input_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repository = Path(__file__).resolve().parents[1]
+    monkeypatch.setattr("torch.backends.mps.is_available", lambda: True)
+    data = yaml.safe_load(
+        (repository / "configs" / "local-two-policy-m5.yaml").read_text("utf-8")
+    )
+    data["output"] = {"directory": str(tmp_path / "artifacts"), "run_name": "pilot"}
+    config_path = tmp_path / "local-validation.yaml"
+    config_path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    source = tmp_path / "source"
+    evaluation = tmp_path / "evaluation"
+    source.mkdir()
+    evaluation.mkdir()
+
+    def reject_evidence(*_args: object, **_kwargs: object) -> None:
+        raise OperationalRunError("locked evaluation belongs to another workflow")
+
+    monkeypatch.setattr(
+        "deepalm.cli.validate_configured_workflow_stage_inputs", reject_evidence
+    )
+    monkeypatch.setattr(
+        ReproductionRunner,
+        "report_configured_workflow",
+        lambda *_args, **_kwargs: pytest.fail("invalid input must not reach the runner"),
+    )
+
+    exit_code = main(
+        [
+            "report",
+            "--config",
+            str(config_path),
+            "--source-run",
+            str(source),
+            "--evaluation-run",
+            str(evaluation),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "Input error: locked evaluation belongs to another workflow" in captured.err
     assert not (tmp_path / "artifacts").exists()
