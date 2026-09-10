@@ -141,6 +141,58 @@ _LOCAL_VALIDATION_PILOTS = {
 }
 
 
+def validate_configured_workflow_stage_inputs(
+    configuration: ResolvedRunConfiguration,
+    *,
+    action: str,
+    source_run_directory: Path,
+    evaluation_directory: Path | None = None,
+) -> None:
+    """Validate local evidence without publishing a failure artifact."""
+
+    pilot = _LOCAL_VALIDATION_PILOTS.get(configuration.workflow_contract.name)
+    if pilot is None or action not in {"evaluate", "report"}:
+        return
+    source = source_run_directory.resolve()
+    _validate_local_validation_source_contract(
+        configuration,
+        source_run_directory=source,
+        pilot=pilot,
+    )
+    manifest = _read_json_artifact(source / "manifest.json")
+    jobs = _completed_local_validation_pilot_jobs(source, manifest, pilot=pilot)
+    if action == "evaluate":
+        return
+    if evaluation_directory is None:
+        raise OperationalRunError(
+            f"{pilot.label} report requires locked evaluation evidence"
+        )
+    evaluation = evaluation_directory.resolve()
+    _validate_local_validation_evaluation_contract(
+        configuration,
+        evaluation_directory=evaluation,
+    )
+    evidence = _read_json_artifact(evaluation / "corrected-evaluation.json")
+    if (
+        evidence.get("status") != "completed"
+        or evidence.get("kind") != pilot.evaluation_kind
+        or evidence.get("source_run") != str(source)
+        or evidence.get("source_manifest_sha256") != _sha256(source / "manifest.json")
+    ):
+        raise OperationalRunError(
+            f"{pilot.label} locked evaluation is incomplete or incompatible"
+        )
+    pilot_manifest = manifest.get(pilot.manifest_key)
+    if not isinstance(pilot_manifest, Mapping):
+        raise OperationalRunError(f"{pilot.label} source manifest is incomplete")
+    _validate_local_validation_locked_evaluation(
+        evidence.get("locked_evaluation_manifest"),
+        jobs=jobs,
+        shared_identities=pilot_manifest.get("shared_identities"),
+        pilot=pilot,
+    )
+
+
 class ReproductionRunner:
     """Create an atomic, auditable bundle for one resolved run configuration."""
 
@@ -190,14 +242,13 @@ class ReproductionRunner:
         capability = workflow_action_capability(configuration, "run")
         if not capability.can_execute:
             return _unavailable_workflow_action_bundle(
-                configuration, action="run", guidance=capability.guidance
+                action="run", guidance=capability.guidance
             )
         if pilot := _LOCAL_VALIDATION_PILOTS.get(configuration.workflow_contract.name):
             return self._run_local_validation_pilot(
                 configuration, pilot=pilot, verbose=verbose, overwrite=overwrite
             )
         return _unavailable_workflow_action_bundle(
-            configuration,
             action="run",
             guidance="no public workflow runner is registered for this contract",
         )
@@ -214,7 +265,7 @@ class ReproductionRunner:
         capability = workflow_action_capability(configuration, "evaluate")
         if not capability.can_execute:
             return _unavailable_workflow_action_bundle(
-                configuration, action="evaluate", guidance=capability.guidance
+                action="evaluate", guidance=capability.guidance
             )
         if pilot := _LOCAL_VALIDATION_PILOTS.get(configuration.workflow_contract.name):
             try:
@@ -247,7 +298,7 @@ class ReproductionRunner:
         capability = workflow_action_capability(configuration, "report")
         if not capability.can_execute:
             return _unavailable_workflow_action_bundle(
-                configuration, action="report", guidance=capability.guidance
+                action="report", guidance=capability.guidance
             )
         if pilot := _LOCAL_VALIDATION_PILOTS.get(configuration.workflow_contract.name):
             if len(source_run_directories) != 1 or evaluation_directory is None:
@@ -766,10 +817,16 @@ class ReproductionRunner:
         full policy training remain explicit later stages.
         """
 
+        from deepalm.training import TrainingError
+
         try:
             if horizon_years not in configuration.experiment.horizons_years:
                 raise OperationalRunError(
                     "Single-device commissioning horizon is not declared in the configuration"
+                )
+            if policy_name not in configuration.policy.names:
+                raise OperationalRunError(
+                    "Single-device commissioning policy is not declared in the configuration"
                 )
             from deepalm.reference_bank import ReferenceBankProvider
             from deepalm.term_structures import MarketScenarioModel
@@ -777,7 +834,6 @@ class ReproductionRunner:
                 BMDateTrainer,
                 BMETrainer,
                 MMTrainer,
-                TrainingError,
             )
 
             market_model = MarketScenarioModel()
@@ -2257,12 +2313,9 @@ def _configured_workflow_failure_bundle(
     )
 
 
-def _unavailable_workflow_action_bundle(
-    configuration: ResolvedRunConfiguration, *, action: str, guidance: str
-) -> RunBundle:
+def _unavailable_workflow_action_bundle(*, action: str, guidance: str) -> RunBundle:
     """Reject an unavailable action without publishing misleading evidence."""
 
-    del configuration
     return RunBundle(
         status=RunStatus.FAILED,
         acceptance_status=AcceptanceStatus.PENDING,

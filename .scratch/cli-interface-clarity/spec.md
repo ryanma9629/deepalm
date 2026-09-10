@@ -90,6 +90,7 @@ user, an automation script and the README all share.
 - Rename the public `bank` action to `reference-bank`. Keep `bank` for one documented compatibility period as an undisplayed alias that emits a deprecation warning on stderr and otherwise preserves behavior. Update all user documentation to the new name.
 - Replace the public `resume` action with `verify-recovery`. It validates compatible recovery evidence only and must say so in its summary and detailed help. `resume` is not accepted as a public alias, reserving the word for a later genuine workflow-resume implementation.
 - Keep `preflight` and `device-check` as public independent diagnostic actions. Their help must state that they create bounded diagnostic evidence and do not train a full policy matrix or grant economic, production, regulatory or multi-GPU acceptance.
+- Treat `device-check --policy` and `--horizon` only as selectors within the matrix already declared by configuration. Reject a value outside that matrix; the flags never add or replace a TreasuryPolicy member or horizon.
 - Make human-readable text the default `plan` format. It must include the Workflow Contract, Execution Profile, policy/horizon matrix, resource envelope, target artifact directory, supported-action capability table, expected evidence and clear warnings. Add an explicit JSON format that preserves the complete current plan representation for scripts.
 - Expand root and action help using concise usage examples. Root help covers a small local lifecycle and points to the README for four-policy, paper-oriented and bank paths; action help describes required configuration, expected source evidence, artifact result, relevant incompatibility condition and safety semantics.
 - Continue to default training and evaluation progress to enabled. Send progress, warnings and errors to stderr; on completed mutating actions, emit only the final artifact directory on stdout. `--no-verbose` remains the explicit way to suppress progress, not a requirement for script-safe stdout.
@@ -131,5 +132,7 @@ required before ticket decomposition.
 
 After reviewing the cost and role of the legacy bounded flow, the user chose
 to remove it from the public contract while retaining its implementation as an
-internal integration harness. That later decision supersedes the earlier
-proposal to route it through public `run`.
+internal integration harness. Its configuration identity is resolved only by a
+private test seam; the public configuration loader rejects both the former
+bounded contract name and the internal test identity. That later decision
+supersedes the earlier proposal to route it through public `run`.

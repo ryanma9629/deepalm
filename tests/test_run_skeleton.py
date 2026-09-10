@@ -9,7 +9,12 @@ import numpy as np
 import pytest
 
 from deepalm.cli import main
-from deepalm.config import ConfigurationError, resolve_configuration
+from deepalm.config import (
+    ConfigurationError,
+)
+from deepalm.config import (
+    _resolve_internal_test_configuration as resolve_configuration,
+)
 from deepalm.planning import build_execution_plan
 from deepalm.resources import BudgetExceeded, ResourceMonitor
 from deepalm.runner import AcceptanceStatus, ReproductionRunner, RunStatus

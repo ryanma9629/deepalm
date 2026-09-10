@@ -60,6 +60,43 @@ def test_help_exposes_generic_lifecycle_and_unambiguous_independent_actions(
         assert command not in commands
 
 
+def test_legacy_bank_alias_is_hidden_but_always_warns(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as stopped:
+        main(["bank", "--help"])
+
+    assert stopped.value.code == 0
+    captured = capsys.readouterr()
+    assert "reference-bank" in captured.out
+    assert "Deprecated command 'bank'" in captured.err
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_detail"),
+    (
+        ("run", "only stdout result"),
+        ("plan", "without allocating scenarios or models"),
+        ("preflight", "does not train a policy matrix"),
+        ("reference-bank", "does not train policies"),
+        ("device-check", "not production acceptance"),
+        ("evaluate", "locked paths"),
+        ("report", "locked evaluation run"),
+        ("verify-recovery", "without continuing training"),
+    ),
+)
+def test_action_help_explains_its_evidence_boundary(
+    command: str,
+    expected_detail: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as stopped:
+        main([command, "--help"])
+
+    assert stopped.value.code == 0
+    assert expected_detail in " ".join(capsys.readouterr().out.split())
+
+
 @pytest.mark.parametrize(
     ("filename", "workflow_contract", "execution_profile"),
     (
@@ -120,6 +157,20 @@ def test_plan_json_retains_complete_machine_readable_execution_plan(
     plan = json.loads(capsys.readouterr().out)
     assert plan["workflow_contract"] == "local-two-policy-validation"
     assert plan["execution_profile"] == "m5-compact"
+    assert {item["action"] for item in plan["action_capabilities"]} == {
+        "plan",
+        "run",
+        "evaluate",
+        "report",
+        "preflight",
+        "reference-bank",
+        "device-check",
+        "verify-recovery",
+    }
+    assert all(
+        item["status"] in {"executable", "diagnostic-only"}
+        for item in plan["action_capabilities"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -148,6 +199,7 @@ def test_run_rejects_non_executable_workflow_contract_before_publishing_an_artif
     captured = capsys.readouterr()
     assert "Action unavailable" in captured.err
     assert expected_guidance in captured.err
+    assert "Available actions: plan, preflight, reference-bank, device-check" in captured.err
     assert not (tmp_path / "artifacts" / "blocked").exists()
 
 
@@ -186,4 +238,32 @@ def test_local_validation_stage_inputs_fail_before_runner_artifacts(
     assert main([command, "--config", str(config_path), *extra_arguments]) == 2
 
     assert expected_error in capsys.readouterr().err
+    assert not (tmp_path / "artifacts").exists()
+
+
+def test_evaluate_rejects_an_existing_but_incomplete_source_as_input_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repository = Path(__file__).resolve().parents[1]
+    monkeypatch.setattr("torch.backends.mps.is_available", lambda: True)
+    data = yaml.safe_load(
+        (repository / "configs" / "local-two-policy-m5.yaml").read_text("utf-8")
+    )
+    data["output"] = {"directory": str(tmp_path / "artifacts"), "run_name": "pilot"}
+    config_path = tmp_path / "local-validation.yaml"
+    config_path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    source = tmp_path / "incomplete-source"
+    source.mkdir()
+    (source / "manifest.json").write_text("{}", encoding="utf-8")
+
+    exit_code = main(
+        ["evaluate", "--config", str(config_path), "--source-run", str(source)]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "Input error:" in captured.err
+    assert "training artifact semantics" in captured.err
     assert not (tmp_path / "artifacts").exists()

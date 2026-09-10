@@ -11,7 +11,9 @@ from test_run_skeleton import configuration_data
 from deepalm.config import (
     PolicyConfiguration,
     RunScaleConfiguration,
-    resolve_configuration,
+)
+from deepalm.config import (
+    _resolve_internal_test_configuration as resolve_configuration,
 )
 from deepalm.runner import AcceptanceStatus, ReproductionRunner, RunStatus
 

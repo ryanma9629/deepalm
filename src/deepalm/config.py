@@ -273,12 +273,6 @@ _WORKFLOW_CONTRACTS = {
         policies=frozenset({"BM^E", "BM^C", "BM^D", "MM"}),
         horizons=frozenset({5, 15}),
     ),
-    "internal-integration-validation": _WorkflowContractDefinition(
-        execution_profile="local-cpu-compact",
-        run_scale="local_flow",
-        purpose="development-validation",
-        required_status="development-validated",
-    ),
     "paper-oriented-research-plan": _WorkflowContractDefinition(
         execution_profile="paper-research",
         run_scale="paper_scale",
@@ -293,6 +287,15 @@ _WORKFLOW_CONTRACTS = {
         purpose="bank-training",
         required_status="development-validated",
         horizons=frozenset({5, 15}),
+    ),
+}
+
+_INTERNAL_TEST_HARNESS_CONTRACTS = {
+    "internal-integration-validation": _WorkflowContractDefinition(
+        execution_profile="local-cpu-compact",
+        run_scale="local_flow",
+        purpose="development-validation",
+        required_status="development-validated",
     ),
 }
 
@@ -382,6 +385,28 @@ def load_configuration(path: Path) -> ResolvedRunConfiguration:
 def resolve_configuration(raw: object) -> ResolvedRunConfiguration:
     """Validate a raw configuration mapping and apply locked profile defaults."""
 
+    return _resolve_configuration(raw, workflow_contracts=_WORKFLOW_CONTRACTS)
+
+
+def _resolve_internal_test_configuration(raw: object) -> ResolvedRunConfiguration:
+    """Resolve test-harness input without registering it as a public workflow."""
+
+    return _resolve_configuration(
+        raw,
+        workflow_contracts={
+            **_WORKFLOW_CONTRACTS,
+            **_INTERNAL_TEST_HARNESS_CONTRACTS,
+        },
+    )
+
+
+def _resolve_configuration(
+    raw: object,
+    *,
+    workflow_contracts: Mapping[str, _WorkflowContractDefinition],
+) -> ResolvedRunConfiguration:
+    """Validate input against an explicit set of workflow definitions."""
+
     root = _mapping(raw, "configuration")
     unknown_sections = sorted(set(root) - _REQUIRED_SECTIONS)
     missing_sections = sorted(_REQUIRED_SECTIONS - set(root))
@@ -406,17 +431,23 @@ def resolve_configuration(raw: object) -> ResolvedRunConfiguration:
         seeds=_resolve_seeds(root["seeds"]),
         output=_resolve_output(root["output"]),
         acceptance=_resolve_acceptance(root["acceptance"]),
-        workflow_contract=_resolve_workflow_contract(root["workflow_contract"]),
+        workflow_contract=_resolve_workflow_contract(
+            root["workflow_contract"], workflow_contracts=workflow_contracts
+        ),
         execution_profile=_resolve_execution_profile(root["execution_profile"]),
     )
-    _validate_combinations(resolved)
+    _validate_combinations(resolved, workflow_contracts=workflow_contracts)
     return resolved
 
 
-def _resolve_workflow_contract(raw: object) -> WorkflowContractConfiguration:
+def _resolve_workflow_contract(
+    raw: object,
+    *,
+    workflow_contracts: Mapping[str, _WorkflowContractDefinition],
+) -> WorkflowContractConfiguration:
     section = _section(raw, "workflow_contract", {"name"})
     name = _string(section["name"], "workflow_contract.name")
-    if name not in _WORKFLOW_CONTRACTS:
+    if name not in workflow_contracts:
         raise ConfigurationError("workflow_contract.name is unsupported")
     return WorkflowContractConfiguration(name=name)
 
@@ -785,7 +816,11 @@ def _resolve_acceptance(raw: object) -> AcceptanceConfiguration:
     return AcceptanceConfiguration(purpose=purpose, required_status=required_status)
 
 
-def _validate_combinations(configuration: ResolvedRunConfiguration) -> None:
+def _validate_combinations(
+    configuration: ResolvedRunConfiguration,
+    *,
+    workflow_contracts: Mapping[str, _WorkflowContractDefinition],
+) -> None:
     if configuration.run_scale.profile == "corrected_pilot":
         _validate_corrected_pilot(configuration)
     elif configuration.run_scale.profile == "four_policy_pilot":
@@ -810,17 +845,21 @@ def _validate_combinations(configuration: ResolvedRunConfiguration) -> None:
             raise ConfigurationError(
                 "methodologically-reproduced requires BM^E, BM^C, BM^D, and MM"
             )
-    _validate_declared_workflow_contract(configuration)
+    _validate_declared_workflow_contract(
+        configuration, workflow_contracts=workflow_contracts
+    )
     _validate_declared_execution_profile(configuration)
 
 
 def _validate_declared_workflow_contract(
     configuration: ResolvedRunConfiguration,
+    *,
+    workflow_contracts: Mapping[str, _WorkflowContractDefinition],
 ) -> None:
     """Keep scenario invariants in the declared Workflow Contract during migration."""
 
     contract = configuration.workflow_contract
-    requirements = _WORKFLOW_CONTRACTS[contract.name]
+    requirements = workflow_contracts[contract.name]
     profile = configuration.execution_profile
     if profile.name != requirements.execution_profile:
         raise ConfigurationError(

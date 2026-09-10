@@ -27,6 +27,10 @@ def test_generic_actions_dispatch_local_validation_workflow_contracts(
     """Actions choose work; the configuration is the only scenario selector."""
 
     monkeypatch.setattr("torch.backends.mps.is_available", lambda: True)
+    monkeypatch.setattr(
+        "deepalm.cli.validate_configured_workflow_stage_inputs",
+        lambda *_args, **_kwargs: None,
+    )
     assert callable(configuration_factory)
     data = configuration_factory(tmp_path)
     config_path = tmp_path / "local-validation.yaml"
@@ -150,6 +154,10 @@ def test_evaluate_passes_an_explicit_or_default_verbose_preference_to_the_workfl
     """The generic evaluate action owns the human-facing progress preference."""
 
     monkeypatch.setattr("torch.backends.mps.is_available", lambda: True)
+    monkeypatch.setattr(
+        "deepalm.cli.validate_configured_workflow_stage_inputs",
+        lambda *_args, **_kwargs: None,
+    )
     config_path = tmp_path / "local-validation.yaml"
     config_path.write_text(
         yaml.safe_dump(_corrected_pilot_data(tmp_path)), encoding="utf-8"

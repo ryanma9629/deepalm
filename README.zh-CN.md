@@ -33,6 +33,8 @@ uv run deepalm --help
 决定设备与资源边界。文件名只用于说明场景，不能决定运行行为。通用生命周期为
 `plan`、`run`、`evaluate`、`report`。
 
+旧写法 `deepalm bank` 仅作为一个版本周期内的隐藏兼容别名保留，执行时会输出弃用警告；新脚本必须使用 `deepalm reference-bank`。`resume` 暂不开放；`deepalm verify-recovery` 只校验恢复证据，不会继续训练。
+
 ## 1. MacBook：以小资源跑通完整技术流程
 
 当你的目标只是确认技术链路正确接通、而不是得到有经济意义的策略时，使用这条路径。对于本项目约定的 Apple Silicon MacBook，这是推荐的第一步。

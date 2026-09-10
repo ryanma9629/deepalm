@@ -10,7 +10,7 @@ import torch
 from test_run_skeleton import configuration_data
 
 from deepalm import reporting
-from deepalm.config import resolve_configuration
+from deepalm.config import _resolve_internal_test_configuration as resolve_configuration
 from deepalm.reporting import ReportingError
 from deepalm.runner import ReproductionRunner, RunStatus
 from deepalm.semantics import artifact_semantics

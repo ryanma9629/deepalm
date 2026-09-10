@@ -13,7 +13,9 @@ from deepalm.config import (
     ExperimentConfiguration,
     PolicyConfiguration,
     RunScaleConfiguration,
-    resolve_configuration,
+)
+from deepalm.config import (
+    _resolve_internal_test_configuration as resolve_configuration,
 )
 from deepalm.mm import CurveFeaturePCA, MMPolicy
 from deepalm.policies import TreasuryPolicyState

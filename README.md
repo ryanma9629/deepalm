@@ -40,6 +40,12 @@ evidence rules; its **Execution Profile** selects the device and resource
 envelope. File names are only descriptive. The generic lifecycle is
 `plan`, `run`, `evaluate`, and `report`.
 
+The former `deepalm bank` spelling remains a hidden compatibility alias for
+one release and prints a deprecation warning. New scripts must use
+`deepalm reference-bank`. The name `resume` is intentionally unavailable;
+`deepalm verify-recovery` validates recovery evidence but does not continue
+training.
+
 ## 1. MacBook: run the whole technical flow with small resources
 
 Use this path when the aim is to prove that the pipeline is wired correctly,

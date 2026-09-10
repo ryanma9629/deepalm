@@ -28,6 +28,8 @@ def test_corrected_semantics_docs_expose_one_current_execution_contract() -> Non
         assert "four-policy-evaluate" not in document
         assert "four-policy-report" not in document
         assert "workflow --config" not in document
+        assert "deepalm reference-bank" in document
+        assert "deepalm verify-recovery" in document
     assert not (repository / "docs/financial-corrections.md").exists()
 
     errata = errata_path.read_text(encoding="utf-8")

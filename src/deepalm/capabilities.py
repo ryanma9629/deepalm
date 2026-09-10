@@ -25,6 +25,7 @@ class WorkflowActionCapability:
     action: str
     status: ActionCapabilityStatus
     guidance: str
+    requires_locked_evaluation: bool = False
 
     @property
     def can_execute(self) -> bool:
@@ -33,6 +34,16 @@ class WorkflowActionCapability:
         return self.status in {
             ActionCapabilityStatus.EXECUTABLE,
             ActionCapabilityStatus.DIAGNOSTIC_ONLY,
+        }
+
+    def to_dict(self) -> dict[str, str | bool]:
+        """Return the stable machine-readable capability representation."""
+
+        return {
+            "action": self.action,
+            "status": self.status.value,
+            "guidance": self.guidance,
+            "requires_locked_evaluation": self.requires_locked_evaluation,
         }
 
 
@@ -65,21 +76,6 @@ def workflow_action_capabilities(
 ) -> tuple[WorkflowActionCapability, ...]:
     """Return the complete public action inventory for one Workflow Contract."""
 
-    if configuration.workflow_contract.name == "internal-integration-validation":
-        return tuple(
-            WorkflowActionCapability(
-                action,
-                ActionCapabilityStatus.UNAVAILABLE,
-                "internal integration-test harness; no public CLI action is available",
-            )
-            for action in (
-                "plan",
-                "run",
-                "evaluate",
-                "report",
-                *_COMMON_DIAGNOSTICS,
-            )
-        )
     return _lifecycle_capabilities(configuration.workflow_contract.name) + tuple(
         _COMMON_DIAGNOSTICS.values()
     )
@@ -174,6 +170,7 @@ def _executable_lifecycle() -> tuple[WorkflowActionCapability, ...]:
             "report",
             ActionCapabilityStatus.EXECUTABLE,
             "requires compatible completed evidence and produces a report bundle",
+            requires_locked_evaluation=True,
         ),
     )
 

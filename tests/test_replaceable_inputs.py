@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from deepalm.config import resolve_configuration
+from deepalm.config import _resolve_internal_test_configuration as resolve_configuration
 from deepalm.reference_bank import ReferenceBankError, ReferenceBankProvider
 from deepalm.runner import ReproductionRunner, RunStatus
 from deepalm.runoff import ALMSimulator

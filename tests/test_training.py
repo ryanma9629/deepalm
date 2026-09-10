@@ -14,7 +14,9 @@ from deepalm.config import (
     ExperimentConfiguration,
     PolicyConfiguration,
     RunScaleConfiguration,
-    resolve_configuration,
+)
+from deepalm.config import (
+    _resolve_internal_test_configuration as resolve_configuration,
 )
 from deepalm.reference_bank import ReferenceBankProvider
 from deepalm.resources import BudgetExceeded, ResourceSnapshot
@@ -372,6 +374,23 @@ def test_internal_runner_executes_the_bounded_single_device_commissioning_check(
     )
     assert evidence["horizon_years"] == horizon_years
     assert evidence["policy"] == policy_name
+
+
+def test_single_device_check_rejects_a_policy_outside_the_declared_matrix(
+    tmp_path: Path,
+) -> None:
+    configuration = _configuration(tmp_path)
+
+    bundle = ReproductionRunner().commission_single_device_portability(
+        configuration,
+        horizon_years=5,
+        policy_name="MM",
+    )
+
+    assert bundle.status is RunStatus.FAILED
+    assert bundle.error == (
+        "Single-device commissioning policy is not declared in the configuration"
+    )
 
 
 def test_constant_benchmark_uses_the_shared_trainer_for_both_horizons(

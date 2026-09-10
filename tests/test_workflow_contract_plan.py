@@ -10,7 +10,13 @@ import yaml
 from test_run_skeleton import configuration_data
 
 from deepalm.cli import main
-from deepalm.config import ConfigurationError, resolve_configuration
+from deepalm.config import (
+    ConfigurationError,
+    resolve_configuration,
+)
+from deepalm.config import (
+    _resolve_internal_test_configuration as resolve_internal_configuration,
+)
 from deepalm.planning import build_execution_plan
 
 
@@ -69,7 +75,7 @@ def test_declared_contract_rejects_a_conflicting_policy_matrix(tmp_path: Path) -
     configuration["run_scale"] = {"profile": "quick"}
 
     with pytest.raises(ConfigurationError, match="internal-integration-validation requires run_scale"):
-        resolve_configuration(configuration)
+        resolve_internal_configuration(configuration)
 
 
 def test_configuration_rejects_the_retired_bounded_local_workflow(
@@ -77,6 +83,15 @@ def test_configuration_rejects_the_retired_bounded_local_workflow(
 ) -> None:
     configuration = configuration_data(tmp_path)
     configuration["workflow_contract"] = {"name": "bounded-local-workflow"}
+
+    with pytest.raises(ConfigurationError, match="workflow_contract.name is unsupported"):
+        resolve_configuration(configuration)
+
+
+def test_public_configuration_rejects_the_internal_integration_harness(
+    tmp_path: Path,
+) -> None:
+    configuration = configuration_data(tmp_path)
 
     with pytest.raises(ConfigurationError, match="workflow_contract.name is unsupported"):
         resolve_configuration(configuration)
@@ -107,7 +122,7 @@ def test_internal_integration_harness_has_no_public_cli_path(
     exit_code = main([command, "--config", str(path), *extra_arguments])
 
     assert exit_code == 2
-    assert "internal integration-test harness" in capsys.readouterr().err
+    assert "workflow_contract.name is unsupported" in capsys.readouterr().err
 
 
 def test_configuration_can_plan_the_declared_research_contract(tmp_path: Path) -> None:
