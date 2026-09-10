@@ -208,7 +208,7 @@ def test_frozen_baseline_records_the_single_corrected_financial_semantics(
 
     identity = payload["artifact_semantics"]
     assert identity["financial_semantics_version"] == FINANCIAL_SEMANTICS_VERSION
-    assert FINANCIAL_SEMANTICS_VERSION == "corrected-financial-semantics-v1"
+    assert FINANCIAL_SEMANTICS_VERSION == "corrected-financial-semantics-v2"
     assert "financial_version" not in identity
 
 

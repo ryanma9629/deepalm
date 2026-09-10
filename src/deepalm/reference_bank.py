@@ -953,7 +953,7 @@ def _seasoned_loan_cohorts(
 ) -> tuple[LoanCohort, ...]:
     cohorts: list[LoanCohort] = []
     for term, weight in zip(terms, weights, strict=True):
-        coupon = float(np.expm1((spot_rates[term - 1] + spread) / 12.0))
+        coupon = float(max(np.expm1((spot_rates[term - 1] + spread) / 12.0), 0.0))
         schedule = np.zeros(180, dtype=np.float64)
         for age in range(term):
             schedule[term - age - 1] = weight / term

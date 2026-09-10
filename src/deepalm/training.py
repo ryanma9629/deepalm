@@ -686,10 +686,11 @@ class BenchmarkTrainer:
                 timing.forward_backward_update_seconds += (
                     time.perf_counter() - update_started
                 )
-                if not any(
+                updated = any(
                     not torch.equal(old, new.detach())
                     for old, new in zip(before, policy.parameters(), strict=True)
-                ):
+                )
+                if clipped_norm.item() > 0.0 and not updated:
                     raise TrainingError(
                         f"{self._policy_name} optimizer step did not update policy parameters",
                         diagnostics={
@@ -697,6 +698,8 @@ class BenchmarkTrainer:
                             "epoch": epoch,
                             "batch_start": start,
                             "paths": paths,
+                            "clipped_gradient_norm": float(clipped_norm.detach().cpu()),
+                            "learning_rate": learning_rates[-1],
                         },
                     )
                 updates += 1
@@ -1548,20 +1551,14 @@ class MMTrainer(BenchmarkTrainer):
             paths=paths,
             timing=timing,
         )
-        parameters = _training_objective_parameters(
-            paths,
-            seed=_derived_seed(
-                _job_seed(
-                    self._configuration.seeds["objective_parameters"],
-                    "MM",
-                    horizon_years,
-                ),
-                "paper-width-check",
-                1,
-                0,
+        # This is a feasibility probe, not a training draw. Use a fixed upper-range
+        # target so the probe exercises backward/update even when low sampled targets
+        # would make the corrected balance-sheet path produce exactly zero loss.
+        parameters = ObjectiveParameters(
+            mu=torch.full((paths,), 0.07, device=self._device, dtype=self._dtype),
+            penalty_weight=torch.full(
+                (paths,), 3.5, device=self._device, dtype=self._dtype
             ),
-            device=self._device,
-            dtype=self._dtype,
         )
         before = [parameter.detach().clone() for parameter in trainable_parameters]
         update_started = time.perf_counter()

@@ -21,6 +21,7 @@ from deepalm.config import (
 from deepalm.reference_bank import ReferenceBankProvider
 from deepalm.resources import BudgetExceeded, ResourceSnapshot
 from deepalm.runner import ReproductionRunner, RunStatus
+from deepalm.runoff import ALMSimulator
 from deepalm.term_structures import MarketScenarioModel
 from deepalm.training import (
     BMConstantTrainer,
@@ -192,6 +193,68 @@ def test_bme_trainer_reports_completed_epoch_progress_from_the_real_update(
     ].keys()
     for name, value in verbose_checkpoint["policy_state"].items():
         assert torch.equal(value, silent_checkpoint["policy_state"][name])
+
+
+class _ZeroGradientSimulator(ALMSimulator):
+    """Return a differentiable zero objective for optimizer guard testing."""
+
+    def rollout(self, *args, policy=None, **kwargs):
+        outcome = super().rollout(*args, policy=policy, **kwargs)
+        if outcome.objective is None or policy is None:
+            return outcome
+        parameter_anchor = sum(parameter.sum() * 0.0 for parameter in policy.parameters())
+        zeros = torch.zeros_like(outcome.objective.total) + parameter_anchor
+        return replace(
+            outcome,
+            objective=replace(
+                outcome.objective,
+                target=zeros,
+                penalty=zeros,
+                total=zeros,
+            ),
+        )
+
+
+def test_zero_gradient_optimizer_noop_is_a_valid_training_update(tmp_path: Path) -> None:
+    configuration = _configuration(tmp_path)
+    model = MarketScenarioModel()
+    historical = model.load_historical_term_structures(SOURCE)
+    calibration = model.calibrate_hjm_pca(historical)
+    snapshot = ReferenceBankProvider().build_canonical(historical)
+
+    result = BMETrainer(
+        configuration,
+        snapshot=snapshot,
+        historical=historical,
+        calibration=calibration,
+        simulator=_ZeroGradientSimulator(),
+    ).fit(horizon_years=5)
+
+    assert result.optimizer_updates == 1
+    assert result.clipped_gradient_norms == (0.0,)
+
+
+def test_nonzero_gradient_optimizer_noop_is_an_operational_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configuration = _configuration(tmp_path)
+    model = MarketScenarioModel()
+    historical = model.load_historical_term_structures(SOURCE)
+    calibration = model.calibrate_hjm_pca(historical)
+    snapshot = ReferenceBankProvider().build_canonical(historical)
+    monkeypatch.setattr(torch.optim.RAdam, "step", lambda self, closure=None: None)
+
+    with pytest.raises(TrainingInterrupted, match="operational_failure") as captured:
+        BMETrainer(
+            configuration,
+            snapshot=snapshot,
+            historical=historical,
+            calibration=calibration,
+        ).fit(horizon_years=5)
+
+    diagnostics = captured.value.diagnostics["training_diagnostics"]
+    assert diagnostics["clipped_gradient_norm"] > 0.0
+    assert diagnostics["learning_rate"] > 0.0
 
 
 @pytest.mark.parametrize(

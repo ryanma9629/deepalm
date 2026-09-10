@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from deepalm.config import _resolve_internal_test_configuration as resolve_configuration
-from deepalm.reference_bank import ReferenceBankError, ReferenceBankProvider
+from deepalm.reference_bank import LoanCohort, ReferenceBankError, ReferenceBankProvider
 from deepalm.runner import ReproductionRunner, RunStatus
 from deepalm.term_structures import MarketScenarioModel
 
@@ -89,6 +89,50 @@ def test_reference_bank_validation_rejects_invalid_ladder(canonical_bank: object
 
     with pytest.raises(ReferenceBankError, match="180"):
         ReferenceBankProvider().validate(invalid)
+
+
+def test_canonical_reference_bank_floors_synthetic_loan_coupons_at_zero() -> None:
+    historical = MarketScenarioModel().load_historical_term_structures(SOURCE)
+    negative_spots = np.full(180, -0.02, dtype=np.float64)
+    negative_curve = replace(
+        historical.initial_curve,
+        spot_rates=negative_spots,
+        discount_factors=np.exp(
+            -negative_spots * historical.initial_curve.tenors_years
+        ),
+    )
+
+    bank = ReferenceBankProvider().build_canonical(
+        replace(historical, initial_curve=negative_curve)
+    )
+
+    assert all(
+        cohort.monthly_coupon_rate == 0.0
+        for cohorts in bank.loan_cohorts.values()
+        for cohort in cohorts
+    )
+
+
+def test_reference_bank_validation_rejects_imported_negative_loan_coupon(
+    canonical_bank: object,
+) -> None:
+    loan_cohorts = dict(canonical_bank.loan_cohorts)
+    first, *remaining = loan_cohorts["mortgages"]
+    loan_cohorts["mortgages"] = (
+        LoanCohort(
+            principal_cash_flows=first.principal_cash_flows,
+            monthly_coupon_rate=-0.001,
+        ),
+        *remaining,
+    )
+    imported = replace(
+        canonical_bank,
+        profile="imported",
+        loan_cohorts=loan_cohorts,
+    )
+
+    with pytest.raises(ReferenceBankError, match="fixed-rate cohort is invalid"):
+        ReferenceBankProvider().validate(imported)
 
 
 def test_loading_rejects_tampered_persisted_fields(

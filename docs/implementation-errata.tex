@@ -21,7 +21,7 @@
 \pagestyle{fancy}
 \fancyhf{}
 \fancyhead[L]{\small\color{gray}\textit{Deep Treasury Management for Banks} · Implementation Errata}
-\fancyhead[R]{\small\color{gray}2026-09-09}
+\fancyhead[R]{\small\color{gray}2026-09-10}
 \fancyfoot[L]{\small\color{gray}已修正金融语义 · 技术流程验证}
 \fancyfoot[R]{\small\color{gray}\thepage/\pageref{LastPage}}
 \renewcommand{\headrulewidth}{0.4pt}
@@ -47,12 +47,12 @@
   {\large\color{gray}从论文与原始 errata 到当前可执行实现的边界说明}
   \vfill
   \begin{summarybox}
-  \textbf{当前运行时身份}\quad \texttt{corrected-financial-semantics-v1}\\
+  \textbf{当前运行时身份}\quad \texttt{corrected-financial-semantics-v2}\\
   \textbf{本文回答}\quad 哪些地方是论文错误、哪些是早期代码错误、哪些是有意简化、哪些只是本机资源限制。\\
   \textbf{不作的主张}\quad 不主张收敛、论文数值复现、银行模型批准或生产就绪。
   \end{summarybox}
   \vfill
-  {\color{gray}\small 版本：1.1\quad｜\quad 日期：2026-09-09}
+  {\color{gray}\small 版本：1.2\quad｜\quad 日期：2026-09-10}
 \end{titlepage}
 
 \section{定位与阅读方式}
@@ -73,11 +73,11 @@ Errata & 当前采用行为 & 影响边界与验证 \\
 \toprule Errata & 当前采用行为 & 影响边界与验证 \\ \midrule
 \endhead
 E-01 & 连续复利贴现不额外乘未定义步长。 & 债券、贷款、负债估值；\texttt{tests/test\_term\_structures.py}。 \\
-E-02 & 年化贷款票息先转换为月利率，再进入月度结算。 & 既有和新发贷款；\texttt{tests/test\_loans.py}。 \\
+E-02；式（9） & 每笔新贷款按发行时同期限收益率加 spread 锁定非负月度 coupon；合成 legacy cohort 采用同一零下限。 & 既有和新发贷款；\texttt{tests/test\_loans.py}。 \\
 E-03 & 负利率现金收费为非负成本，并从现金中扣除。 & 月度现金；\texttt{tests/test\_deposits.py}。 \\
 E-04 & 各期限 Treasury 交易按“名义数量乘当期价值”入账。 & 交易现金和守恒；\texttt{tests/test\_runoff.py}。 \\
 E-05 & 下限约束惩罚 shortfall，IRS 上限惩罚 excess。 & 目标函数和梯度；\texttt{tests/test\_constraints.py}。 \\
-E-06 / E-09 & 初始时点不触发年度事件；5/15 年使用 60/180 个决策区间与 61/181 个状态。 & 分红、EYR、终值、时间网格。 \\
+E-06 / E-09 & 初始时点不触发年度关闭；5/15 年使用 60/180 个决策区间与 61/181 个状态。终点不分红、不计算 EYR，但 terminal roll 仍更新适用的年度企业贷款减值。 & 分红、EYR、终值、贷款价值、时间网格。 \\
 E-07 & 当前无 swaps 或 \texttt{MM\textasciicircum S}；不把未实现说成已修正。 & 配置拒绝 swaps。 \\
 E-08 & PCA 载荷为特征值平方根乘特征向量。 & HJM-PCA；\texttt{tests/test\_term\_structures.py}。 \\
 E-10 & 原尺度选择尾部，再减全样本均值。 & 风险项和锁定评估；\texttt{tests/test\_evaluation.py}。 \\
@@ -95,6 +95,7 @@ E-10 & 原尺度选择尾部，再减全样本均值。 & 风险项和锁定评�
 C-1 / C-2，Eq. 45 & MM 在动作前读取当期经济比率；非 IRS 约束特征按阈值平移，顺序固定。 & 对论文观测定义的代码落实。 \\
 C-3，Eq. 43 & BM\textasciicircum D 总动作量为当前最先到期 bucket 加学习到的日期调整。 & 当前到期量不是初始 bucket。 \\
 C-5 / C-6，Eq. 11c & 存款保留 1/2/12/120 月类别；前两个窗口使用估值日前对应日期的六个月收益率。 & 不重复使用初始 \texttt{Y0}。 \\
+Paper \S2.2.2 & 企业贷款每个年度检查日均按六个月利率年度升幅减值，包括终点年度。 & 不继承分红/EYR 的终点豁免。 \\
 C-7 / C-8 / R-1 & 股息收益率只平均非终端年度；报告保留原始违规值，并显式标记不可用总体矩。 & 对定义与可审计报告的落实。 \\
 R-2 & 覆盖清单逐项标出 Table 1--5、Figure 3--17 的主题和缺失证据。 & 防止把未生成内容说成已复现。 \\
 \bottomrule
@@ -102,7 +103,6 @@ R-2 & 覆盖清单逐项标出 Table 1--5、Figure 3--17 的主题和缺失证�
 
 \section{原文未错、但项目有意不同：明确简化}
 \begin{itemize}[leftmargin=2em]
-  \item \textbf{新发贷款定价}：所有期限共用当前六个月收益率，而不是使用每期限收益率曲线；接入真实产品曲线后必须重新训练。
   \item \textbf{Reference Bank}：使用透明 CHF 参考银行，替代不可获得的论文私有初始资产负债表、成本与合同数据。
   \item \textbf{产品范围}：当前只覆盖无互换 BM\textasciicircum D/MM、5 年和 15 年；swaps 与 MM\textasciicircum S 单独立项。
   \item \textbf{交付目标}：本机只验证训练、冻结 baseline、锁定评估和报告闭环，不以经济优越性调参。
@@ -128,6 +128,6 @@ R-2 & 覆盖清单逐项标出 Table 1--5、Figure 3--17 的主题和缺失证�
 本机实际验收中，pilot 用时 151.30 秒，峰值 RSS 约 0.96 GiB、MPS 已分配内存约 0.22 GiB；锁定评估用时 21.04 秒。这证明资源预算内链路可运行，不提供经济收敛证据。
 
 \section{保持不变的东西与可扩展的东西}
-银行环境扩大实验时，不能改变金融修正、\texttt{corrected-financial-semantics-v1} 身份、同期限冻结 BM\textasciicircum D baseline 依赖，以及数据/市场身份校验。可以在重新训练后扩大网络、epoch、路径、batch size、随机种子、真实 Reference Bank 输入、CUDA 或多 GPU 执行和超参数搜索。扩大后必须重新生成 checkpoint、冻结 baseline、锁定评估和报告。
+银行环境扩大实验时，不能改变金融修正、\texttt{corrected-financial-semantics-v2} 身份、同期限冻结 BM\textasciicircum D baseline 依赖，以及数据/市场身份校验。可以在重新训练后扩大网络、epoch、路径、batch size、随机种子、真实 Reference Bank 输入、CUDA 或多 GPU 执行和超参数搜索。扩大后必须重新生成 checkpoint、冻结 baseline、锁定评估和报告。
 
 \end{document}

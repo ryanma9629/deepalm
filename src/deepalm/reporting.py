@@ -340,7 +340,6 @@ def build_compact_no_swap_report(
             "cubic_fit_reference_levels": "waived diagnostic; see calibration evidence",
             "local_result_is_not": "a reproduction of trained paper economic results",
             "model_scope_gaps": [
-                "New-loan originations use one shared six-month reference rate rather than a maturity-specific curve.",
                 "Formal fit at paper network widths remains deferred to the bank-side training environment.",
             ],
         },

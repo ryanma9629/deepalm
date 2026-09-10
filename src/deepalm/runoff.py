@@ -350,14 +350,13 @@ class ALMSimulator:
                 loan_event = apply_loan_transition(
                     loan_cohorts["mortgages"],
                     loan_cohorts["enterprise_loans"],
-                    six_month_yield=spots[:, transition + 1, 5],
+                    spot_curve=spots[:, transition + 1],
                     six_month_yield_one_year_ago=(
                         spots[:, transition + 1 - 12, 5]
-                        if transition + 1 >= 12 and transition + 1 < transitions
+                        if transition + 1 >= 12
                         else None
                     ),
-                    annual_close=(transition + 1) % 12 == 0
-                    and transition + 1 < transitions,
+                    annual_impairment=(transition + 1) % 12 == 0,
                     configuration=loan_configuration,
                 )
                 loan_cohorts["mortgages"] = loan_event.mortgage_cohorts

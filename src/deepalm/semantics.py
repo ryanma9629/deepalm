@@ -4,7 +4,7 @@ import json
 from collections.abc import Mapping
 from typing import Literal
 
-FINANCIAL_SEMANTICS_VERSION = "corrected-financial-semantics-v1"
+FINANCIAL_SEMANTICS_VERSION = "corrected-financial-semantics-v2"
 POLICY_SEMANTICS_VERSION = "maturity-relative-bmd-v3"
 METRIC_SEMANTICS_VERSION = "population-moments-constraints-and-report-coverage-v4"
 SNAPSHOT_SCHEMA_VERSION = 5

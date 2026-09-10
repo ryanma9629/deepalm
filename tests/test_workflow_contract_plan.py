@@ -49,7 +49,7 @@ def test_plan_resolves_the_local_two_policy_contract_and_m5_profile(
     plan = json.loads(capsys.readouterr().out)
     assert plan["workflow_contract"] == "local-two-policy-validation"
     assert plan["execution_profile"] == "m5-compact"
-    assert plan["corrected_financial_semantics"] == "corrected-financial-semantics-v1"
+    assert plan["corrected_financial_semantics"] == "corrected-financial-semantics-v2"
     assert [(job["policy"], job["horizon_years"]) for job in plan["jobs"]] == [
         ("BM^D", 5),
         ("BM^D", 15),

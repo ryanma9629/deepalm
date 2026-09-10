@@ -109,24 +109,25 @@ class LoanCohortState:
     def originate(
         self,
         principal: torch.Tensor,
-        monthly_coupon_rate: torch.Tensor,
+        monthly_coupon_rates: torch.Tensor,
         *,
         terms: tuple[int, ...],
         weights: tuple[float, ...],
     ) -> LoanCohortState:
-        if principal.shape != (self.paths,) or monthly_coupon_rate.shape != (
+        if principal.shape != (self.paths,) or monthly_coupon_rates.shape != (
             self.paths,
+            len(terms),
         ):
             raise LoanDynamicsError(
-                "Loan origination amounts and rates must have one value per path"
+                "Loan originations require one amount per path and one rate per path/maturity"
             )
-        schedule = _principal_schedule(principal, terms, weights)
+        schedules = _principal_schedules(principal, terms, weights)
         return LoanCohortState(
             principal_cash_flows=torch.cat(
-                (self.principal_cash_flows, schedule.unsqueeze(1)), dim=1
+                (self.principal_cash_flows, schedules), dim=1
             ),
             monthly_coupon_rates=torch.cat(
-                (self.monthly_coupon_rates, monthly_coupon_rate.unsqueeze(1)), dim=1
+                (self.monthly_coupon_rates, monthly_coupon_rates), dim=1
             ),
         )
 
@@ -184,15 +185,13 @@ def initial_loan_cohort_state(
     )
 
 
-def monthly_loan_interest_rate(
-    six_month_yield: torch.Tensor, *, spread: float
-) -> torch.Tensor:
-    """Return the unique monthly loan-interest rate in decimal units."""
+def monthly_loan_interest_rate(yield_rate: torch.Tensor, *, spread: float) -> torch.Tensor:
+    """Convert annual continuous yield plus spread to a non-negative monthly coupon."""
 
-    _validate_finite("six_month_yield", six_month_yield)
+    _validate_finite("loan_yield", yield_rate)
     if not torch.isfinite(torch.tensor(spread)):
         raise LoanDynamicsError("Loan spread must be finite")
-    exponent = (six_month_yield + spread) / 12.0
+    exponent = (yield_rate + spread) / 12.0
     result = torch.clamp_min(torch.exp(exponent) - 1.0, 0.0)
     _validate_finite("loan_interest_rate", result)
     return result
@@ -202,9 +201,9 @@ def apply_loan_transition(
     mortgages: LoanCohortState,
     enterprise_loans: LoanCohortState,
     *,
-    six_month_yield: torch.Tensor,
+    spot_curve: torch.Tensor,
     six_month_yield_one_year_ago: torch.Tensor | None,
-    annual_close: bool,
+    annual_impairment: bool,
     configuration: LoanConfiguration = DEFAULT_LOAN_CONFIGURATION,
 ) -> LoanTransition:
     """Settle fixed coupons, replace principal, and lock rates on new loans."""
@@ -212,9 +211,10 @@ def apply_loan_transition(
     _validate_configuration(configuration)
     if mortgages.paths != enterprise_loans.paths:
         raise LoanDynamicsError("Mortgage and enterprise-loan path counts differ")
-    if six_month_yield.shape != (mortgages.paths,):
-        raise LoanDynamicsError("Six-month yield must provide one value per path")
-    _validate_finite("six_month_yield", six_month_yield)
+    if spot_curve.shape != (mortgages.paths, 180):
+        raise LoanDynamicsError("Loan origination requires spot curve [paths, 180]")
+    _validate_finite("spot_curve", spot_curve)
+    six_month_yield = spot_curve[:, 5]
     interest = mortgages.settled_interest + enterprise_loans.settled_interest
     growth = (
         (mortgages.outstanding_principal + enterprise_loans.outstanding_principal)
@@ -227,24 +227,29 @@ def apply_loan_transition(
         enterprise_loans.matured_principal
         + growth * configuration.enterprise_growth_share
     )
-    coupon = monthly_loan_interest_rate(
-        six_month_yield, spread=configuration.spread
+    mortgage_coupons = monthly_loan_interest_rate(
+        spot_curve[:, tuple(term - 1 for term in configuration.mortgage_terms_months)],
+        spread=configuration.spread,
+    )
+    enterprise_coupons = monthly_loan_interest_rate(
+        spot_curve[:, tuple(term - 1 for term in configuration.enterprise_terms_months)],
+        spread=configuration.spread,
     )
     new_mortgages = mortgages.roll_forward().originate(
         mortgage_originations,
-        coupon,
+        mortgage_coupons,
         terms=configuration.mortgage_terms_months,
         weights=configuration.mortgage_weights,
     )
     new_enterprise = enterprise_loans.roll_forward().originate(
         enterprise_originations,
-        coupon,
+        enterprise_coupons,
         terms=configuration.enterprise_terms_months,
         weights=configuration.enterprise_weights,
     )
 
     impairment = torch.zeros_like(enterprise_originations)
-    if annual_close:
+    if annual_impairment:
         if six_month_yield_one_year_ago is None:
             raise LoanDynamicsError("Annual loan impairment requires one-year-ago yield")
         if six_month_yield_one_year_ago.shape != six_month_yield.shape:
@@ -267,16 +272,18 @@ def apply_loan_transition(
     )
 
 
-def _principal_schedule(
+def _principal_schedules(
     principal: torch.Tensor,
     terms: tuple[int, ...],
     weights: tuple[float, ...],
 ) -> torch.Tensor:
     result = torch.zeros(
-        (principal.shape[0], 180), device=principal.device, dtype=principal.dtype
+        (principal.shape[0], len(terms), 180),
+        device=principal.device,
+        dtype=principal.dtype,
     )
-    for term, weight in zip(terms, weights, strict=True):
-        result[:, term - 1] = result[:, term - 1] + principal * weight
+    for index, (term, weight) in enumerate(zip(terms, weights, strict=True)):
+        result[:, index, term - 1] = principal * weight
     return result
 
 
