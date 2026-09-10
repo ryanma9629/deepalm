@@ -125,11 +125,27 @@ def test_four_policy_pilot_publishes_all_members_before_locked_evaluation(
                 self.configuration = configuration
                 self.baseline_reference = kwargs.get("baseline_reference")
 
-            def fit(self, *, horizon_years: int) -> object:
+            def fit(
+                self, *, horizon_years: int, progress_callback: object = None
+            ) -> object:
                 order.append((policy, horizon_years))
                 if policy == "MM":
                     assert self.baseline_reference is not None
                     mm_baselines[horizon_years] = self.baseline_reference.reference_path
+                if progress_callback is not None:
+                    progress_callback(
+                        SimpleNamespace(
+                            policy_name=policy,
+                            horizon_years=horizon_years,
+                            epoch=1,
+                            epochs=2,
+                            optimizer_updates=2,
+                            average_training_loss=1.25,
+                            selection=SimpleNamespace(
+                                total_loss=1.5, penalty_loss=0.25
+                            ),
+                        )
+                    )
                 return result(self.configuration, policy, horizon_years)
 
         return FakeTrainer
@@ -157,7 +173,16 @@ def test_four_policy_pilot_publishes_all_members_before_locked_evaluation(
     assert plan["primary_optimizer_updates"] == 32
 
     assert main(["run", "--config", str(config_path)]) == 0
-    bundle_directory = Path(capsys.readouterr().out.strip())
+    run_output = capsys.readouterr().out.splitlines()
+    bundle_directory = Path(run_output[-1])
+
+    assert "[train] BM^E 5y: starting" in run_output
+    assert (
+        "[train] BM^E 5y | epoch 1/2 | updates=2 | "
+        "train_loss=1.250000 | selection_loss=1.500000 | penalty_loss=0.250000"
+        in run_output
+    )
+    assert "[train] MM 15y: completed | selected_epoch=2 | updates=4" in run_output
 
     assert bundle_directory.is_dir()
     assert order == [
@@ -181,6 +206,16 @@ def test_four_policy_pilot_publishes_all_members_before_locked_evaluation(
         assert jobs[("MM", horizon)]["baseline_reference"] == jobs[
             ("BM^D", horizon)
         ]["baseline_reference"]
+
+    quiet_data = _four_policy_pilot_data(tmp_path)
+    quiet_data["output"]["run_name"] = "quiet-four-policy"
+    quiet_config_path = tmp_path / "quiet-four-policy.yaml"
+    quiet_config_path.write_text(yaml.safe_dump(quiet_data), encoding="utf-8")
+
+    assert main(["run", "--config", str(quiet_config_path), "--no-verbose"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        str(tmp_path / "runs" / "quiet-four-policy")
+    ]
 
 
 def test_four_policy_report_requires_all_eight_identity_linked_members(

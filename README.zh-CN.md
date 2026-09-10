@@ -67,6 +67,8 @@ uv run deepalm report \
   --evaluation-run artifacts/corrected-local-validation-pilot-evaluation
 ```
 
+`run` 默认输出每个成员的开始/结束信息，以及每个已完成 epoch 的策略、期限、训练损失、优化更新次数；发生 selection 时还会显示其 total loss 和 penalty loss。如脚本需要让 stdout 只保留最终 artifact 目录，可增加 `--no-verbose`。
+
 检查各 run bundle 的 `manifest.json` 和生成的报告 JSON。本机验收的标准是：四个成员的证据链完整、身份关联正确、优化更新和评估结果均为有限值；它不是经济验收。目标 M5 MacBook 上的一次实测中，pilot 用时 151.30 秒，随后锁定评估用时 21.04 秒；这只是容量规划观察值，不是性能承诺。
 
 如需运行覆盖更多策略的 CPU/float64 开发流程，仍使用通用动作和

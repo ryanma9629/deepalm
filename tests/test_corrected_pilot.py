@@ -151,7 +151,10 @@ def test_corrected_pilot_publishes_four_updated_members_and_matching_baselines(
         def __init__(self, configuration: object, **_: object) -> None:
             self.configuration = configuration
 
-        def fit(self, *, horizon_years: int) -> object:
+        def fit(
+            self, *, horizon_years: int, progress_callback: object = None
+        ) -> object:
+            del progress_callback
             return training_result(self.configuration, "BM^D", horizon_years)
 
     class FakeMMTrainer:
@@ -161,7 +164,10 @@ def test_corrected_pilot_publishes_four_updated_members_and_matching_baselines(
             self.configuration = configuration
             self.baseline_reference = baseline_reference
 
-        def fit(self, *, horizon_years: int) -> object:
+        def fit(
+            self, *, horizon_years: int, progress_callback: object = None
+        ) -> object:
+            del progress_callback
             mm_baselines[horizon_years] = self.baseline_reference.reference_path
             return training_result(self.configuration, "MM", horizon_years)
 

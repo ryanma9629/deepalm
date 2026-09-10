@@ -31,6 +31,7 @@ from deepalm.training import (
     TrainingControl,
     TrainingError,
     TrainingInterrupted,
+    TrainingProgress,
 )
 
 SOURCE = (
@@ -140,6 +141,54 @@ def test_bme_trainer_updates_policy_selects_checkpoint_and_records_resources(
     assert all(norm <= 0.20001 for norm in result.clipped_gradient_norms)
     assert result.resource_profile.forward_backward_update_seconds >= 0.0
     assert result.resource_profile.scenario_seconds >= 0.0
+
+
+def test_bme_trainer_reports_completed_epoch_progress_from_the_real_update(
+    tmp_path: Path,
+) -> None:
+    configuration = _configuration(tmp_path)
+    model = MarketScenarioModel()
+    historical = model.load_historical_term_structures(SOURCE)
+    calibration = model.calibrate_hjm_pca(historical)
+    snapshot = ReferenceBankProvider().build_canonical(historical)
+    progress: list[TrainingProgress] = []
+
+    result = BMETrainer(
+        configuration,
+        snapshot=snapshot,
+        historical=historical,
+        calibration=calibration,
+    ).fit(horizon_years=5, progress_callback=progress.append)
+
+    assert len(progress) == 1
+    event = progress[0]
+    assert event.policy_name == "BM^E"
+    assert event.horizon_years == 5
+    assert (event.epoch, event.epochs, event.optimizer_updates) == (1, 1, 1)
+    assert event.average_training_loss > 0.0
+    assert event.selection == result.selection_history[0]
+
+    silent_configuration = replace(
+        configuration,
+        output=replace(configuration.output, run_name="bme-silent-test"),
+    )
+    silent_result = BMETrainer(
+        silent_configuration,
+        snapshot=snapshot,
+        historical=historical,
+        calibration=calibration,
+    ).fit(horizon_years=5)
+
+    assert silent_result.selected_epoch == result.selected_epoch
+    assert silent_result.optimizer_updates == result.optimizer_updates
+    assert silent_result.selection_history == result.selection_history
+    verbose_checkpoint = torch.load(result.checkpoint_path, weights_only=False)
+    silent_checkpoint = torch.load(silent_result.checkpoint_path, weights_only=False)
+    assert verbose_checkpoint["policy_state"].keys() == silent_checkpoint[
+        "policy_state"
+    ].keys()
+    for name, value in verbose_checkpoint["policy_state"].items():
+        assert torch.equal(value, silent_checkpoint["policy_state"][name])
 
 
 @pytest.mark.parametrize(

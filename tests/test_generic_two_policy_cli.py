@@ -52,7 +52,9 @@ def test_generic_actions_dispatch_local_validation_workflow_contracts(
         )
 
     monkeypatch.setattr(
-        ReproductionRunner, "run_configured_workflow", lambda self, _: completed(self)
+        ReproductionRunner,
+        "run_configured_workflow",
+        lambda self, _, *, verbose: completed(self),
     )
     monkeypatch.setattr(
         ReproductionRunner,
@@ -89,3 +91,39 @@ def test_generic_actions_dispatch_local_validation_workflow_contracts(
         ("called", (source, evaluation)),
     ]
     assert capsys.readouterr().out.splitlines() == [str(artifact)] * 3
+
+
+@pytest.mark.parametrize(
+    ("verbosity_argument", "expected_verbose"),
+    (((), True), (("--verbose",), True), (("--no-verbose",), False)),
+)
+def test_run_passes_an_explicit_or_default_verbose_preference_to_the_workflow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    verbosity_argument: tuple[str, ...],
+    expected_verbose: bool,
+) -> None:
+    """The generic run action owns the human-facing progress preference."""
+
+    monkeypatch.setattr("torch.backends.mps.is_available", lambda: True)
+    config_path = tmp_path / "local-validation.yaml"
+    config_path.write_text(
+        yaml.safe_dump(_corrected_pilot_data(tmp_path)), encoding="utf-8"
+    )
+    observed: list[bool] = []
+    artifact = tmp_path / "artifact"
+
+    def completed(
+        _: ReproductionRunner, _configuration: object, *, verbose: bool
+    ) -> RunBundle:
+        observed.append(verbose)
+        return RunBundle(
+            status=RunStatus.COMPLETED,
+            acceptance_status=AcceptanceStatus.PENDING,
+            artifact_directory=artifact,
+        )
+
+    monkeypatch.setattr(ReproductionRunner, "run_configured_workflow", completed)
+
+    assert main(["run", "--config", str(config_path), *verbosity_argument]) == 0
+    assert observed == [expected_verbose]

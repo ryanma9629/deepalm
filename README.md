@@ -80,6 +80,11 @@ uv run deepalm report \
   --evaluation-run artifacts/corrected-local-validation-pilot-evaluation
 ```
 
+`run` prints member start/completion and one line per completed epoch by
+default, including the policy, horizon, training loss, optimizer updates and,
+when selection runs, its total and penalty losses. Use `--no-verbose` when a
+script needs stdout to contain only the final artifact directory.
+
 Inspect the `manifest.json` files and the generated report JSON. A valid local result is a complete,
 identity-linked four-member evidence chain with finite updates and evaluation
 artifacts. It is deliberately not an economic acceptance result. A measured

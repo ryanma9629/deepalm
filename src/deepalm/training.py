@@ -213,6 +213,22 @@ class SelectionRecord:
 
 
 @dataclass(frozen=True)
+class TrainingProgress:
+    """One completed training epoch made available to an optional observer."""
+
+    policy_name: str
+    horizon_years: int
+    epoch: int
+    epochs: int
+    optimizer_updates: int
+    average_training_loss: float
+    selection: SelectionRecord | None
+
+
+TrainingProgressCallback = Callable[[TrainingProgress], None]
+
+
+@dataclass(frozen=True)
 class SelectionActionRecord:
     """Aggregated no-swap actions observed on one fixed selection evaluation."""
 
@@ -338,6 +354,7 @@ class BenchmarkTrainer:
         *,
         horizon_years: int,
         control: TrainingControl | None = None,
+        progress_callback: TrainingProgressCallback | None = None,
     ) -> BenchmarkTrainingResult:
         """Run, or safely resume, one benchmark-training job."""
 
@@ -352,6 +369,7 @@ class BenchmarkTrainer:
                 control=resolved_control,
                 recovery_path=recovery_path,
                 interruption_path=interruption_path,
+                progress_callback=progress_callback,
             )
         except BudgetExceeded as error:
             self._record_interruption(
@@ -450,6 +468,7 @@ class BenchmarkTrainer:
         control: TrainingControl,
         recovery_path: Path,
         interruption_path: Path,
+        progress_callback: TrainingProgressCallback | None,
     ) -> BenchmarkTrainingResult:
         """Run all configured local updates and reload the best selection state."""
 
@@ -553,6 +572,7 @@ class BenchmarkTrainer:
             )
 
         for epoch in range(start_epoch, scale.epochs + 1):
+            epoch_losses: list[float] = []
             for start in range(0, scale.training_paths_per_epoch, scale.batch_size):
                 paths = min(scale.batch_size, scale.training_paths_per_epoch - start)
                 market = self._training_market(
@@ -608,6 +628,7 @@ class BenchmarkTrainer:
                             "loss": float(loss.detach().cpu()),
                         },
                     )
+                epoch_losses.append(float(loss.detach().cpu()))
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(
                     policy.parameters(), max_norm=_GRADIENT_CLIP_NORM
@@ -654,6 +675,7 @@ class BenchmarkTrainer:
                     )
                 )
 
+            selection: SelectionRecord | None = None
             if selection_tracker.should_select(epoch):
                 selection = self._select(
                     policy,
@@ -696,6 +718,17 @@ class BenchmarkTrainer:
                     policy_dependencies=policy_dependencies,
                 ),
             )
+            if progress_callback is not None:
+                progress = TrainingProgress(
+                    policy_name=self._policy_name,
+                    horizon_years=horizon_years,
+                    epoch=epoch,
+                    epochs=scale.epochs,
+                    optimizer_updates=updates,
+                    average_training_loss=sum(epoch_losses) / len(epoch_losses),
+                    selection=selection,
+                )
+                progress_callback(progress)
             if control.stop_after_completed_epoch == epoch:
                 self._raise_controlled_interruption(
                     recovery_path,
@@ -1115,8 +1148,13 @@ class BMDateTrainer(BenchmarkTrainer):
         *,
         horizon_years: int,
         control: TrainingControl | None = None,
+        progress_callback: TrainingProgressCallback | None = None,
     ) -> BenchmarkTrainingResult:
-        result = super().fit(horizon_years=horizon_years, control=control)
+        result = super().fit(
+            horizon_years=horizon_years,
+            control=control,
+            progress_callback=progress_callback,
+        )
         reference = FrozenDateBenchmarkReference.freeze(result.checkpoint_path)
         return replace(
             result,
@@ -1175,10 +1213,15 @@ class MMTrainer(BenchmarkTrainer):
         *,
         horizon_years: int,
         control: TrainingControl | None = None,
+        progress_callback: TrainingProgressCallback | None = None,
     ) -> BenchmarkTrainingResult:
         self._require_mm_horizon(horizon_years)
         self._materialize_baseline_reference(horizon_years)
-        result = super().fit(horizon_years=horizon_years, control=control)
+        result = super().fit(
+            horizon_years=horizon_years,
+            control=control,
+            progress_callback=progress_callback,
+        )
         return replace(
             result,
             baseline_reference_path=self._baseline_reference.reference_path,

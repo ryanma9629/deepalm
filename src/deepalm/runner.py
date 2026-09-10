@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from deepalm.evaluation import PolicyCheckpoint
     from deepalm.reference_bank import ReferenceBankSensitivity, ReferenceBankSnapshot
     from deepalm.term_structures import HistoricalTermStructures, HjmPcaCalibration
-    from deepalm.training import DeviceValidationRecord
+    from deepalm.training import DeviceValidationRecord, TrainingProgress
 
 
 class RunStatus(StrEnum):
@@ -174,13 +174,13 @@ class ReproductionRunner:
         )
 
     def run_configured_workflow(
-        self, configuration: ResolvedRunConfiguration
+        self, configuration: ResolvedRunConfiguration, *, verbose: bool = True
     ) -> RunBundle:
         """Run the workflow selected by the configuration's Workflow Contract."""
 
         if pilot := _LOCAL_VALIDATION_PILOTS.get(configuration.workflow_contract.name):
             return self._run_local_validation_pilot(
-                configuration, pilot=pilot
+                configuration, pilot=pilot, verbose=verbose
             )
         return self.run(configuration)
 
@@ -1463,6 +1463,7 @@ class ReproductionRunner:
         configuration: ResolvedRunConfiguration,
         *,
         pilot: LocalValidationPilotDefinition,
+        verbose: bool = True,
     ) -> RunBundle:
         """Run one fixed compact pilot matrix and publish it atomically."""
 
@@ -1523,33 +1524,58 @@ class ReproductionRunner:
             monitor.check("after-corrected-pilot-inputs")
 
             training_results: dict[tuple[str, int], Any] = {}
+            progress_callback: Callable[[TrainingProgress], None] | None = (
+                _print_training_progress if verbose else None
+            )
             for horizon_years in (5, 15):
                 if "BM^E" in pilot.policies:
-                    training_results[("BM^E", horizon_years)] = BMETrainer(
-                        staged_configuration,
-                        snapshot=snapshot,
-                        historical=historical,
-                        calibration=calibration,
-                        market_model=market_model,
-                        resource_monitor=monitor,
-                    ).fit(horizon_years=horizon_years)
+                    training_results[("BM^E", horizon_years)] = (
+                        _fit_local_validation_member(
+                            BMETrainer(
+                                staged_configuration,
+                                snapshot=snapshot,
+                                historical=historical,
+                                calibration=calibration,
+                                market_model=market_model,
+                                resource_monitor=monitor,
+                            ),
+                            policy_name="BM^E",
+                            horizon_years=horizon_years,
+                            verbose=verbose,
+                            progress_callback=progress_callback,
+                        )
+                    )
                 if "BM^C" in pilot.policies:
-                    training_results[("BM^C", horizon_years)] = BMConstantTrainer(
+                    training_results[("BM^C", horizon_years)] = (
+                        _fit_local_validation_member(
+                            BMConstantTrainer(
+                                staged_configuration,
+                                snapshot=snapshot,
+                                historical=historical,
+                                calibration=calibration,
+                                market_model=market_model,
+                                resource_monitor=monitor,
+                            ),
+                            policy_name="BM^C",
+                            horizon_years=horizon_years,
+                            verbose=verbose,
+                            progress_callback=progress_callback,
+                        )
+                    )
+                benchmark = _fit_local_validation_member(
+                    BMDateTrainer(
                         staged_configuration,
                         snapshot=snapshot,
                         historical=historical,
                         calibration=calibration,
                         market_model=market_model,
                         resource_monitor=monitor,
-                    ).fit(horizon_years=horizon_years)
-                benchmark = BMDateTrainer(
-                    staged_configuration,
-                    snapshot=snapshot,
-                    historical=historical,
-                    calibration=calibration,
-                    market_model=market_model,
-                    resource_monitor=monitor,
-                ).fit(horizon_years=horizon_years)
+                    ),
+                    policy_name="BM^D",
+                    horizon_years=horizon_years,
+                    verbose=verbose,
+                    progress_callback=progress_callback,
+                )
                 if benchmark.baseline_reference_path is None:
                     raise OperationalRunError(
                         f"BM^D {horizon_years}y did not freeze a baseline"
@@ -1557,15 +1583,21 @@ class ReproductionRunner:
                 baseline = FrozenDateBenchmarkReference.load(
                     benchmark.baseline_reference_path
                 )
-                model = MMTrainer(
-                    staged_configuration,
-                    snapshot=snapshot,
-                    historical=historical,
-                    calibration=calibration,
-                    baseline_reference=baseline,
-                    market_model=market_model,
-                    resource_monitor=monitor,
-                ).fit(horizon_years=horizon_years)
+                model = _fit_local_validation_member(
+                    MMTrainer(
+                        staged_configuration,
+                        snapshot=snapshot,
+                        historical=historical,
+                        calibration=calibration,
+                        baseline_reference=baseline,
+                        market_model=market_model,
+                        resource_monitor=monitor,
+                    ),
+                    policy_name="MM",
+                    horizon_years=horizon_years,
+                    verbose=verbose,
+                    progress_callback=progress_callback,
+                )
                 training_results[("BM^D", horizon_years)] = benchmark
                 training_results[("MM", horizon_years)] = model
                 monitor.check(f"after-corrected-pilot-{horizon_years}y")
@@ -1640,7 +1672,6 @@ class ReproductionRunner:
                 ),
                 pilot=pilot,
             )
-
     def evaluate_corrected_pilot(
         self,
         configuration: ResolvedRunConfiguration,
@@ -2164,6 +2195,47 @@ def _configured_workflow_failure_bundle(
         if failure_directory is not None
         else (),
     )
+
+
+def _fit_local_validation_member(
+    trainer: Any,
+    *,
+    policy_name: str,
+    horizon_years: int,
+    verbose: bool,
+    progress_callback: Callable[[TrainingProgress], None] | None,
+) -> Any:
+    """Fit one local member while keeping terminal reporting outside training."""
+
+    if verbose:
+        print(f"[train] {policy_name} {horizon_years}y: starting")
+    result = trainer.fit(
+        horizon_years=horizon_years, progress_callback=progress_callback
+    )
+    if verbose:
+        print(
+            f"[train] {policy_name} {horizon_years}y: completed | "
+            f"selected_epoch={result.selected_epoch} | "
+            f"updates={result.optimizer_updates}"
+        )
+    return result
+
+
+def _print_training_progress(progress: TrainingProgress) -> None:
+    """Print one complete-epoch progress event from a local training member."""
+
+    line = (
+        f"[train] {progress.policy_name} {progress.horizon_years}y | "
+        f"epoch {progress.epoch}/{progress.epochs} | "
+        f"updates={progress.optimizer_updates} | "
+        f"train_loss={progress.average_training_loss:.6f}"
+    )
+    if progress.selection is not None:
+        line += (
+            f" | selection_loss={progress.selection.total_loss:.6f}"
+            f" | penalty_loss={progress.selection.penalty_loss:.6f}"
+        )
+    print(line)
 
 
 def _corrected_pilot_training_jobs(

@@ -22,6 +22,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     run_parser.add_argument(
         "--config", type=Path, required=True, help="YAML run configuration"
     )
+    run_parser.add_argument(
+        "--verbose",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="show per-epoch training progress (default: enabled)",
+    )
     plan_parser = subparsers.add_parser(
         "plan", help="show bounded work before any market or training stage runs"
     )
@@ -130,7 +136,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             stage=arguments.command,
         )
     else:
-        bundle = runner.run_configured_workflow(configuration)
+        bundle = runner.run_configured_workflow(
+            configuration, verbose=arguments.verbose
+        )
     if bundle.status is RunStatus.COMPLETED:
         assert bundle.artifact_directory is not None
         print(bundle.artifact_directory)
