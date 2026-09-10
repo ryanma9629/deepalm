@@ -76,13 +76,14 @@ uv run deepalm report \
 
 `run` prints member start/completion and one line per completed epoch by
 default, including the policy, horizon, training loss, optimizer updates and,
-when selection runs, its total and penalty losses. Use `--no-verbose` when a
-script needs stdout to contain only the final artifact directory.
+when selection runs, its total and penalty losses. Progress is written to
+stderr; stdout contains only the final artifact directory. Use `--no-verbose`
+to suppress progress.
 
-`evaluate` also reports progress by default: source validation, market
-calibration, the number of locked checkpoints and test paths, then one line for
-each completed checkpoint. Use `evaluate --no-verbose` when a script needs only
-the final evaluation directory.
+`evaluate` also reports progress to stderr by default: source validation,
+market calibration, the number of locked checkpoints and test paths, then one
+line for each completed checkpoint. Its stdout contains only the final
+evaluation directory; use `evaluate --no-verbose` to suppress progress.
 
 A run never replaces an existing artifact directory by default. To discard and
 replace only the directory named by the selected configuration after the new
@@ -119,16 +120,6 @@ artifacts. It is deliberately not an economic acceptance result. A measured
 pilot on the target M5 MacBook took 151.30 seconds, followed by 21.04 seconds
 of locked evaluation; treat these as a planning observation, not a performance
 promise.
-
-For a broader CPU/float64 development workflow, use the same generic action
-with `configs/bounded-local-cpu-development.yaml`. It includes BM^E, BM^C,
-BM^D, and MM, but remains a bounded no-swap development-validation workflow
-rather than a paper-result reproduction.
-
-```bash
-uv run deepalm plan --config configs/bounded-local-cpu-development.yaml
-uv run deepalm run --config configs/bounded-local-cpu-development.yaml
-```
 
 ### Initial four-policy comparison on the same MacBook
 
@@ -223,7 +214,7 @@ it is not training.
    resolved configuration and resulting manifest. Then run:
 
    ```bash
-   uv run deepalm bank \
+   uv run deepalm reference-bank \
      --config configs/bank-single-gpu-commissioning.yaml
    ```
 
@@ -251,7 +242,7 @@ it is not training.
    GPU/driver/PyTorch recording, model-risk review, and acceptance criteria to
    the bank's own delivery process.
 
-The current repository validates imported snapshots through `deepalm bank` and
+The current repository validates imported snapshots through `deepalm reference-bank` and
 commissions one CUDA device. Connecting an imported snapshot to the full policy
 training runner, multi-GPU/DDP execution, mixed-precision tuning, cluster
 scheduling, and bank/regulatory acceptance are explicitly future delivery

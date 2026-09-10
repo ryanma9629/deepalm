@@ -39,7 +39,7 @@ def _configuration(tmp_path: Path, *, fixture: bool = True):
                 "paper_pdf": str(tmp_path / "paper.pdf"),
                 "nss_beta_unit": "percentage_points",
             },
-            "workflow_contract": {"name": "bounded-local-workflow"},
+            "workflow_contract": {"name": "internal-integration-validation"},
             "execution_profile": {"name": "local-cpu-compact"},
             "run_scale": {"profile": "local_flow"},
             "architecture": {"profile": "compact"},

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 from deepalm.cli import main
 
@@ -21,6 +21,7 @@ _RETIRED_COMMANDS = (
     "four-policy-pilot",
     "four-policy-evaluate",
     "four-policy-report",
+    "resume",
 )
 
 
@@ -35,7 +36,7 @@ def test_retired_commands_are_not_public(
     assert "invalid choice" in capsys.readouterr().err
 
 
-def test_help_exposes_only_generic_lifecycle_and_independent_actions(
+def test_help_exposes_generic_lifecycle_and_unambiguous_independent_actions(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     with pytest.raises(SystemExit) as stopped:
@@ -50,12 +51,12 @@ def test_help_exposes_only_generic_lifecycle_and_independent_actions(
         "evaluate",
         "report",
         "preflight",
-        "bank",
+        "reference-bank",
         "device-check",
-        "resume",
+        "verify-recovery",
     ):
         assert command in commands
-    for command in _RETIRED_COMMANDS:
+    for command in (*_RETIRED_COMMANDS, "bank"):
         assert command not in commands
 
 
@@ -70,18 +71,13 @@ def test_help_exposes_only_generic_lifecycle_and_independent_actions(
             "paper-research",
         ),
         (
-            "bounded-local-cpu-development.yaml",
-            "bounded-local-workflow",
-            "local-cpu-compact",
-        ),
-        (
             "bank-single-gpu-commissioning.yaml",
             "bank-single-gpu-commissioning",
             "cuda-single-gpu",
         ),
     ),
 )
-def test_plan_smoke_covers_each_shipped_workflow_contract(
+def test_plan_text_summarizes_each_shipped_workflow_contract(
     filename: str,
     workflow_contract: str,
     execution_profile: str,
@@ -94,6 +90,100 @@ def test_plan_smoke_covers_each_shipped_workflow_contract(
 
     assert main(["plan", "--config", str(repository / "configs" / filename)]) == 0
 
+    output = capsys.readouterr().out
+    assert f"Workflow Contract: {workflow_contract}" in output
+    assert f"Execution Profile: {execution_profile}" in output
+    assert "Supported actions:" in output
+
+
+def test_plan_json_retains_complete_machine_readable_execution_plan(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import json
+
+    repository = Path(__file__).resolve().parents[1]
+    monkeypatch.setattr("torch.backends.mps.is_available", lambda: True)
+
+    assert (
+        main(
+            [
+                "plan",
+                "--config",
+                str(repository / "configs" / "local-two-policy-m5.yaml"),
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+
     plan = json.loads(capsys.readouterr().out)
-    assert plan["workflow_contract"] == workflow_contract
-    assert plan["execution_profile"] == execution_profile
+    assert plan["workflow_contract"] == "local-two-policy-validation"
+    assert plan["execution_profile"] == "m5-compact"
+
+
+@pytest.mark.parametrize(
+    ("filename", "expected_guidance"),
+    (
+        ("paper-oriented-research-plan.yaml", "formal paper-scale training"),
+        ("bank-single-gpu-commissioning.yaml", "full policy training"),
+    ),
+)
+def test_run_rejects_non_executable_workflow_contract_before_publishing_an_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    filename: str,
+    expected_guidance: str,
+) -> None:
+    repository = Path(__file__).resolve().parents[1]
+    monkeypatch.setattr("torch.cuda.is_available", lambda: True)
+    data = yaml.safe_load((repository / "configs" / filename).read_text("utf-8"))
+    data["output"] = {"directory": str(tmp_path / "artifacts"), "run_name": "blocked"}
+    config_path = tmp_path / filename
+    config_path.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    assert main(["run", "--config", str(config_path)]) == 2
+
+    captured = capsys.readouterr()
+    assert "Action unavailable" in captured.err
+    assert expected_guidance in captured.err
+    assert not (tmp_path / "artifacts" / "blocked").exists()
+
+
+@pytest.mark.parametrize(
+    ("command", "extra_arguments", "expected_error"),
+    (
+        (
+            "evaluate",
+            ("--source-run", "missing-source"),
+            "source run directory does not exist",
+        ),
+        (
+            "report",
+            ("--source-run", "missing-source"),
+            "requires exactly one --source-run and --evaluation-run",
+        ),
+    ),
+)
+def test_local_validation_stage_inputs_fail_before_runner_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    command: str,
+    extra_arguments: tuple[str, ...],
+    expected_error: str,
+) -> None:
+    repository = Path(__file__).resolve().parents[1]
+    monkeypatch.setattr("torch.backends.mps.is_available", lambda: True)
+    data = yaml.safe_load(
+        (repository / "configs" / "local-two-policy-m5.yaml").read_text("utf-8")
+    )
+    data["output"] = {"directory": str(tmp_path / "artifacts"), "run_name": "pilot"}
+    config_path = tmp_path / "local-validation.yaml"
+    config_path.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    assert main([command, "--config", str(config_path), *extra_arguments]) == 2
+
+    assert expected_error in capsys.readouterr().err
+    assert not (tmp_path / "artifacts").exists()

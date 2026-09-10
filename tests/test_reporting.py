@@ -7,11 +7,9 @@ from pathlib import Path
 
 import pytest
 import torch
-import yaml
 from test_run_skeleton import configuration_data
 
 from deepalm import reporting
-from deepalm.cli import main
 from deepalm.config import resolve_configuration
 from deepalm.reporting import ReportingError
 from deepalm.runner import ReproductionRunner, RunStatus
@@ -477,8 +475,8 @@ def test_report_excludes_checkpoint_with_stale_training_semantics(
     assert audit[0]["status"] == "unavailable"
 
 
-def test_cli_writes_a_report_from_a_completed_source_bundle(
-    tmp_path: Path, capsys
+def test_internal_runner_writes_a_report_from_a_completed_source_bundle(
+    tmp_path: Path,
 ) -> None:
     raw = configuration_data(tmp_path)
     repository = Path(__file__).resolve().parents[1]
@@ -499,19 +497,11 @@ def test_cli_writes_a_report_from_a_completed_source_bundle(
         replace(configuration, output=replace(configuration.output, run_name="source"))
     )
     assert source.artifact_directory is not None
-    config_path = tmp_path / "report.yaml"
-    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
-
-    exit_code = main(
-        [
-            "report",
-            "--config",
-            str(config_path),
-            "--source-run",
-            str(source.artifact_directory),
-        ]
+    report = ReproductionRunner().generate_compact_report(
+        replace(configuration, output=replace(configuration.output, run_name="report")),
+        source_run_directories=(source.artifact_directory,),
     )
 
-    artifact_directory = Path(capsys.readouterr().out.strip())
-    assert exit_code == 0
-    assert (artifact_directory / "compact-no-swap-report.json").is_file()
+    assert report.status is RunStatus.COMPLETED
+    assert report.artifact_directory is not None
+    assert (report.artifact_directory / "compact-no-swap-report.json").is_file()

@@ -297,7 +297,7 @@ def test_runner_bank_stage_imports_a_versioned_noncanonical_snapshot(
                 ),
                 "nss_beta_unit": "percentage_points",
             },
-            "workflow_contract": {"name": "bounded-local-workflow"},
+            "workflow_contract": {"name": "internal-integration-validation"},
             "execution_profile": {"name": "local-cpu-compact"},
             "run_scale": {"profile": "local_flow"},
             "architecture": {"profile": "compact"},

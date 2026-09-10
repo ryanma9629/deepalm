@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 import numpy as np
 import torch
 
+from deepalm.capabilities import workflow_action_capability
 from deepalm.config import ResolvedRunConfiguration
 from deepalm.local_validation import is_valid_local_validation_selection_epoch
 from deepalm.planning import build_execution_plan
@@ -186,11 +187,20 @@ class ReproductionRunner:
     ) -> RunBundle:
         """Run the workflow selected by the configuration's Workflow Contract."""
 
+        capability = workflow_action_capability(configuration, "run")
+        if not capability.can_execute:
+            return _unavailable_workflow_action_bundle(
+                configuration, action="run", guidance=capability.guidance
+            )
         if pilot := _LOCAL_VALIDATION_PILOTS.get(configuration.workflow_contract.name):
             return self._run_local_validation_pilot(
                 configuration, pilot=pilot, verbose=verbose, overwrite=overwrite
             )
-        return self.run(configuration, overwrite=overwrite)
+        return _unavailable_workflow_action_bundle(
+            configuration,
+            action="run",
+            guidance="no public workflow runner is registered for this contract",
+        )
 
     def evaluate_configured_workflow(
         self,
@@ -201,6 +211,11 @@ class ReproductionRunner:
     ) -> RunBundle:
         """Evaluate a completed workflow only through its declared contract."""
 
+        capability = workflow_action_capability(configuration, "evaluate")
+        if not capability.can_execute:
+            return _unavailable_workflow_action_bundle(
+                configuration, action="evaluate", guidance=capability.guidance
+            )
         if pilot := _LOCAL_VALIDATION_PILOTS.get(configuration.workflow_contract.name):
             try:
                 _validate_local_validation_source_contract(
@@ -229,6 +244,11 @@ class ReproductionRunner:
     ) -> RunBundle:
         """Report completed evidence only through its declared contract."""
 
+        capability = workflow_action_capability(configuration, "report")
+        if not capability.can_execute:
+            return _unavailable_workflow_action_bundle(
+                configuration, action="report", guidance=capability.guidance
+            )
         if pilot := _LOCAL_VALIDATION_PILOTS.get(configuration.workflow_contract.name):
             if len(source_run_directories) != 1 or evaluation_directory is None:
                 return _configured_workflow_failure_bundle(
@@ -1726,7 +1746,10 @@ class ReproductionRunner:
         try:
             _validate_local_validation_pilot_configuration(configuration, pilot=pilot)
             if verbose:
-                print(f"[evaluate] {pilot.label}: validating source artifacts")
+                print(
+                    f"[evaluate] {pilot.label}: validating source artifacts",
+                    file=sys.stderr,
+                )
             source = source_run_directory.resolve()
             manifest = _read_json_artifact(source / "manifest.json")
             jobs = _completed_local_validation_pilot_jobs(source, manifest, pilot=pilot)
@@ -1750,7 +1773,10 @@ class ReproductionRunner:
             )
             monitor.check(f"before-{pilot.profile}-evaluation")
             if verbose:
-                print(f"[evaluate] {pilot.label}: calibrating market model")
+                print(
+                    f"[evaluate] {pilot.label}: calibrating market model",
+                    file=sys.stderr,
+                )
             market_model = MarketScenarioModel()
             historical = market_model.load_historical_term_structures(
                 configuration.source_data.snb_csv,
@@ -1769,7 +1795,8 @@ class ReproductionRunner:
                 print(
                     f"[evaluate] {pilot.label}: evaluating {len(checkpoints)} "
                     "frozen checkpoints on "
-                    f"{configuration.run_scale.test_paths} locked test paths"
+                    f"{configuration.run_scale.test_paths} locked test paths",
+                    file=sys.stderr,
                 )
             evaluation = LockedEvaluator(
                 configuration,
@@ -1786,7 +1813,8 @@ class ReproductionRunner:
             if verbose:
                 print(
                     f"[evaluate] {pilot.label}: completed {len(checkpoints)}/"
-                    f"{len(checkpoints)} frozen checkpoints"
+                    f"{len(checkpoints)} frozen checkpoints",
+                    file=sys.stderr,
                 )
             _validate_local_validation_locked_evaluation(
                 evaluation.manifest,
@@ -2229,6 +2257,20 @@ def _configured_workflow_failure_bundle(
     )
 
 
+def _unavailable_workflow_action_bundle(
+    configuration: ResolvedRunConfiguration, *, action: str, guidance: str
+) -> RunBundle:
+    """Reject an unavailable action without publishing misleading evidence."""
+
+    del configuration
+    return RunBundle(
+        status=RunStatus.FAILED,
+        acceptance_status=AcceptanceStatus.PENDING,
+        artifact_directory=None,
+        error=f"Action unavailable: {action} — {guidance}",
+    )
+
+
 def _fit_local_validation_member(
     trainer: Any,
     *,
@@ -2240,7 +2282,7 @@ def _fit_local_validation_member(
     """Fit one local member while keeping terminal reporting outside training."""
 
     if verbose:
-        print(f"[train] {policy_name} {horizon_years}y: starting")
+        print(f"[train] {policy_name} {horizon_years}y: starting", file=sys.stderr)
     result = trainer.fit(
         horizon_years=horizon_years, progress_callback=progress_callback
     )
@@ -2248,7 +2290,8 @@ def _fit_local_validation_member(
         print(
             f"[train] {policy_name} {horizon_years}y: completed | "
             f"selected_epoch={result.selected_epoch} | "
-            f"updates={result.optimizer_updates}"
+            f"updates={result.optimizer_updates}",
+            file=sys.stderr,
         )
     return result
 
@@ -2267,7 +2310,7 @@ def _print_training_progress(progress: TrainingProgress) -> None:
             f" | selection_loss={progress.selection.total_loss:.6f}"
             f" | penalty_loss={progress.selection.penalty_loss:.6f}"
         )
-    print(line)
+    print(line, file=sys.stderr)
 
 
 def _print_evaluation_progress(progress: EvaluationProgress) -> None:
@@ -2276,7 +2319,8 @@ def _print_evaluation_progress(progress: EvaluationProgress) -> None:
     print(
         f"[evaluate] {progress.policy_name} {progress.horizon_years}y | "
         f"checkpoint {progress.completed_checkpoints}/{progress.total_checkpoints} | "
-        f"locked_test_paths={progress.locked_test_paths} | completed"
+        f"locked_test_paths={progress.locked_test_paths} | completed",
+        file=sys.stderr,
     )
 
 

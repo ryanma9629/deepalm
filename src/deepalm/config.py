@@ -273,7 +273,7 @@ _WORKFLOW_CONTRACTS = {
         policies=frozenset({"BM^E", "BM^C", "BM^D", "MM"}),
         horizons=frozenset({5, 15}),
     ),
-    "bounded-local-workflow": _WorkflowContractDefinition(
+    "internal-integration-validation": _WorkflowContractDefinition(
         execution_profile="local-cpu-compact",
         run_scale="local_flow",
         purpose="development-validation",

@@ -33,10 +33,12 @@ def test_generic_actions_dispatch_local_validation_workflow_contracts(
     config_path.write_text(yaml.safe_dump(data), encoding="utf-8")
     source = tmp_path / "source"
     evaluation = tmp_path / "evaluation"
+    source.mkdir()
+    evaluation.mkdir()
     artifact = tmp_path / "artifact"
     calls: list[tuple[str, tuple[Path, ...]]] = []
 
-    assert main(["plan", "--config", str(config_path)]) == 0
+    assert main(["plan", "--config", str(config_path), "--format", "json"]) == 0
     plan = json.loads(capsys.readouterr().out)
     assert plan["workflow_contract"] == data["workflow_contract"]["name"]
     assert plan["execution_profile"] == data["execution_profile"]["name"]
@@ -153,6 +155,7 @@ def test_evaluate_passes_an_explicit_or_default_verbose_preference_to_the_workfl
         yaml.safe_dump(_corrected_pilot_data(tmp_path)), encoding="utf-8"
     )
     source = tmp_path / "source"
+    source.mkdir()
     artifact = tmp_path / "artifact"
     observed: list[bool] = []
 

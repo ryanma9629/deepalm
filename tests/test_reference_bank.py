@@ -116,7 +116,7 @@ def test_standalone_reference_bank_stage_writes_snapshot_and_table_one(
                 "paper_pdf": str(project_root / "docs/Deep treasury management for banks.pdf"),
                 "nss_beta_unit": "percentage_points",
             },
-            "workflow_contract": {"name": "bounded-local-workflow"},
+            "workflow_contract": {"name": "internal-integration-validation"},
             "execution_profile": {"name": "local-cpu-compact"},
             "run_scale": {"profile": "local_flow"},
             "architecture": {"profile": "compact"},

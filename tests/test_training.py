@@ -6,11 +6,9 @@ from pathlib import Path
 
 import pytest
 import torch
-import yaml
 from test_run_skeleton import configuration_data
 
 from deepalm.baselines import BaselineReferenceError, FrozenDateBenchmarkReference
-from deepalm.cli import main
 from deepalm.config import (
     ArchitectureConfiguration,
     ExperimentConfiguration,
@@ -48,7 +46,7 @@ def _configuration(tmp_path: Path):
                 "paper_pdf": str(tmp_path / "paper.pdf"),
                 "nss_beta_unit": "percentage_points",
             },
-            "workflow_contract": {"name": "bounded-local-workflow"},
+            "workflow_contract": {"name": "internal-integration-validation"},
             "execution_profile": {"name": "local-cpu-compact"},
             "run_scale": {"profile": "local_flow"},
             "architecture": {"profile": "compact"},
@@ -345,9 +343,8 @@ def test_runner_persists_actual_single_device_validation_evidence(
     ("policy_name", "horizon_years"),
     (("BM^E", 5), ("BM^E", 15), ("MM", 5), ("MM", 15)),
 )
-def test_cli_runs_the_bounded_single_device_commissioning_check(
+def test_internal_runner_executes_the_bounded_single_device_commissioning_check(
     tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
     policy_name: str,
     horizon_years: int,
 ) -> None:
@@ -362,28 +359,16 @@ def test_cli_runs_the_bounded_single_device_commissioning_check(
         "directory": str(tmp_path / "runs"),
         "run_name": f"cli-device-check-{policy_name}-{horizon_years}",
     }
-    configuration_path = tmp_path / "device-check.yaml"
-    configuration_path.write_text(
-        yaml.safe_dump(configuration), encoding="utf-8"
+    bundle = ReproductionRunner().commission_single_device_portability(
+        resolve_configuration(configuration),
+        horizon_years=horizon_years,
+        policy_name=policy_name,
     )
 
-    exit_code = main(
-        [
-            "device-check",
-            "--config",
-            str(configuration_path),
-            "--horizon",
-            str(horizon_years),
-            "--policy",
-            policy_name,
-        ]
-    )
-
-    captured = capsys.readouterr()
-    artifact_directory = Path(captured.out.strip())
-    assert exit_code == 0, captured.err
+    assert bundle.status is RunStatus.COMPLETED, bundle.error
+    assert bundle.artifact_directory is not None
     evidence = json.loads(
-        (artifact_directory / "single-device-validation.json").read_text()
+        (bundle.artifact_directory / "single-device-validation.json").read_text()
     )
     assert evidence["horizon_years"] == horizon_years
     assert evidence["policy"] == policy_name

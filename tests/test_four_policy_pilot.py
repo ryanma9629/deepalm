@@ -180,7 +180,7 @@ def test_four_policy_pilot_publishes_all_members_before_locked_evaluation(
     monkeypatch.setattr(training_module, "BMDateTrainer", trainer("BM^D"))
     monkeypatch.setattr(training_module, "MMTrainer", trainer("MM"))
 
-    assert main(["plan", "--config", str(config_path)]) == 0
+    assert main(["plan", "--config", str(config_path), "--format", "json"]) == 0
     plan = json.loads(capsys.readouterr().out)
     assert plan["workflow_contract"] == "local-four-policy-comparison"
     assert plan["execution_profile"] == "m5-compact"
@@ -188,8 +188,9 @@ def test_four_policy_pilot_publishes_all_members_before_locked_evaluation(
     assert plan["primary_optimizer_updates"] == 32
 
     assert main(["run", "--config", str(config_path)]) == 0
-    run_output = capsys.readouterr().out.splitlines()
-    bundle_directory = Path(run_output[-1])
+    captured = capsys.readouterr()
+    run_output = captured.err.splitlines()
+    bundle_directory = Path(captured.out.strip())
 
     assert "[train] BM^E 5y: starting" in run_output
     assert (
@@ -375,8 +376,9 @@ def test_four_policy_report_requires_all_eight_identity_linked_members(
     assert main(
         ["evaluate", "--config", str(config_path), "--source-run", str(source)]
     ) == 0
-    evaluation_output = capsys.readouterr().out.splitlines()
-    evaluation_directory = Path(evaluation_output[-1])
+    captured = capsys.readouterr()
+    evaluation_output = captured.err.splitlines()
+    evaluation_directory = Path(captured.out.strip())
     assert "[evaluate] Four-policy corrected pilot: validating source artifacts" in evaluation_output
     assert "[evaluate] Four-policy corrected pilot: calibrating market model" in evaluation_output
     assert (

@@ -62,9 +62,9 @@ uv run deepalm report \
   --evaluation-run artifacts/corrected-local-validation-pilot-evaluation
 ```
 
-`run` 默认输出每个成员的开始/结束信息，以及每个已完成 epoch 的策略、期限、训练损失、优化更新次数；发生 selection 时还会显示其 total loss 和 penalty loss。如脚本需要让 stdout 只保留最终 artifact 目录，可增加 `--no-verbose`。
+`run` 默认输出每个成员的开始/结束信息，以及每个已完成 epoch 的策略、期限、训练损失、优化更新次数；发生 selection 时还会显示其 total loss 和 penalty loss。进度写入 stderr，stdout 始终只包含最终 artifact 目录；可用 `--no-verbose` 关闭进度。
 
-`evaluate` 默认也会输出进度：来源产物校验、市场校准、锁定 checkpoint 与测试路径数量，以及每个已完成 checkpoint 的一行状态。如脚本只需最终 evaluation 目录，可使用 `evaluate --no-verbose`。
+`evaluate` 默认也会向 stderr 输出进度：来源产物校验、市场校准、锁定 checkpoint 与测试路径数量，以及每个已完成 checkpoint 的一行状态。stdout 始终只包含最终 evaluation 目录；可用 `evaluate --no-verbose` 关闭进度。
 
 默认情况下，`run` 不会替换已有的 artifact 目录。若确认要在新运行成功完成后丢弃并替换当前配置所指定的同名目录，可显式增加 `--overwrite`：
 
@@ -90,15 +90,6 @@ checkpoint 的 `training_summary` 记录选中 epoch、最后完成 epoch、loss
 [实现版勘误中的训练说明](docs/implementation-errata.md#训练与选模规则项目补充)。
 
 检查各 run bundle 的 `manifest.json` 和生成的报告 JSON。本机验收的标准是：四个成员的证据链完整、身份关联正确、优化更新和评估结果均为有限值；它不是经济验收。目标 M5 MacBook 上的一次实测中，pilot 用时 151.30 秒，随后锁定评估用时 21.04 秒；这只是容量规划观察值，不是性能承诺。
-
-如需运行覆盖更多策略的 CPU/float64 开发流程，仍使用通用动作和
-`configs/bounded-local-cpu-development.yaml`。它包含 BM^E、BM^C、BM^D 和
-MM，但仍是受限的、无互换的 development-validation 流程，不是论文结果复现。
-
-```bash
-uv run deepalm plan --config configs/bounded-local-cpu-development.yaml
-uv run deepalm run --config configs/bounded-local-cpu-development.yaml
-```
 
 ### 同一台 MacBook 上的四策略初步比较
 
@@ -162,7 +153,7 @@ uv run deepalm device-check --config configs/bank-single-gpu-commissioning.yaml 
 1. **制作导入型 Reference Bank 快照，并在配置中选择它。** 按照 [Reference Bank 输入合同](docs/reference-bank-inputs.md) 准备：估值日和市场身份、六组 180 月合同梯、固定利率贷款 cohort、四种存款参考期限类别、有日期的初始存款利率历史、产品假设、单位和来源信息。在银行受控的 `configs/bank-single-gpu-commissioning.yaml` 副本中，将 `reference_bank.snapshot_path` 设为已校验 JSON；它会记录在解析后的配置和产物 manifest 中。随后独立校验快照：
 
    ```bash
-   uv run deepalm bank \
+   uv run deepalm reference-bank \
      --config configs/bank-single-gpu-commissioning.yaml
    ```
 
@@ -175,7 +166,7 @@ uv run deepalm device-check --config configs/bank-single-gpu-commissioning.yaml 
 
 5. **将银行运行物放在仓库之外。** 私有源数据、凭据与结果应放在银行控制的存储中。银行自己的交付流程还应包括：数据映射签字、账务与经济价值核对、GPU/驱动/PyTorch 版本记录、模型风险审查与验收标准。
 
-当前仓库已经能通过 `deepalm bank` 校验导入快照，并能完成单张 CUDA 卡的 commissioning；但“导入快照接入完整策略训练”、多 GPU/DDP、混合精度调优、集群调度及银行/监管验收，仍是明确列出的后续交付项。面向未来集群实现的并行边界、可复现性规则和银行侧 rollout，见[分布式训练设计（规划中）](docs/distributed-training-design.md)；当前目标端的步骤见[单 GPU commissioning 指南](docs/bank-single-gpu-commissioning.md)。
+当前仓库已经能通过 `deepalm reference-bank` 校验导入快照，并能完成单张 CUDA 卡的 commissioning；但“导入快照接入完整策略训练”、多 GPU/DDP、混合精度调优、集群调度及银行/监管验收，仍是明确列出的后续交付项。面向未来集群实现的并行边界、可复现性规则和银行侧 rollout，见[分布式训练设计（规划中）](docs/distributed-training-design.md)；当前目标端的步骤见[单 GPU commissioning 指南](docs/bank-single-gpu-commissioning.md)。
 
 ## 延伸阅读
 

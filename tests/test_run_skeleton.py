@@ -22,7 +22,7 @@ def configuration_data(tmp_path: Path) -> dict[str, object]:
             "paper_pdf": str(tmp_path / "paper.pdf"),
             "nss_beta_unit": "percentage_points",
         },
-        "workflow_contract": {"name": "bounded-local-workflow"},
+        "workflow_contract": {"name": "internal-integration-validation"},
         "execution_profile": {"name": "local-cpu-compact"},
         "run_scale": {"profile": "local_flow"},
         "architecture": {"profile": "compact"},
@@ -486,84 +486,3 @@ def test_cli_returns_a_configuration_exit_code(
 
     assert exit_code == 2
     assert "Unknown configuration sections" in capsys.readouterr().err
-
-
-def test_cli_dispatches_a_successful_run(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    configuration = configuration_data(tmp_path)
-    write_source_inputs(configuration)
-    configuration_path = tmp_path / "valid.yaml"
-    import yaml
-
-    configuration_path.write_text(yaml.safe_dump(configuration), encoding="utf-8")
-
-    exit_code = main(["run", "--config", str(configuration_path)])
-
-    artifact_directory = Path(capsys.readouterr().out.strip())
-    assert exit_code == 0
-    assert artifact_directory.is_dir()
-
-
-def test_cli_overwrite_replaces_only_the_named_completed_run(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """A repeated run is rejected unless the user explicitly permits replacement."""
-
-    configuration = configuration_data(tmp_path)
-    write_source_inputs(configuration)
-    configuration_path = tmp_path / "valid.yaml"
-    import yaml
-
-    configuration_path.write_text(yaml.safe_dump(configuration), encoding="utf-8")
-
-    assert main(["run", "--config", str(configuration_path)]) == 0
-    artifact_directory = Path(capsys.readouterr().out.strip())
-    sentinel = artifact_directory / "old-run-sentinel.txt"
-    sentinel.write_text("preserve until explicit overwrite", encoding="utf-8")
-
-    assert main(["run", "--config", str(configuration_path)]) == 1
-    assert "already exists" in capsys.readouterr().err
-    assert sentinel.exists()
-
-    assert main(["run", "--config", str(configuration_path), "--overwrite"]) == 0
-    assert Path(capsys.readouterr().out.strip()) == artifact_directory
-    assert not sentinel.exists()
-    assert (artifact_directory / "manifest.json").is_file()
-
-
-def test_cli_prints_a_plan_without_starting_a_run(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    configuration_path = tmp_path / "plan.yaml"
-    import yaml
-
-    configuration_path.write_text(
-        yaml.safe_dump(configuration_data(tmp_path)), encoding="utf-8"
-    )
-
-    exit_code = main(["plan", "--config", str(configuration_path)])
-
-    plan = json.loads(capsys.readouterr().out)
-    assert exit_code == 0
-    assert plan["run_scale"] == "local_flow"
-    assert plan["primary_optimizer_updates"] == 16
-
-
-def test_cli_returns_an_operational_exit_code(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    configuration = configuration_data(tmp_path)
-    write_source_inputs(configuration)
-    output_path = tmp_path / "not-a-directory"
-    output_path.write_text("file", encoding="utf-8")
-    configuration["output"] = {"directory": str(output_path), "run_name": "smoke"}
-    configuration_path = tmp_path / "failure.yaml"
-    import yaml
-
-    configuration_path.write_text(yaml.safe_dump(configuration), encoding="utf-8")
-
-    exit_code = main(["run", "--config", str(configuration_path)])
-
-    assert exit_code == 1
-    assert "Operational failure" in capsys.readouterr().err

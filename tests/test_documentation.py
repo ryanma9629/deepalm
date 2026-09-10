@@ -51,7 +51,6 @@ def test_shipped_configurations_name_scenario_and_environment() -> None:
         "local-two-policy-m5.yaml": "local-two-policy-validation",
         "local-four-policy-m5.yaml": "local-four-policy-comparison",
         "paper-oriented-research-plan.yaml": "paper-oriented-research-plan",
-        "bounded-local-cpu-development.yaml": "bounded-local-workflow",
         "bank-single-gpu-commissioning.yaml": "bank-single-gpu-commissioning",
     }
 
@@ -61,6 +60,7 @@ def test_shipped_configurations_name_scenario_and_environment() -> None:
         assert raw["execution_profile"]["name"]
 
     for retired_name in (
+        "bounded-local-cpu-development.yaml",
         "corrected-pilot.yaml",
         "four-policy-corrected-pilot.yaml",
         "quick-skeleton.yaml",
